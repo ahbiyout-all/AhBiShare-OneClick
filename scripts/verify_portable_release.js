@@ -308,8 +308,13 @@ pass('Legacy OS (Win 7/8/8.1 <-> Win 10/11) 2-step Main/Client 1-click, .bat/.re
 const licenseTxt = fs.readFileSync(path.join(rootDir, 'LICENSE'), 'utf8');
 assert(licenseTxt.includes('MIT License') && licenseTxt.includes('1998-2026 AhBiYout'), 'LICENSE missing MIT 1998-2026 AhBiYout');
 
+assert(fs.existsSync(path.join(rootDir, 'build.bat')), 'Missing root build.bat');
 for (const batFile of ['build.bat', 'build_release.bat', 'push_github.bat']) {
-  const batContent = fs.readFileSync(path.join(rootDir, batFile), 'utf8');
+  const batPath = path.join(rootDir, batFile);
+  if (!fs.existsSync(batPath)) {
+    continue; // .gitignore intentionally excludes build_release.bat and push_github.bat in CI checkouts
+  }
+  const batContent = fs.readFileSync(batPath, 'utf8');
   assert(
     batContent.includes('\r\n') && !/(?<!\r)\n/.test(batContent),
     `${batFile} must use Windows CRLF line endings on every line`
@@ -363,13 +368,16 @@ for (const ignoredEntry of [
 }
 assert(!gitignoreSrc.includes('AhBiYout-Helper'), '.gitignore contains stale repo reference');
 
-const pushBatSrc = fs.readFileSync(path.join(rootDir, 'push_github.bat'), 'utf8');
-assert(
-  pushBatSrc.includes('EnableDelayedExpansion') &&
-    pushBatSrc.includes('git reset --soft origin/main') &&
-    pushBatSrc.includes('--cached --ignore-unmatch app metadata.json push_github.bat'),
-  'push_github.bat must enable delayed expansion, link origin/main safely, and untrack stale excluded files'
-);
+const pushBatPath = path.join(rootDir, 'push_github.bat');
+if (fs.existsSync(pushBatPath)) {
+  const pushBatSrc = fs.readFileSync(pushBatPath, 'utf8');
+  assert(
+    pushBatSrc.includes('EnableDelayedExpansion') &&
+      pushBatSrc.includes('git reset --soft origin/main') &&
+      pushBatSrc.includes('--cached --ignore-unmatch app metadata.json push_github.bat'),
+    'push_github.bat must enable delayed expansion, link origin/main safely, and untrack stale excluded files'
+  );
+}
 
 const readmeSrc = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
 assert(
