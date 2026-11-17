@@ -657,7 +657,7 @@ export const shareBridge = {
           autoRevokeOnExpiry: entry.autoRevokeOnExpiry,
           decryptionFailed: entry.decryptionFailed,
         };
-        existingMap.set(key, sanitizedLocal);
+        existingMap.set(key, sanitizeLocalShareForStorage(sanitizedLocal, netInfo));
       }
       writeStore(STORAGE_SHARES_KEY, Array.from(existingMap.values()));
     }
@@ -995,8 +995,19 @@ export const shareBridge = {
       const safe = shareName.replace(/'/g, "''");
       const res = await window.ahbiShareElectron.runPowerShell(`
         $p_share = '${safe}'
-        if (Get-SmbShare -Name $p_share -ErrorAction SilentlyContinue) {
-          Remove-SmbShare -Name $p_share -Force -ErrorAction Stop
+        if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+          if (Get-SmbShare -Name $p_share -ErrorAction SilentlyContinue) {
+            Remove-SmbShare -Name $p_share -Force -ErrorAction Stop
+          }
+        } else {
+          try { [Console]::OutputEncoding = [System.Text.Encoding]::Default } catch {}
+          $script:__rmOut = (& net.exe share $p_share /delete /y 2>&1) -join ' '
+          $rmCode = $LASTEXITCODE
+          try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+          if ($rmCode -ne 0) {
+            $stillShared = (& net.exe share 2>$null | Where-Object { $_ -match ('^' + [regex]::Escape($p_share) + '\\s+') })
+            if ($stillShared) { throw ("공유 해제 실패 (" + $p_share + "): " + $script:__rmOut) }
+          }
         }
         Write-Output "Removed share"
       `.trim());
@@ -1804,5 +1815,232 @@ export const shareBridge = {
       success: true,
       message: '웹 프리뷰 시뮬레이션: Windows 런타임에서는 5초 후 컴퓨터를 안전하게 재부팅(shutdown /r /t 5)합니다.',
     };
+  },
+
+  exportCrossOsBridgeBundle(): { success: boolean; jsonContent: string; fileName: string; message: string } {
+    const shares = this.getSavedShares();
+    const mounts = this.getSavedMounts();
+    const snapshot = this.getPortableSnapshot();
+    const bridgePayload = {
+      app: 'AhBiShare OneClick',
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      shares,
+      mounts,
+      portableSnapshot: snapshot,
+    };
+    const jsonContent = JSON.stringify(bridgePayload, null, 2);
+    const fileName = 'AhBiShare_CrossOS_Sync_Bridge.json';
+    return {
+      success: true,
+      jsonContent,
+      fileName,
+      message: 'Win 10/11과 Win 7/8 레거시 앱 간 양방향 데이터 공유 브릿지 파일이 생성되었습니다.',
+    };
+  },
+
+  async importCrossOsBridgeData(
+    jsonString: string,
+    netInfo?: LocalNetworkInfo
+  ): Promise<{ success: boolean; countShares: number; countMounts: number; countPolicies: number; message: string }> {
+    try {
+      const parsed = JSON.parse(jsonString);
+      if (!parsed || typeof parsed !== 'object') {
+        return {
+          success: false,
+          countShares: 0,
+          countMounts: 0,
+          countPolicies: 0,
+          message: '올바르지 않은 브릿지 JSON 형식입니다.',
+        };
+      }
+
+      const hasShares = Array.isArray(parsed.shares);
+      const hasMounts = Array.isArray(parsed.mounts);
+      const snapDoc = parsed.portableSnapshot?.document;
+      const hasSnapshot = Boolean(snapDoc && typeof snapDoc === 'object');
+
+      if (!hasShares && !hasMounts && !hasSnapshot) {
+        return {
+          success: false,
+          countShares: 0,
+          countMounts: 0,
+          countPolicies: 0,
+          message: '가져올 공유/마운트/포터블 정책 데이터가 포함되어 있지 않습니다.',
+        };
+      }
+
+      const resolvedNet = netInfo || (await this.getLocalNetworkInfo());
+      const localHostLower = (resolvedNet.hostname || '').trim().toLowerCase();
+
+      let countShares = 0;
+      let countMounts = 0;
+      let countPolicies = 0;
+
+      const promotedPortableEntries: PortableHostShareEntry[] = [];
+
+      if (hasShares) {
+        const validShares = parsed.shares.filter(
+          (item: unknown): item is ActiveShare =>
+            Boolean(item && typeof item === 'object' && 'shareName' in item && 'uncPath' in item)
+        );
+        const existingShares = readStore<ActiveShare[]>(STORAGE_SHARES_KEY, []);
+        const shareMap = new Map<string, ActiveShare>(
+          existingShares.map((s) => [s.shareName.trim().toLowerCase(), sanitizeLocalShareForStorage(s, resolvedNet)])
+        );
+
+        for (const sh of validShares) {
+          const decodedToken = sh.connectionCode ? decodeConnectionCode(sh.connectionCode) : null;
+          const resolvedPassword = sh.restoredPassword || decodedToken?.password || '';
+          const entryHost = (sh.sourceHostName || resolvedNet.hostname || 'REMOTE').trim();
+          const entryHostLower = entryHost.toLowerCase();
+          const isLocalShare = !sh.sourceHostName || entryHostLower === localHostLower;
+
+          if (resolvedPassword) {
+            setCachedPassword(entryHost, sh.shareName, resolvedPassword);
+          }
+
+          if (isLocalShare) {
+            const sanitizedLocal = sanitizeLocalShareForStorage(
+              {
+                ...sh,
+                sourceHostName: entryHost,
+                sourceIp: sh.sourceIp || resolvedNet.primaryIp,
+              },
+              resolvedNet
+            );
+            shareMap.set(sanitizedLocal.shareName.trim().toLowerCase(), sanitizedLocal);
+          }
+
+          const fullCode = rehydrateCodeWithPassword(
+            {
+              sourceHostName: entryHost,
+              sourceIp: sh.sourceIp || resolvedNet.primaryIp,
+              shareName: sh.shareName,
+              authMode: sh.authMode,
+              username: sh.username,
+              createdAt: sh.createdAt,
+              connectionCode: sh.connectionCode || '',
+            },
+            resolvedPassword || undefined
+          );
+
+          promotedPortableEntries.push({
+            sourceHostName: entryHost,
+            sourceIp: sh.sourceIp || decodedToken?.ip || resolvedNet.primaryIp,
+            shareName: sh.shareName,
+            folderPath: sh.folderPath || '',
+            uncPath: sh.uncPath,
+            authMode: sh.authMode || 'guest',
+            permission: sh.permission || 'read',
+            username: sh.authMode === 'account' ? sh.username || decodedToken?.username : undefined,
+            password: sh.authMode === 'account' ? resolvedPassword || undefined : undefined,
+            createdAt: sh.createdAt || new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+            updatedAt: sh.updatedAt || new Date().toISOString(),
+            ...(typeof sh.ttlMinutes === 'number' && sh.ttlMinutes > 0 ? { ttlMinutes: sh.ttlMinutes } : {}),
+            ...(sh.expiresAt ? { expiresAt: sh.expiresAt } : {}),
+            ...(typeof sh.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: sh.autoRevokeOnExpiry } : {}),
+            connectionCode: fullCode,
+          });
+        }
+
+        writeStore(STORAGE_SHARES_KEY, Array.from(shareMap.values()));
+        countShares = validShares.length;
+      }
+
+      if (hasMounts) {
+        const validMounts = parsed.mounts.filter(
+          (item: unknown): item is MountedDrive =>
+            Boolean(item && typeof item === 'object' && 'driveLetter' in item && 'uncPath' in item)
+        );
+        const existingMounts = readStore<MountedDrive[]>(STORAGE_MOUNTS_KEY, []);
+        const mountMap = new Map<string, MountedDrive>(
+          existingMounts.map((m) => [m.driveLetter.trim().toUpperCase(), m])
+        );
+        for (const m of validMounts) {
+          mountMap.set(m.driveLetter.trim().toUpperCase(), m);
+        }
+        writeStore(STORAGE_MOUNTS_KEY, Array.from(mountMap.values()));
+        countMounts = validMounts.length;
+      }
+
+      if (hasSnapshot || promotedPortableEntries.length > 0) {
+        const existingPortable = latestPortableDoc.shares || [];
+        const portableMap = new Map<string, PortableHostShareEntry>(
+          existingPortable.map((e) => [
+            `${(e.sourceHostName || '').trim().toLowerCase()}::${e.shareName.trim().toLowerCase()}`,
+            e,
+          ])
+        );
+
+        for (const entry of promotedPortableEntries) {
+          const key = `${(entry.sourceHostName || '').trim().toLowerCase()}::${entry.shareName.trim().toLowerCase()}`;
+          portableMap.set(key, entry);
+        }
+
+        const importedPortableShares: PortableHostShareEntry[] =
+          hasSnapshot && Array.isArray(snapDoc.shares)
+            ? snapDoc.shares.filter(
+                (item: unknown): item is PortableHostShareEntry =>
+                  Boolean(item && typeof item === 'object' && 'shareName' in item && 'sourceHostName' in item)
+              )
+            : [];
+        for (const entry of importedPortableShares) {
+          if (entry.password) {
+            setCachedPassword(entry.sourceHostName, entry.shareName, entry.password);
+          }
+          const key = `${(entry.sourceHostName || '').trim().toLowerCase()}::${entry.shareName.trim().toLowerCase()}`;
+          portableMap.set(key, entry);
+        }
+
+        const importedPolicies: Record<string, HostPolicySnapshot> =
+          hasSnapshot && snapDoc.hostPolicies && typeof snapDoc.hostPolicies === 'object'
+            ? (snapDoc.hostPolicies as Record<string, HostPolicySnapshot>)
+            : {};
+        countPolicies = Object.keys(importedPolicies).length;
+
+        const mergedPolicies: Record<string, HostPolicySnapshot> = {
+          ...(latestPortableDoc.hostPolicies || {}),
+          ...importedPolicies,
+        };
+
+        const nextDoc: PortableShareDocument = {
+          schemaVersion: 1,
+          updatedAt: new Date().toISOString(),
+          shares: Array.from(portableMap.values()),
+          ...(Object.keys(mergedPolicies).length > 0 ? { hostPolicies: mergedPolicies } : {}),
+          ...(snapDoc?.lastClientTarget
+            ? { lastClientTarget: snapDoc.lastClientTarget }
+            : latestPortableDoc.lastClientTarget
+              ? { lastClientTarget: latestPortableDoc.lastClientTarget }
+              : {}),
+        };
+
+        const saveRes = window.ahbiShareElectron?.savePortableData
+          ? await window.ahbiShareElectron.savePortableData(nextDoc)
+          : await saveWebPreviewPortable(nextDoc);
+        latestPortableDoc = saveRes.document;
+        latestPortableStatus = saveRes.status;
+        if (countShares === 0 && importedPortableShares.length > 0) {
+          countShares = importedPortableShares.length;
+        }
+      }
+
+      return {
+        success: true,
+        countShares,
+        countMounts,
+        countPolicies,
+        message: `브릿지 데이터 가져오기 성공 (공유 ${countShares}건, 마운트 ${countMounts}건, 호스트 정책 ${countPolicies}건 동기화됨)`,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        countShares: 0,
+        countMounts: 0,
+        countPolicies: 0,
+        message: `브릿지 데이터 파싱 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`,
+      };
+    }
   },
 };

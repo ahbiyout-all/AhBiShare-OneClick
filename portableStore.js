@@ -150,7 +150,7 @@ function emptyDocument() {
 
 function sanitizeHostPolicySnapshot(snap) {
   if (!snap || typeof snap !== 'object' || !snap.hostName) return null;
-  return {
+  const out = {
     hostName: String(snap.hostName),
     osProductName: String(snap.osProductName || 'Windows'),
     osDisplayVersion: String(snap.osDisplayVersion || ''),
@@ -164,6 +164,13 @@ function sanitizeHostPolicySnapshot(snap) {
     pointAndPrintRelaxed: Boolean(snap.pointAndPrintRelaxed),
     capturedAt: String(snap.capturedAt || new Date().toISOString()),
   };
+  if (snap.lmCompatibilityLevel === null || typeof snap.lmCompatibilityLevel === 'number') {
+    out.lmCompatibilityLevel = snap.lmCompatibilityLevel;
+  }
+  if (typeof snap.localAccountTokenFilterEnabled === 'boolean') {
+    out.localAccountTokenFilterEnabled = snap.localAccountTokenFilterEnabled;
+  }
+  return out;
 }
 
 function sanitizeHostPoliciesMap(rawMap) {

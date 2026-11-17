@@ -1210,6 +1210,7 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="네트워크 변경 이력 및 적용 매트릭스 검색"
               placeholder="SMB 서명, 게스트, NTLM, 26H2 검색..."
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />

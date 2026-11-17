@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { ReleaseInfo } from '../services/updateChecker';
 import { Download, ExternalLink, X, ShieldAlert } from 'lucide-react';
 
@@ -10,18 +10,39 @@ interface UpdateModalProps {
 }
 
 export const UpdateModal: React.FC<UpdateModalProps> = ({ isOpen, currentVersion, release, onClose }) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !release) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
-      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="update-modal-title"
+        className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden"
+      >
         <div className="flex items-center justify-between px-6 py-4 bg-indigo-600 text-white">
           <div className="flex items-center gap-2.5">
             <ShieldAlert className="w-5 h-5 text-indigo-200 animate-pulse" />
-            <h3 className="text-base font-bold">새로운 업데이트 안내 (GitHub Releases)</h3>
+            <h3 id="update-modal-title" className="text-base font-bold">새로운 업데이트 안내 (GitHub Releases)</h3>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="닫기"
             className="p-1.5 rounded-lg hover:bg-indigo-700 text-indigo-100 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />

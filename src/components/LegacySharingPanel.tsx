@@ -30,6 +30,7 @@ import {
   Trash2,
   Unplug,
   Usb,
+  Upload,
   X,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -62,6 +63,7 @@ import {
   validateShareName,
   validateTargetHost,
 } from '@/utils/connectionCode';
+import { shareBridge } from '@/services/shareBridge';
 import { PipelineTracker } from './PipelineTracker';
 
 interface LegacySharingPanelProps {
@@ -98,6 +100,7 @@ interface LegacySharingPanelProps {
     message: string;
   }>;
   onTriggerReboot: () => Promise<{ success: boolean; message: string }>;
+  onBridgeImported?: () => Promise<void> | void;
   onOpenMatrix?: () => void;
   onNotify?: (msg: string) => void;
 }
@@ -232,6 +235,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   onOpenPath,
   onExportBundle,
   onTriggerReboot,
+  onBridgeImported,
   onOpenMatrix,
   onNotify,
 }) => {
@@ -239,6 +243,42 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   const [targetOs, setTargetOs] = useState<LegacyTargetOs>('win7');
   const [direction, setDirection] = useState<LegacyDirection>('bidirectional');
   const [legacyStep, setLegacyStep] = useState<RoleMode>('host');
+
+  const handleExportBridgeJson = () => {
+    const res = shareBridge.exportCrossOsBridgeBundle();
+    const blob = new Blob([res.jsonContent], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    if (onNotify) onNotify(res.message);
+  };
+
+  const handleImportBridgeJson = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = e.target;
+    const file = inputEl.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const content = event.target?.result as string;
+        if (content) {
+          const res = await shareBridge.importCrossOsBridgeData(content, netInfo);
+          if (onNotify) onNotify(res.message);
+          if (res.success && onBridgeImported) {
+            await onBridgeImported();
+          }
+        }
+      } finally {
+        inputEl.value = '';
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  };
 
   // Step 1 (Host) Form State
   const [hostConfig, setHostConfig] = useState<HostConfig>({
@@ -1120,6 +1160,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                             setHostConfig({ ...hostConfig, password: generateSecureSharePassword(10) });
                           }}
                           title="새 암호 생성"
+                          aria-label="새 암호 생성"
                           className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
                         >
                           <RefreshCw className="w-3.5 h-3.5" />
@@ -1353,6 +1394,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                                 onClick={() => void onOpenPath(share.folderPath)}
                                 className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md cursor-pointer"
                                 title="폴더 열기"
+                                aria-label={`${share.shareName} 폴더 열기`}
                               >
                                 <ExternalLink className="w-4 h-4" />
                               </button>
@@ -1361,6 +1403,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                                 onClick={() => void onRemoveShare(share.shareName)}
                                 className="p-1.5 text-slate-500 hover:text-red-500 rounded-md cursor-pointer"
                                 title="공유 해제"
+                                aria-label={`${share.shareName} 공유 해제`}
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -2361,6 +2404,36 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
         </div>
       </section>
 
+      {/* ==================== CROSS-OS BIDIRECTIONAL DATA SYNC ==================== */}
+      <section className="border border-indigo-500/30 dark:border-indigo-500/30 rounded-xl bg-indigo-500/5 dark:bg-indigo-500/5 p-6 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <ArrowLeftRight className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              Windows 10·11 ⇄ Windows 7·8 양방향 데이터 공유 브릿지
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              최신 PC(Win 10/11)에서 설정한 공유 및 드라이브 연결 데이터를 브릿지 파일(JSON)로 내보내어 레거시 앱(Win 7/8)에서 불러와서 그대로 사용하거나 양방향으로 동기화할 수 있습니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={handleExportBridgeJson}
+              className="px-4 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              공유 설정 브릿지 내보내기 (.json)
+            </button>
+            <label className="px-4 py-2.5 text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-950/60 hover:bg-indigo-200 dark:hover:bg-indigo-900/60 border border-indigo-300 dark:border-indigo-700 rounded-lg inline-flex items-center gap-1.5 cursor-pointer">
+              <Upload className="w-4 h-4" />
+              브릿지 가져오기 및 동기화
+              <input type="file" accept=".json" onChange={handleImportBridgeJson} className="hidden" />
+            </label>
+          </div>
+        </div>
+      </section>
+
       {/* ==================== PRESERVED CROSS-GENERATION COMPARISON MATRIX ==================== */}
       <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -2379,6 +2452,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
               type="text"
               value={matrixSearch}
               onChange={(e) => setMatrixSearch(e.target.value)}
+              aria-label="호환 비교 및 장애 해결 가이드 검색"
               placeholder="암호화, 0x80070035, 58, NTLM 검색..."
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />

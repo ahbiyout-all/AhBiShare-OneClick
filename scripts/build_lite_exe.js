@@ -14,6 +14,11 @@ const args = process.argv.slice(2);
 const buildAll = args.includes('--all');
 const isWin = process.platform === 'win32';
 
+function readAppVersion() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  return pkg.version || '1.0.0';
+}
+
 function runStep(cmd, cmdArgs, label) {
   console.log(`\n[*] ${label}...`);
   execFileSync(cmd, cmdArgs, {
@@ -99,6 +104,7 @@ function verifyLiteUnpackedDir(unpackedDir) {
 }
 
 function main() {
+  const ver = readAppVersion();
   const npmCmd = isWin ? 'npm.cmd' : 'npm';
   const npxCmd = isWin ? 'npx.cmd' : 'npx';
   const extraWinArgs = isWin ? [] : ['--config.win.signAndEditExecutable=false'];
@@ -115,14 +121,14 @@ function main() {
     runStep(
       npxCmd,
       ['electron-builder', '--win', 'portable', '--x64', ...extraWinArgs],
-      'Packaging standard AhBiShare_OneClick.exe'
+      `Packaging standard AhBiShare_OneClick_v${ver}.exe`
     );
   }
 
   runStep(
     npxCmd,
     ['electron-builder', '--config', 'build-config-lite.json', '--win', 'portable', '--x64', ...extraWinArgs],
-    'Packaging size-reduced AhBiShare_OneClick-Lite.exe'
+    `Packaging size-reduced AhBiShare_OneClick-Lite_v${ver}.exe`
   );
 
   cleanStaleTempArchives(releaseDir);
@@ -130,39 +136,40 @@ function main() {
 
   verifyLiteUnpackedDir(path.join(liteDir, 'win-unpacked'));
 
-  const liteOutPath = path.join(liteDir, 'AhBiShare_OneClick-Lite.exe');
-  const sharedLiteDest = path.join(releaseDir, 'AhBiShare_OneClick-Lite_v1.0.0.exe');
-  const sharedLiteBaseDest = path.join(releaseDir, 'AhBiShare_OneClick-Lite.exe');
+  const liteFileName = `AhBiShare_OneClick-Lite_v${ver}.exe`;
+  const liteOutPath = path.join(liteDir, liteFileName);
+  const sharedLiteDest = path.join(releaseDir, liteFileName);
   if (fs.existsSync(liteOutPath)) {
     fs.copyFileSync(liteOutPath, sharedLiteDest);
-    fs.copyFileSync(liteOutPath, sharedLiteBaseDest);
   }
 
-  const stdExeRaw = path.join(releaseDir, 'AhBiShare_OneClick.exe');
-  const stdExeVersioned = path.join(releaseDir, 'AhBiShare_OneClick_v1.0.0.exe');
-  if (fs.existsSync(stdExeRaw)) {
-    try {
-      fs.copyFileSync(stdExeRaw, stdExeVersioned);
-    } catch {}
+  // Remove any unversioned EXE leftovers so only version-numbered executables remain in release/
+  for (const unversioned of ['AhBiShare_OneClick.exe', 'AhBiShare_OneClick-Lite.exe', 'AhBiShare_OneClick_Win7.exe', 'AhBiShare_OneClick-Setup.exe']) {
+    const p = path.join(releaseDir, unversioned);
+    if (fs.existsSync(p)) {
+      try {
+        fs.unlinkSync(p);
+      } catch {}
+    }
   }
 
+  const stdExe = path.join(releaseDir, `AhBiShare_OneClick_v${ver}.exe`);
   console.log('\n=======================================================');
-  console.log('[*] Portable EXE Build Summary (Win 7~11 Standalone)');
+  console.log(`[*] Portable EXE Build Summary (v${ver} · Win 7~11 Standalone)`);
   console.log('=======================================================');
-  const stdExe = fs.existsSync(stdExeVersioned) ? stdExeVersioned : stdExeRaw;
   if (fs.existsSync(stdExe)) {
     const stdBytes = fs.statSync(stdExe).size;
-    console.log(`  Standard EXE : release/AhBiShare_OneClick_v1.0.0.exe (${formatMb(stdBytes)})`);
+    console.log(`  Standard EXE : release/AhBiShare_OneClick_v${ver}.exe (${formatMb(stdBytes)})`);
     if (fs.existsSync(sharedLiteDest)) {
       const liteBytes = fs.statSync(sharedLiteDest).size;
       const savedBytes = stdBytes - liteBytes;
       const savedPct = stdBytes > 0 ? ((savedBytes / stdBytes) * 100).toFixed(1) : '0.0';
-      console.log(`  Lite EXE     : release/AhBiShare_OneClick-Lite_v1.0.0.exe (${formatMb(liteBytes)})`);
+      console.log(`  Lite EXE     : release/${liteFileName} (${formatMb(liteBytes)})`);
       console.log(`  Size Reduced : -${formatMb(savedBytes)} (-${savedPct}%)`);
     }
   } else if (fs.existsSync(sharedLiteDest)) {
     const liteBytes = fs.statSync(sharedLiteDest).size;
-    console.log(`  Lite EXE     : release/AhBiShare_OneClick-Lite_v1.0.0.exe (${formatMb(liteBytes)})`);
+    console.log(`  Lite EXE     : release/${liteFileName} (${formatMb(liteBytes)})`);
   }
   console.log('=======================================================\n');
 }

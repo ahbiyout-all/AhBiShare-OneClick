@@ -404,7 +404,21 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
               if ($name -and $name -notmatch '\\$$') { $s += $name }
             }
           }
-          [PSCustomObject]@{ hostName = $h; shares = $s } | ConvertTo-Json -Compress
+          $resHash = @{ hostName = $h; shares = $s }
+          if (Get-Command ConvertTo-Json -ErrorAction SilentlyContinue) {
+            $resObj = New-Object PSObject -Property $resHash
+            $resObj | ConvertTo-Json -Compress
+          } else {
+            try {
+              Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+              $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+              $ser.Serialize($resHash)
+            } catch {
+              $escHost = "$h".Replace('\\', '\\\\').Replace('"', '\\"')
+              $escShares = ($s | ForEach-Object { '"' + ("$_".Replace('\\', '\\\\').Replace('"', '\\"')) + '"' }) -join ','
+              '{"hostName":"' + $escHost + '","shares":[' + $escShares + ']}'
+            }
+          }
         `,
         12000
       );

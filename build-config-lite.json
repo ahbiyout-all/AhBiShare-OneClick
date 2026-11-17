@@ -29,11 +29,11 @@
       "portable"
     ],
     "requestedExecutionLevel": "requireAdministrator",
-    "artifactName": "AhBiShare_OneClick-Lite.${ext}",
+    "artifactName": "AhBiShare_OneClick-Lite_v${version}.${ext}",
     "icon": "icon.ico"
   },
   "portable": {
-    "artifactName": "AhBiShare_OneClick-Lite.${ext}",
+    "artifactName": "AhBiShare_OneClick-Lite_v${version}.${ext}",
     "unpackDirName": "AhBiShare_OneClick_Lite_RAM",
     "requestExecutionLevel": "admin"
   }

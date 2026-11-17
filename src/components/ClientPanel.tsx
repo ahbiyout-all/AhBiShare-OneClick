@@ -562,28 +562,38 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
               {config.authMode === 'account' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <input
-                    id="client-acc-user"
-                    type="text"
-                    value={config.username}
-                    onChange={(e) => {
-                      setValidationError(null);
-                      setConfig({ ...config, username: e.target.value });
-                    }}
-                    placeholder="사용자 ID (예: AhBiShare)"
-                    className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <input
-                    id="client-acc-pass"
-                    type="password"
-                    value={config.password}
-                    onChange={(e) => {
-                      setValidationError(null);
-                      setConfig({ ...config, password: e.target.value });
-                    }}
-                    placeholder="공유 계정 암호"
-                    className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
+                  <div>
+                    <label htmlFor="client-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      전용 계정 ID
+                    </label>
+                    <input
+                      id="client-acc-user"
+                      type="text"
+                      value={config.username}
+                      onChange={(e) => {
+                        setValidationError(null);
+                        setConfig({ ...config, username: e.target.value });
+                      }}
+                      placeholder="사용자 ID (예: AhBiShare)"
+                      className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="client-acc-pass" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      공유 계정 암호
+                    </label>
+                    <input
+                      id="client-acc-pass"
+                      type="password"
+                      value={config.password}
+                      onChange={(e) => {
+                        setValidationError(null);
+                        setConfig({ ...config, password: e.target.value });
+                      }}
+                      placeholder="공유 계정 암호"
+                      className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
                 </div>
               )}
             </div>

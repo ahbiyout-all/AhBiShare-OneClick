@@ -21,6 +21,7 @@
     "electron:dev": "electron . --dev",
     "electron:build": "vite build && electron-builder --win",
     "electron:build:lite": "node scripts/build_lite_exe.js --lite-only",
+    "electron:build:win7": "node scripts/build_win7_exe.js",
     "electron:build:all": "node scripts/build_lite_exe.js --all",
     "verify": "node scripts/verify_portable_release.js",
     "verify:share-oneclick": "node scripts/verify_portable_release.js"
@@ -66,7 +67,7 @@
         "nsis"
       ],
       "requestedExecutionLevel": "requireAdministrator",
-      "artifactName": "AhBiShare_OneClick.${ext}",
+      "artifactName": "AhBiShare_OneClick_v${version}.${ext}",
       "icon": "icon.ico"
     },
     "nsis": {
@@ -76,10 +77,10 @@
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "AhBiShare OneClick",
-      "artifactName": "AhBiShare_OneClick-Setup.${ext}"
+      "artifactName": "AhBiShare_OneClick-Setup_v${version}.${ext}"
     },
     "portable": {
-      "artifactName": "AhBiShare_OneClick.${ext}",
+      "artifactName": "AhBiShare_OneClick_v${version}.${ext}",
       "unpackDirName": "AhBiShare_OneClick_RAM",
       "requestExecutionLevel": "admin"
     }

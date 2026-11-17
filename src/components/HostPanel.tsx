@@ -340,6 +340,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                         setConfig({ ...config, password: generateSecureSharePassword(10) });
                       }}
                       title="새 암호 생성"
+                      aria-label="새 암호 생성"
                       className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
@@ -552,6 +553,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                           onClick={() => onOpenFolder(share.folderPath)}
                           className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md cursor-pointer"
                           title="폴더 열기"
+                          aria-label={`${share.shareName} 폴더 열기`}
                         >
                           <ExternalLink className="w-4 h-4" />
                         </button>
@@ -560,6 +562,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                           onClick={() => onRemoveShare(share.shareName)}
                           className="p-1.5 text-slate-500 hover:text-red-500 rounded-md cursor-pointer"
                           title="공유 해제"
+                          aria-label={`${share.shareName} 공유 해제`}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>

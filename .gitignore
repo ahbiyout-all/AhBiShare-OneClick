@@ -1,19 +1,14 @@
 # =======================================================================
-# AhBiYout Helper - Official Core .gitignore Specification
-# Repository: AhBiYout-all/AhBiYout-Helper
-# Purpose: Strictly ensure ONLY core build-critical sources, documentation,
-# configs, and public assets are tracked on GitHub.
+# AhBiShare OneClick - Curated Core Repository .gitignore
+# Repository: https://github.com/ahbiyout-all/AhBiShare-OneClick
+# Policy: Track ONLY core source code, official docs, build/CI configs,
+#         and root build.bat. Strictly exclude local push scripts,
+#         build binaries, runtime portable/bridge data, and platform meta.
 # =======================================================================
 
 # -----------------------------------------------------------------------
-# 1. Local GitHub Push, Sync & Developer Scripts (Strict Exclusion)
+# 1. Local GitHub Push, Maintainer & Release Automation Scripts
 # -----------------------------------------------------------------------
-# These automation scripts are reserved for local maintainer operations
-# and must NEVER be uploaded to the public GitHub repository.
-# github_sync.bat
-# github_release.bat
-# prepare_github_core.bat
-# scripts/export_github_core.js
 push_github.bat
 build_release.bat
 github_core/
@@ -21,7 +16,23 @@ release_notes_temp.md
 RELEASE_CHANGELOG.md
 
 # -----------------------------------------------------------------------
-# 2. Node Dependencies & Package Manager Artifacts
+# 2. Accidental Nested Paths & AI Studio Platform Metadata
+# -----------------------------------------------------------------------
+/app/
+.aistudio/
+metadata.json
+
+# -----------------------------------------------------------------------
+# 3. Runtime User Data, Portable Credentials & Generated LAN Kits
+# -----------------------------------------------------------------------
+*.portable.json
+*.portable.corrupt-*.json
+AhBiShare_CrossOS_Sync_Bridge*.json
+AhBiShare_Legacy_Win7_Win8_Kit/
+Backup_Before_Apply/
+
+# -----------------------------------------------------------------------
+# 4. Node Dependencies & Non-Canonical Package Manager Locks
 # -----------------------------------------------------------------------
 node_modules/
 .npm/
@@ -30,98 +41,74 @@ node_modules/
 package-lock.json.bak
 bun.lock
 bun.lockb
+yarn.lock
+pnpm-lock.yaml
 yarn-error.log*
 pnpm-debug.log*
 
 # -----------------------------------------------------------------------
-# 3. Build Outputs, Bundles & Packaging Artifacts
+# 5. Build Outputs, Electron Packs & Installer Artifacts
 # -----------------------------------------------------------------------
 /dist/
 /dist-ssr/
 /dist_electron/
 /build/
 /bin/
+/out/
 /release/
 /release-lite/
-/modules/
-/public/modules/
+/release-win7/
+/release-github/
+/installer/Output/
+/Output/
+builder-debug.yml
+builder-effective-config.yaml
+*.blockmap
+*.nsis.7z
 .vite/
 .turbo/
 .cache/
-out/
-target/
+*.tsbuildinfo
 
 # -----------------------------------------------------------------------
-# 4. Native & Compiled Binaries (C++, Windows PE, Rust, Objects)
+# 6. Compiled Windows Binaries & Archives
 # -----------------------------------------------------------------------
 *.exe
 *.dll
-*.so
-*.dylib
-*.obj
-*.o
-*.pdb
-*.ilk
-*.exp
-*.lib
-*.a
-*.idb
-*.pch
-*.res
-*.res.*
-ahbiyout_core.exe
-AhBiYout_*.exe
-AhBi*.dll
-
-# -----------------------------------------------------------------------
-# 5. Tauri & Rust Native Build Artifacts
-# -----------------------------------------------------------------------
-src-tauri/target/
-src-tauri/bin/
-
-# -----------------------------------------------------------------------
-# 6. Windows Installers & Packages
-# -----------------------------------------------------------------------
+*.asar
 *.msi
 *.appx
 *.zip
 *.7z
 *.rar
 *.tar.gz
+*.pdb
+*.obj
+*.o
 
 # -----------------------------------------------------------------------
-# 7. Environment Variables & Secret Configurations
+# 7. Environment Secrets & Certificates
 # -----------------------------------------------------------------------
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 *.pem
 *.key
 *.cert
 *.pfx
 
 # -----------------------------------------------------------------------
-# 8. Logs & Diagnostic Traces
+# 8. Logs, Editor State, OS Junk & Scratch Files
 # -----------------------------------------------------------------------
 logs/
 Logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
-
-# -----------------------------------------------------------------------
-# 9. IDE, Editor & OS Generated Files
-# -----------------------------------------------------------------------
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
 *.swo
 *.swn
@@ -133,31 +120,8 @@ yarn-debug.log*
 ehthumbs.db
 Thumbs.db
 desktop.ini
-
-# -----------------------------------------------------------------------
-# 10. Temporary, Scratch & Generator Scripts
-# -----------------------------------------------------------------------
 temp/
 tmp/
 *.tmp
 *.temp
 *.bak
-check_*.ts
-check_*.js
-fix_*.ts
-fix_*.py
-fix_*.js
-clean_*.ts
-final_*.ts
-find_*.ts
-restore.js
-gen_*.ts
-gen_*.js
-apply_*.ts
-test.ts
-test.js
-
-# -----------------------------------------------------------------------
-# 11. AI Studio & Platform Metadata
-# -----------------------------------------------------------------------
-.aistudio/

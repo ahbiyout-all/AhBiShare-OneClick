@@ -231,17 +231,20 @@ export const App: React.FC = () => {
         const expiredTime = new Date(expMs).toLocaleTimeString('ko-KR', { hour12: false });
         if (sh.autoRevokeOnExpiry) {
           void (async () => {
+            let revoked = false;
             try {
               const updated = await shareBridge.removeHostShare(sh.shareName, netInfo);
               setShares(updated);
               refreshPortableSnapshot(netInfo.hostname);
+              revoked = true;
               appendLog('만료 타이머', `공유폴더 '${sh.shareName}' 자동 만료로 공유 해제 완료`, 'success');
               showToast(`'${sh.shareName}' 만료 시간이 되어 공유를 자동 해제했습니다.`);
             } catch {
               appendLog('만료 타이머', `공유폴더 '${sh.shareName}' 자동 해제 실패`, 'error');
+              showToast(`'${sh.shareName}' 자동 해제 실패: 만료 알림에서 직접 해제하세요.`);
             }
             setExpiryAlerts((prev) => [
-              { shareName: sh.shareName, uncPath: sh.uncPath, autoRevoked: true, expiredAt: expiredTime },
+              { shareName: sh.shareName, uncPath: sh.uncPath, autoRevoked: revoked, expiredAt: expiredTime },
               ...prev.filter((a) => a.shareName !== sh.shareName),
             ]);
           })();
@@ -363,6 +366,13 @@ export const App: React.FC = () => {
     },
     [appendLog]
   );
+
+  const handleBridgeImported = useCallback(async () => {
+    setShares(shareBridge.getSavedShares());
+    setMounts(shareBridge.getSavedMounts());
+    refreshPortableSnapshot(netInfo.hostname);
+    appendLog('교차 OS 브릿지', 'Win 10/11 ↔ Win 7/8 양방향 설정 데이터 동기화 완료', 'success');
+  }, [appendLog, netInfo.hostname, refreshPortableSnapshot]);
 
   const handleNavigate = (section: AppSection, role?: RoleMode) => {
     setActiveSection(section);
@@ -987,6 +997,7 @@ export const App: React.FC = () => {
             onOpenPath={handleOpenPath}
             onExportBundle={handleExportLegacyBundle}
             onTriggerReboot={handleTriggerReboot}
+            onBridgeImported={handleBridgeImported}
             onOpenMatrix={() => setActiveSection('matrix')}
             onNotify={showToast}
           />

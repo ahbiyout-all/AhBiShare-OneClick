@@ -31,11 +31,13 @@ function ConvertTo-AhBiJson {
     if (Get-Command ConvertTo-Json -ErrorAction SilentlyContinue) {
       return ($InputObject | ConvertTo-Json -Compress -Depth $Depth)
     }
-    try {
-      Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-      $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-      return $ser.Serialize($InputObject)
-    } catch {}
+    if ($InputObject -and ($InputObject -is [System.Collections.IDictionary] -or $InputObject -is [string] -or $InputObject -is [ValueType])) {
+      try {
+        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        return $ser.Serialize($InputObject)
+      } catch {}
+    }
     function Serialize-Node($val, [int]$lvl) {
       if ($null -eq $val) { return 'null' }
       if ($val -is [bool]) { if ($val) { return 'true' } else { return 'false' } }
@@ -101,8 +103,11 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
         netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes 2>$null | Out-Null
         netsh advfirewall firewall set rule group="네트워크 검색" new enable=Yes 2>$null | Out-Null
         if (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) {
-          if (-not (Get-NetFirewallRule -DisplayName "AhBiShare-SMB-445" -ErrorAction SilentlyContinue)) {
+          $fwRule = Get-NetFirewallRule -DisplayName "AhBiShare-SMB-445" -ErrorAction SilentlyContinue
+          if (-not $fwRule) {
             New-NetFirewallRule -DisplayName "AhBiShare-SMB-445" -Direction Inbound -Protocol TCP -LocalPort 445 -Action Allow -Profile Any -ErrorAction Stop | Out-Null
+          } else {
+            Set-NetFirewallRule -DisplayName "AhBiShare-SMB-445" -Enabled True -ErrorAction SilentlyContinue | Out-Null
           }
         } else {
           netsh advfirewall firewall delete rule name="AhBiShare-SMB-445" 2>$null | Out-Null
@@ -149,11 +154,13 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EnableSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EncryptData /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RejectUnencryptedAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
             try {
               if (Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue) {
                 Set-SmbServerConfiguration -RequireSecuritySignature $false -EnableSecuritySignature $false -EncryptData $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
               }
             } catch {}
+            try { Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
             if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
               $guest = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
               if ($guest) { Enable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue }
@@ -576,11 +583,11 @@ export function buildRollbackScript(scope: 'host' | 'client'): string {
     return `
       if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
         Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
-          $_.Special -eq $false -and $_.Name -notmatch '^.*\\$$' -and $_.Name -notin @('IPC$','ADMIN$','C$','D$')
+          $_.Special -eq $false -and $_.Name -notmatch '^.*\\$$' -and (@('IPC$','ADMIN$','C$','D$') -notcontains $_.Name)
         } | Remove-SmbShare -Force -ErrorAction SilentlyContinue
       } else {
         Get-WmiObject Win32_Share -Filter "Type=0" -ErrorAction SilentlyContinue | Where-Object {
-          $_.Name -notmatch '^.*\\$$' -and $_.Name -notin @('IPC$','ADMIN$','C$','D$')
+          $_.Name -notmatch '^.*\\$$' -and (@('IPC$','ADMIN$','C$','D$') -notcontains $_.Name)
         } | ForEach-Object {
           & net.exe share $_.Name /delete /y 2>$null | Out-Null
         }
@@ -649,13 +656,13 @@ export function buildLiveStateScript(): string {
     $shares = @()
     if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
       $shares = @(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
-        $_.Special -eq $false -and $_.Name -notmatch '^.*\\$$' -and $_.Name -notin @('IPC$','ADMIN$','C$','D$')
+        $_.Special -eq $false -and $_.Name -notmatch '^.*\\$$' -and (@('IPC$','ADMIN$','C$','D$') -notcontains $_.Name)
       } | ForEach-Object {
         @{ shareName = $_.Name; folderPath = $_.Path }
       })
     } else {
       $shares = @(Get-WmiObject Win32_Share -Filter "Type=0" -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -notmatch '^.*\\$$' -and $_.Name -notin @('IPC$','ADMIN$','C$','D$')
+        $_.Name -notmatch '^.*\\$$' -and (@('IPC$','ADMIN$','C$','D$') -notcontains $_.Name)
       } | ForEach-Object {
         @{ shareName = $_.Name; folderPath = $_.Path }
       })

@@ -38,8 +38,9 @@ assert.strictEqual(rootPkg.name, 'ahbishare-oneclick');
 assert.strictEqual(rootPkg.version, '1.0.0');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
 assert.strictEqual(rootPkg.build?.win?.requestedExecutionLevel, 'requireAdministrator');
-assert.strictEqual(rootPkg.build?.win?.artifactName, 'AhBiShare_OneClick.${ext}');
-assert.strictEqual(rootPkg.build?.portable?.artifactName, 'AhBiShare_OneClick.${ext}');
+assert.strictEqual(rootPkg.build?.win?.artifactName, 'AhBiShare_OneClick_v${version}.${ext}');
+assert.strictEqual(rootPkg.build?.nsis?.artifactName, 'AhBiShare_OneClick-Setup_v${version}.${ext}');
+assert.strictEqual(rootPkg.build?.portable?.artifactName, 'AhBiShare_OneClick_v${version}.${ext}');
 
 const liteCfg = readJson(path.join(rootDir, 'build-config-lite.json'));
 assert.strictEqual(liteCfg.compression, 'maximum');
@@ -47,10 +48,16 @@ assert.strictEqual(liteCfg.afterPack, 'scripts/prune_electron_pack.js');
 assert(Array.isArray(liteCfg.electronLanguages) && liteCfg.electronLanguages.includes('ko') && liteCfg.electronLanguages.includes('en-US'), 'build-config-lite.json must preserve ko and en-US locales');
 assert(Array.isArray(liteCfg.files) && liteCfg.files.includes('!**/node_modules/**/*'), 'build-config-lite.json must exclude redundant node_modules from app.asar');
 assert.strictEqual(liteCfg.win?.requestedExecutionLevel, 'requireAdministrator');
-assert.strictEqual(liteCfg.portable?.artifactName, 'AhBiShare_OneClick-Lite.${ext}');
+assert.strictEqual(liteCfg.portable?.artifactName, 'AhBiShare_OneClick-Lite_v${version}.${ext}');
+
+const win7Cfg = readJson(path.join(rootDir, 'build-config-win7.json'));
+assert.strictEqual(win7Cfg.electronVersion, '21.4.4');
+assert.strictEqual(win7Cfg.portable?.artifactName, 'AhBiShare_OneClick_Win7_v${version}.${ext}');
+
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'prune_electron_pack.js')), 'Missing scripts/prune_electron_pack.js');
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'build_lite_exe.js')), 'Missing scripts/build_lite_exe.js');
-pass(`Standalone & Lite EXE packaging configs verified (v${rootPkg.version}, requireAdministrator, Win 7~11 safe pruning)`);
+assert(fs.existsSync(path.join(rootDir, 'scripts', 'build_win7_exe.js')), 'Missing scripts/build_win7_exe.js');
+pass(`Standalone, Lite & Win7 EXE version-numbered configs verified (v${rootPkg.version}, requireAdministrator)`);
 
 // 2. Verify Electron main.js & preload.js expose required bridge channels
 const modMain = fs.readFileSync(path.join(rootDir, 'main.js'), 'utf8');
@@ -271,9 +278,15 @@ for (const marker of [
   assert(legacyEngineSrc.includes(marker), `legacyScriptEngine.ts missing marker: ${marker}`);
 }
 assert(!legacyEngineSrc.includes('chcp 65001'), 'legacyScriptEngine.ts must avoid chcp 65001 in Win7 .bat scripts');
+assert(
+  !/Windows\\{1,2}LanmanWorkstation/.test(legacyEngineSrc.replace(/Policies\\{1,2}Microsoft\\{1,2}Windows\\{1,2}LanmanWorkstation/g, '')),
+  'legacyScriptEngine.ts must always include Policies\\Microsoft\\Windows\\LanmanWorkstation'
+);
 assert(legacyPanelSrc.includes('encodeUtf16LeWithBom'), 'LegacySharingPanel.tsx missing UTF-16LE BOM encoder for .reg downloads');
 assert(legacyPanelSrc.includes('legacy-direction-guidance'), 'LegacySharingPanel.tsx missing direction-aware guidance');
 assert(legacyPanelSrc.includes('legacy-client-acc-user') && legacyPanelSrc.includes('legacy-client-acc-pass'), 'LegacySharingPanel.tsx missing accessible client account input IDs');
+const clientPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'ClientPanel.tsx'), 'utf8');
+assert(clientPanelSrc.includes('htmlFor="client-acc-user"') && clientPanelSrc.includes('htmlFor="client-acc-pass"'), 'ClientPanel.tsx missing accessible account input labels');
 
 for (const guardId of [
   'btn-legacy-step-host',
@@ -290,6 +303,149 @@ for (const guardId of [
   assert(legacyPanelSrc.includes(guardId), `LegacySharingPanel.tsx missing guardrail/action control: ${guardId}`);
 }
 pass('Legacy OS (Win 7/8/8.1 <-> Win 10/11) 2-step Main/Client 1-click, .bat/.reg bundle, rollback & guardrails verified');
+
+// 7. Verify MIT LICENSE, CRLF English batch scripts, Inno Setup, Docs, Update Checker & GitHub Actions versioned-only release
+const licenseTxt = fs.readFileSync(path.join(rootDir, 'LICENSE'), 'utf8');
+assert(licenseTxt.includes('MIT License') && licenseTxt.includes('1998-2026 AhBiYout'), 'LICENSE missing MIT 1998-2026 AhBiYout');
+
+for (const batFile of ['build.bat', 'build_release.bat', 'push_github.bat']) {
+  const batContent = fs.readFileSync(path.join(rootDir, batFile), 'utf8');
+  assert(
+    batContent.includes('\r\n') && !/(?<!\r)\n/.test(batContent),
+    `${batFile} must use Windows CRLF line endings on every line`
+  );
+  assert(!/[^\x00-\x7F]/.test(batContent), `${batFile} must be pure English ASCII`);
+}
+const rootBuildBat = fs.readFileSync(path.join(rootDir, 'build.bat'), 'utf8');
+assert(
+  rootBuildBat.includes("require('./package.json').version") &&
+    rootBuildBat.includes('_v%APP_VER%') &&
+    rootBuildBat.includes('explorer "%~dp0release"'),
+  'build.bat must resolve version from metadata, append _v%APP_VER% to EXEs, and open release output folder'
+);
+
+const issSrc = fs.readFileSync(path.join(rootDir, 'installer', 'setup.iss'), 'utf8');
+for (const marker of [
+  'AppId={{C78A43E8-2E11-4B33-91EC-5D9F48C8B101}',
+  'C78A43E8-2E11-4B33-91EC-5D9F48C8B101',
+  'AhBiShare_OneClick-Setup_v{#AppVersion}',
+  'WizardSilent()',
+  'taskkill.exe',
+  'AhBiShare_OneClick_v{#AppVersion}',
+  'AhBiShare_OneClick_Win7_v{#AppVersion}',
+  'win-unpacked\\*',
+]) {
+  assert(issSrc.includes(marker), `installer/setup.iss missing marker: ${marker}`);
+}
+
+for (const docFile of ['PATCH_NOTES.md', 'google_blogger_post.md', 'github_release_guide.md']) {
+  assert(fs.existsSync(path.join(rootDir, 'docs', docFile)), `Missing docs/${docFile}`);
+}
+
+const workflowSrc = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'release.yml'), 'utf8');
+assert(workflowSrc.includes('release-github/*_v*.exe'), '.github/workflows/release.yml must upload only version-numbered executables');
+assert(!workflowSrc.includes('dist/*.zip') && !workflowSrc.includes('android') && !workflowSrc.includes('.apk'), '.github/workflows/release.yml must exclude zip/mobile artifacts');
+
+const gitignoreSrc = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
+for (const ignoredEntry of [
+  'push_github.bat',
+  'build_release.bat',
+  '/app/',
+  'metadata.json',
+  '*.portable.json',
+  'AhBiShare_CrossOS_Sync_Bridge*.json',
+  'AhBiShare_Legacy_Win7_Win8_Kit/',
+  '/release-win7/',
+  '/release-github/',
+  'builder-debug.yml',
+]) {
+  assert(gitignoreSrc.includes(ignoredEntry), `.gitignore must exclude ${ignoredEntry}`);
+}
+assert(!gitignoreSrc.includes('AhBiYout-Helper'), '.gitignore contains stale repo reference');
+
+const pushBatSrc = fs.readFileSync(path.join(rootDir, 'push_github.bat'), 'utf8');
+assert(
+  pushBatSrc.includes('EnableDelayedExpansion') &&
+    pushBatSrc.includes('git reset --soft origin/main') &&
+    pushBatSrc.includes('--cached --ignore-unmatch app metadata.json push_github.bat'),
+  'push_github.bat must enable delayed expansion, link origin/main safely, and untrack stale excluded files'
+);
+
+const readmeSrc = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
+assert(
+  readmeSrc.includes('build.bat') &&
+    readmeSrc.includes('electron:build:win7') &&
+    readmeSrc.includes(`_v${rootPkg.version}.exe`),
+  'README.md must document build.bat, electron:build:win7, and version-numbered EXEs'
+);
+
+const win7BuildCfg = JSON.parse(fs.readFileSync(path.join(rootDir, 'build-config-win7.json'), 'utf8'));
+assert(
+  win7BuildCfg.directories?.output === 'release-win7',
+  'build-config-win7.json must isolate output to release-win7 so release/win-unpacked is preserved'
+);
+
+const mainJsSrc = fs.readFileSync(path.join(rootDir, 'main.js'), 'utf8');
+assert(
+  mainJsSrc.includes('New-Object PSObject -Property') &&
+    mainJsSrc.includes('$ser.Serialize($resHash)') &&
+    !mainJsSrc.includes('[PSCustomObject]@{') &&
+    !/\s-(?:in|notin)\b/.test(mainJsSrc),
+  'main.js must use PowerShell 2.0 compatible syntax (Hashtable for JavaScriptSerializer, no [PSCustomObject]@{} or -in/-notin)'
+);
+
+assert(
+  !/\s-(?:in|notin)\b/.test(psEngineSrc) &&
+    psEngineSrc.includes('-notcontains $_.Name') &&
+    (psEngineSrc.match(/RejectUnencryptedAccess/g) || []).length >= 5,
+  'powershellEngine.ts must use PowerShell 2.0 compatible -notcontains and clear RejectUnencryptedAccess across guest & legacy compat flows'
+);
+
+const appSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8');
+assert(
+  appSrc.includes(`checkForUpdates('${rootPkg.version}')`) &&
+    appSrc.includes(`currentVersion="${rootPkg.version}"`) &&
+    appSrc.includes('autoRevoked: revoked'),
+  `App.tsx update checker version must match package.json (${rootPkg.version}) and report accurate autoRevoked state`
+);
+
+const updateModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'UpdateModal.tsx'), 'utf8');
+assert(
+  updateModalSrc.includes('role="dialog"') && updateModalSrc.includes('aria-modal="true"'),
+  'UpdateModal.tsx must provide accessible dialog ARIA attributes'
+);
+
+assert(
+  bridgeSrc.includes('exportCrossOsBridgeBundle') &&
+    bridgeSrc.includes('importCrossOsBridgeData') &&
+    bridgeSrc.includes('mergedPolicies') &&
+    bridgeSrc.includes('sanitizeLocalShareForStorage(') &&
+    bridgeSrc.includes('sanitizeLocalShareForStorage(sanitizedLocal, netInfo)') &&
+    bridgeSrc.includes('promotedPortableEntries'),
+  'shareBridge.ts missing cross-OS bidirectional bridge sync, hostPolicies merge, or localStorage sanitization'
+);
+assert(
+  bridgeSrc.includes('Get-Command Get-SmbShare') && bridgeSrc.includes('net.exe share $p_share /delete /y'),
+  'shareBridge.ts removeHostShare missing Win 7 PowerShell 2.0 net.exe share delete fallback'
+);
+const portableStoreSrc = fs.readFileSync(path.join(rootDir, 'portableStore.js'), 'utf8');
+assert(
+  portableStoreSrc.includes('lmCompatibilityLevel') && portableStoreSrc.includes('localAccountTokenFilterEnabled'),
+  'portableStore.js must preserve lmCompatibilityLevel and localAccountTokenFilterEnabled in hostPolicies'
+);
+assert(
+  rootBuildBat.includes('HAS_EXE'),
+  'build.bat must verify versioned executable output exists before reporting success'
+);
+assert(
+  legacyPanelSrc.includes('onBridgeImported') &&
+    legacyPanelSrc.includes('importCrossOsBridgeData(content, netInfo)') &&
+    legacyPanelSrc.includes('aria-label={`${share.shareName} 공유 해제`}') &&
+    !legacyPanelSrc.includes('window.location.reload()'),
+  'LegacySharingPanel.tsx must pass netInfo, provide accessible icon labels, and refresh state cleanly via onBridgeImported'
+);
+assert(fs.existsSync(path.join(rootDir, 'src', 'services', 'updateChecker.ts')), 'Missing updateChecker.ts');
+pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation, Cross-OS sync, accessibility & versioned GitHub workflow verified');
 
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);

@@ -9,7 +9,7 @@ export interface ReleaseInfo {
 const GITHUB_REPO_API = 'https://api.github.com/repos/ahbiyout-all/AhBiShare-OneClick/releases/latest';
 
 function parseSemVer(verStr: string): [number, number, number] {
-  const clean = verStr.replace(/^v/, '').trim();
+  const clean = verStr.replace(/^v/i, '').split('-')[0].trim();
   const parts = clean.split('.').map((p) => parseInt(p, 10) || 0);
   return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
 }

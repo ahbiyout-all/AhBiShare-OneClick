@@ -1,0 +1,33 @@
+{
+  "appId": "com.ahbiyout.ahbishare.oneclick.win7",
+  "productName": "AhBiShare_OneClick_Win7",
+  "copyright": "Copyright © 1998-2026 (주)청운정보시스템 (cisnet.co.kr) & AhBiYout. All rights reserved.",
+  "electronVersion": "21.4.4",
+  "compression": "maximum",
+  "asar": true,
+  "files": [
+    "dist/**/*",
+    "main.js",
+    "preload.js",
+    "portableStore.js",
+    "package.json",
+    "icon.ico",
+    "public/config.json"
+  ],
+  "directories": {
+    "output": "release-win7"
+  },
+  "win": {
+    "target": [
+      "portable"
+    ],
+    "requestedExecutionLevel": "requireAdministrator",
+    "artifactName": "AhBiShare_OneClick_Win7_v${version}.${ext}",
+    "icon": "icon.ico"
+  },
+  "portable": {
+    "artifactName": "AhBiShare_OneClick_Win7_v${version}.${ext}",
+    "unpackDirName": "AhBiShare_Win7_RAM",
+    "requestExecutionLevel": "admin"
+  }
+}
