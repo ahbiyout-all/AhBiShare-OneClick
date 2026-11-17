@@ -112,6 +112,35 @@ jobs:
             }
           "
 
+      - name: Prune Non-Versioned or Stale Release Assets
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver = $env:APP_VERSION
+          $repo = "${{ github.repository }}"
+          $ref = "${{ github.ref }}"
+          $refName = "${{ github.ref_name }}"
+          $tag = if ($ref.StartsWith("refs/tags/")) { $refName } else { "v$ver" }
+          $expectedNames = @(Get-ChildItem -Path "release-github" -File | Select-Object -ExpandProperty Name)
+          $existingJson = gh release view $tag -R $repo --json assets 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existingJson) {
+            $parsed = $existingJson | ConvertFrom-Json
+            foreach ($asset in $parsed.assets) {
+              if ($expectedNames -notcontains $asset.name -or $asset.name -notmatch "_v$([regex]::Escape($ver))\.exe$") {
+                Write-Host "Deleting stale or unversioned release asset: $($asset.name)"
+                gh release delete-asset $tag $asset.name -R $repo --yes
+                if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to delete stale asset: $($asset.name)"
+                }
+              }
+            }
+          } else {
+            Write-Host "Release $tag does not exist yet; skipping stale asset cleanup."
+            $global:LASTEXITCODE = 0
+          }
+
       - name: Publish Versioned EXE Assets to GitHub Releases
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2

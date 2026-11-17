@@ -349,6 +349,7 @@ for (const docFile of ['PATCH_NOTES.md', 'google_blogger_post.md', 'github_relea
 
 const workflowSrc = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'release.yml'), 'utf8');
 assert(workflowSrc.includes('release-github/*_v*.exe'), '.github/workflows/release.yml must upload only version-numbered executables');
+assert(workflowSrc.includes('gh release delete-asset'), '.github/workflows/release.yml must prune stale/unversioned assets from existing releases');
 assert(!workflowSrc.includes('dist/*.zip') && !workflowSrc.includes('android') && !workflowSrc.includes('.apk'), '.github/workflows/release.yml must exclude zip/mobile artifacts');
 
 const gitignoreSrc = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
@@ -452,8 +453,23 @@ assert(
     !legacyPanelSrc.includes('window.location.reload()'),
   'LegacySharingPanel.tsx must pass netInfo, provide accessible icon labels, and refresh state cleanly via onBridgeImported'
 );
+const viteCfgSrc = fs.readFileSync(path.join(rootDir, 'vite.config.ts'), 'utf8');
+assert(
+  viteCfgSrc.includes("target: 'chrome106'") &&
+    viteCfgSrc.includes("cssTarget: 'chrome100'") &&
+    viteCfgSrc.includes("cssMinify: 'lightningcss'"),
+  'vite.config.ts must target chrome106/chrome100 with lightningcss so Electron 21 (Win7/8) lowers oklch() colors cleanly'
+);
+const distAssetsDir = path.join(rootDir, 'dist', 'assets');
+if (fs.existsSync(distAssetsDir)) {
+  const cssFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.css'));
+  for (const cssFile of cssFiles) {
+    const cssText = fs.readFileSync(path.join(distAssetsDir, cssFile), 'utf8');
+    assert(!cssText.includes('oklch('), `Built ${cssFile} still contains raw oklch() unsupported in Win7 Electron 21 Chromium 106`);
+  }
+}
 assert(fs.existsSync(path.join(rootDir, 'src', 'services', 'updateChecker.ts')), 'Missing updateChecker.ts');
-pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation, Cross-OS sync, accessibility & versioned GitHub workflow verified');
+pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, accessibility & versioned GitHub workflow verified');
 
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);

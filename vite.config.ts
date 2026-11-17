@@ -26,10 +26,19 @@ export default defineConfig(({ mode }) => ({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  css: {
+    lightningcss: {
+      targets: {
+        chrome: 100 << 16,
+      },
+    },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    target: 'es2022',
+    target: 'chrome106',
+    cssTarget: 'chrome100',
+    cssMinify: 'lightningcss',
     minify: 'esbuild',
     rollupOptions: {
       output: {
