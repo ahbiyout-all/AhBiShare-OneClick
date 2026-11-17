@@ -1,0 +1,161 @@
+# =======================================================================
+# AhBiYout Helper - Official Core .gitignore Specification
+# Repository: AhBiYout-all/AhBiYout-Helper
+# Purpose: Strictly ensure ONLY core build-critical sources, documentation,
+# configs, and public assets are tracked on GitHub.
+# =======================================================================
+
+# -----------------------------------------------------------------------
+# 1. Local GitHub Push, Sync & Developer Scripts (Strict Exclusion)
+# -----------------------------------------------------------------------
+# These automation scripts are reserved for local maintainer operations
+# and must NEVER be uploaded to the public GitHub repository.
+# github_sync.bat
+# github_release.bat
+# prepare_github_core.bat
+# scripts/export_github_core.js
+github_core/
+release_notes_temp.md
+RELEASE_CHANGELOG.md
+
+# -----------------------------------------------------------------------
+# 2. Node Dependencies & Package Manager Artifacts
+# -----------------------------------------------------------------------
+node_modules/
+.npm/
+.pnp
+.pnp.js
+package-lock.json.bak
+bun.lock
+bun.lockb
+yarn-error.log*
+pnpm-debug.log*
+
+# -----------------------------------------------------------------------
+# 3. Build Outputs, Bundles & Packaging Artifacts
+# -----------------------------------------------------------------------
+/dist/
+/dist-ssr/
+/dist_electron/
+/build/
+/bin/
+/release/
+/release-lite/
+/modules/
+/public/modules/
+.vite/
+.turbo/
+.cache/
+out/
+target/
+
+# -----------------------------------------------------------------------
+# 4. Native & Compiled Binaries (C++, Windows PE, Rust, Objects)
+# -----------------------------------------------------------------------
+*.exe
+*.dll
+*.so
+*.dylib
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.idb
+*.pch
+*.res
+*.res.*
+ahbiyout_core.exe
+AhBiYout_*.exe
+AhBi*.dll
+
+# -----------------------------------------------------------------------
+# 5. Tauri & Rust Native Build Artifacts
+# -----------------------------------------------------------------------
+src-tauri/target/
+src-tauri/bin/
+
+# -----------------------------------------------------------------------
+# 6. Windows Installers & Packages
+# -----------------------------------------------------------------------
+*.msi
+*.appx
+*.zip
+*.7z
+*.rar
+*.tar.gz
+
+# -----------------------------------------------------------------------
+# 7. Environment Variables & Secret Configurations
+# -----------------------------------------------------------------------
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.cert
+*.pfx
+
+# -----------------------------------------------------------------------
+# 8. Logs & Diagnostic Traces
+# -----------------------------------------------------------------------
+logs/
+Logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# -----------------------------------------------------------------------
+# 9. IDE, Editor & OS Generated Files
+# -----------------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swo
+*.swn
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------
+# 10. Temporary, Scratch & Generator Scripts
+# -----------------------------------------------------------------------
+temp/
+tmp/
+*.tmp
+*.temp
+*.bak
+check_*.ts
+check_*.js
+fix_*.ts
+fix_*.py
+fix_*.js
+clean_*.ts
+final_*.ts
+find_*.ts
+restore.js
+gen_*.ts
+gen_*.js
+apply_*.ts
+test.ts
+test.js
+
+# -----------------------------------------------------------------------
+# 11. AI Studio & Platform Metadata
+# -----------------------------------------------------------------------
+.aistudio/

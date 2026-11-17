@@ -1,0 +1,40 @@
+{
+  "appId": "com.ahbiyout.ahbishare.oneclick",
+  "productName": "AhBiShare_OneClick_Lite",
+  "copyright": "Copyright © 1998-2026 (주)청운정보시스템 (cisnet.co.kr) & AhBiYout. All rights reserved.",
+  "compression": "maximum",
+  "asar": true,
+  "npmRebuild": false,
+  "nodeGypRebuild": false,
+  "electronLanguages": [
+    "ko",
+    "en-US"
+  ],
+  "afterPack": "scripts/prune_electron_pack.js",
+  "files": [
+    "dist/**/*",
+    "main.js",
+    "preload.js",
+    "portableStore.js",
+    "package.json",
+    "icon.ico",
+    "public/config.json",
+    "!**/node_modules/**/*"
+  ],
+  "directories": {
+    "output": "release-lite"
+  },
+  "win": {
+    "target": [
+      "portable"
+    ],
+    "requestedExecutionLevel": "requireAdministrator",
+    "artifactName": "AhBiShare_OneClick-Lite.${ext}",
+    "icon": "icon.ico"
+  },
+  "portable": {
+    "artifactName": "AhBiShare_OneClick-Lite.${ext}",
+    "unpackDirName": "AhBiShare_OneClick_Lite_RAM",
+    "requestExecutionLevel": "admin"
+  }
+}

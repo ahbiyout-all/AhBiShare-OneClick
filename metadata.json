@@ -1,0 +1,9 @@
+{
+  "name": "Remix AhBiYout Helper-cc-1-공유-2개별-타이틀-DLL-tree",
+  "description": "A high-performance Windows network utility focused on sharing configuration, system repair, and diagnostic logic. Optimized for zero-latency offline environments.",
+  "developer": "AhBiYout",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

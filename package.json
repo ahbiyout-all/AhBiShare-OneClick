@@ -1,0 +1,87 @@
+{
+  "name": "ahbishare-oneclick",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "description": "AhBiShare OneClick - 1-Click Host & Client LAN Shared Folder Setup & Legacy Windows Compatibility Utility",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "author": {
+    "name": "AhBiYout · (주)청운정보시스템 (cisnet.co.kr)",
+    "url": "https://www.cisnet.co.kr"
+  },
+  "homepage": "https://github.com/AhBiYout-all",
+  "scripts": {
+    "dev": "vite --port 3000 --host 0.0.0.0",
+    "build": "vite build",
+    "lint": "tsc --noEmit",
+    "preview": "vite preview --port 3000 --host 0.0.0.0",
+    "start": "electron .",
+    "electron:dev": "electron . --dev",
+    "electron:build": "vite build && electron-builder --win",
+    "electron:build:lite": "node scripts/build_lite_exe.js --lite-only",
+    "electron:build:all": "node scripts/build_lite_exe.js --all",
+    "verify": "node scripts/verify_portable_release.js",
+    "verify:share-oneclick": "node scripts/verify_portable_release.js"
+  },
+  "dependencies": {
+    "lucide-react": "^1.21.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.5.3",
+    "vite": "^7.3.1"
+  },
+  "build": {
+    "appId": "com.ahbiyout.ahbishare.oneclick",
+    "productName": "AhBiShare_OneClick",
+    "copyright": "Copyright © 1998-2026 (주)청운정보시스템 (cisnet.co.kr) & AhBiYout. All rights reserved.",
+    "compression": "maximum",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "portableStore.js",
+      "package.json",
+      "icon.ico",
+      "public/config.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "requestedExecutionLevel": "requireAdministrator",
+      "artifactName": "AhBiShare_OneClick.${ext}",
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "AhBiShare OneClick",
+      "artifactName": "AhBiShare_OneClick-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "AhBiShare_OneClick.${ext}",
+      "unpackDirName": "AhBiShare_OneClick_RAM",
+      "requestExecutionLevel": "admin"
+    }
+  }
+}

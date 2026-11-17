@@ -1,0 +1,5 @@
+# Enforce Windows CRLF line endings for Windows batch scripts, NSIS scripts, and registry files
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.nsh text eol=crlf
+*.reg text eol=crlf

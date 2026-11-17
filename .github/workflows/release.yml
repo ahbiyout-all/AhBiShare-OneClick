@@ -1,0 +1,85 @@
+name: Build and Publish AhBiShare OneClick Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish AhBiShare OneClick
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Verify Standalone Integrity & Typecheck
+        run: |
+          npm run lint
+          npm run verify
+
+      - name: Build Web Frontend (Vite)
+        run: npm run build
+
+      - name: Compress Web Dist Assets
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Compress-Archive -Path dist\* -DestinationPath "dist/AhBiShare_OneClick-WebAssets-v$ver.zip" -Force
+
+      - name: Package Windows Executables with electron-builder
+        run: npx electron-builder --win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Release Notes
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            try {
+              const txt = fs.readFileSync('docs/PATCH_NOTES.md', 'utf8');
+              const sections = txt.split(/^# /m);
+              const latest = sections[1] ? '# ' + sections[1] : txt.slice(0, 2000);
+              fs.writeFileSync('RELEASE_CHANGELOG.md', latest.trim());
+            } catch (e) {
+              fs.writeFileSync('RELEASE_CHANGELOG.md', 'AhBiShare OneClick Release ' + process.env.GITHUB_REF_NAME);
+            }
+          "
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AhBiShare OneClick ${{ github.ref_name }}
+          body_path: RELEASE_CHANGELOG.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/*.zip
+            release/*.exe
+            public/config.json
+            README.md
+            docs/PATCH_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
