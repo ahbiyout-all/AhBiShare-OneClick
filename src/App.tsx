@@ -1399,7 +1399,7 @@ export const App: React.FC = () => {
         <div className="max-w-6xl mx-auto flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <span className="tabular-data font-medium text-slate-700 dark:text-slate-300">
-              AhBiShare OneClick v1.0.0 · Windows LAN Shared Folder Utility
+              AhBiShare OneClick v1.0.0 · Copyright © 1998-2026 AhBiYout. All rights reserved.
             </span>
             <button
               type="button"
@@ -1411,7 +1411,7 @@ export const App: React.FC = () => {
           </div>
           <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800/70 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]">
             <span className="font-semibold text-slate-600 dark:text-slate-300">제작자 및 공식 채널 안내</span>
-            <span>개발자: <strong className="text-slate-800 dark:text-slate-200">AhBiYout</strong></span>
+            <span>개발자 · 저작권: <strong className="text-slate-800 dark:text-slate-200">AhBiYout</strong></span>
             <span>
               소속회사:{' '}
               <a

@@ -53,6 +53,13 @@ assert.strictEqual(liteCfg.portable?.artifactName, 'AhBiShare_OneClick-Lite_v${v
 const win7Cfg = readJson(path.join(rootDir, 'build-config-win7.json'));
 assert.strictEqual(win7Cfg.electronVersion, '21.4.4');
 assert.strictEqual(win7Cfg.portable?.artifactName, 'AhBiShare_OneClick_Win7_v${version}.${ext}');
+for (const [cfgName, c] of [
+  ['package.json', rootPkg.build?.copyright],
+  ['build-config-lite.json', liteCfg.copyright],
+  ['build-config-win7.json', win7Cfg.copyright],
+]) {
+  assert.strictEqual(c, 'Copyright © 1998-2026 AhBiYout. All rights reserved.', `${cfgName} copyright must be AhBiYout`);
+}
 
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'prune_electron_pack.js')), 'Missing scripts/prune_electron_pack.js');
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'build_lite_exe.js')), 'Missing scripts/build_lite_exe.js');
@@ -424,6 +431,8 @@ for (const marker of [
   'AppId={{C78A43E8-2E11-4B33-91EC-5D9F48C8B101}',
   'C78A43E8-2E11-4B33-91EC-5D9F48C8B101',
   'AhBiShare_OneClick-Setup_v{#AppVersion}',
+  '#define AppPublisher "AhBiYout"',
+  'AppCopyright={#AppCopyright}',
   'WizardSilent()',
   'taskkill.exe',
   'AhBiShare_OneClick_v{#AppVersion}',

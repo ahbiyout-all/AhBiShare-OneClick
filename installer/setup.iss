@@ -1,11 +1,12 @@
-﻿; AhBiShare OneClick - Inno Setup Installer Script
+; AhBiShare OneClick - Inno Setup Installer Script
 ; Unpacked Multi-File Install + Process Kill + Uninstall/Overwrite Prompt + Silent Install + Firewall Rules
 
 #define AppName "AhBiShare OneClick"
 #ifndef AppVersion
   #define AppVersion "1.0.0"
 #endif
-#define AppPublisher "AhBiYout & (주)청운정보시스템"
+#define AppPublisher "AhBiYout"
+#define AppCopyright "Copyright (c) 1998-2026 AhBiYout. All rights reserved."
 #define AppURL "https://github.com/ahbiyout-all/AhBiShare-OneClick"
 #define AppExeName "AhBiShare_OneClick.exe"
 
@@ -15,6 +16,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} v{#AppVersion}
 AppPublisher={#AppPublisher}
+AppCopyright={#AppCopyright}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}
 AppUpdatesURL={#AppURL}

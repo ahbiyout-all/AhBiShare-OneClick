@@ -46,7 +46,7 @@
   "build": {
     "appId": "com.ahbiyout.ahbishare.oneclick",
     "productName": "AhBiShare_OneClick",
-    "copyright": "Copyright © 1998-2026 (주)청운정보시스템 (cisnet.co.kr) & AhBiYout. All rights reserved.",
+    "copyright": "Copyright © 1998-2026 AhBiYout. All rights reserved.",
     "compression": "maximum",
     "asar": true,
     "files": [
