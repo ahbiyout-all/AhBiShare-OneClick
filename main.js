@@ -5,7 +5,12 @@ const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
 const { spawn, execFile, execFileSync } = require('child_process');
-const { createPortableStore } = require('./portableStore');
+const {
+  createPortableStore,
+  prepareLocationProfileForDisk,
+  hydrateLocationProfile,
+  atomicWriteJson,
+} = require('./portableStore');
 
 let mainWindow = null;
 const portableStore = createPortableStore({ env: process.env, app, baseDir: __dirname });
@@ -657,6 +662,98 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
       directory: targetDir,
       savedFiles: [],
       message: `스크립트 파일 저장 실패: ${err && err.message ? err.message : '권한 또는 디스크 오류'}`,
+    };
+  }
+});
+
+ipcMain.handle('list-location-profiles', async () => {
+  return portableStore.listLocationProfiles();
+});
+
+ipcMain.handle('save-location-profile', async (_event, { profile }) => {
+  return portableStore.saveLocationProfile(profile);
+});
+
+ipcMain.handle('load-location-profile', async (_event, { profileId }) => {
+  return portableStore.loadLocationProfile(profileId);
+});
+
+ipcMain.handle('delete-location-profile', async (_event, { profileId }) => {
+  return portableStore.deleteLocationProfile(profileId);
+});
+
+ipcMain.handle('export-location-profile-file', async (_event, { profile }) => {
+  try {
+    const diskProfile = prepareLocationProfileForDisk(profile);
+    const portStatus = portableStore.getStatus();
+    const defaultDir = portStatus.writable ? path.join(portStatus.directory, 'locations') : app.getPath('documents');
+    try {
+      fs.mkdirSync(defaultDir, { recursive: true });
+    } catch {}
+    const defaultName = `${diskProfile.profileId}.location.json`;
+    const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
+    const saveOpts = {
+      title: '사용장소 프로필(.json) 내보내기',
+      defaultPath: path.join(defaultDir, defaultName),
+      filters: [{ name: 'AhBiShare 사용장소 프로필 (*.json)', extensions: ['json'] }],
+    };
+    const picked = win ? await dialog.showSaveDialog(win, saveOpts) : await dialog.showSaveDialog(saveOpts);
+    if (picked.canceled || !picked.filePath) {
+      return { success: false, canceled: true, message: '프로필 파일 내보내기가 취소되었습니다.' };
+    }
+    const writeRes = atomicWriteJson(picked.filePath, diskProfile);
+    if (!writeRes.success) {
+      return { success: false, error: writeRes.error, message: `파일 저장 실패: ${writeRes.error}` };
+    }
+    return {
+      success: true,
+      filePath: picked.filePath,
+      message: `사용장소 '${diskProfile.locationName}' 프로필을 파일로 내보냈습니다.`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: `사용장소 내보내기 실패: ${err && err.message ? err.message : '알 수 없는 오류'}`,
+    };
+  }
+});
+
+ipcMain.handle('import-location-profile-file', async (_event, payload) => {
+  try {
+    const saveToCatalog = payload?.saveToCatalog !== false;
+    const portStatus = portableStore.getStatus();
+    const defaultDir = path.join(portStatus.directory, 'locations');
+    const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
+    const openOpts = {
+      title: '사용장소 프로필(.json) 불러오기',
+      ...(fs.existsSync(defaultDir) ? { defaultPath: defaultDir } : {}),
+      properties: ['openFile'],
+      filters: [{ name: 'AhBiShare 사용장소 프로필 (*.json)', extensions: ['json'] }],
+    };
+    const picked = win ? await dialog.showOpenDialog(win, openOpts) : await dialog.showOpenDialog(openOpts);
+    if (picked.canceled || !picked.filePaths.length) {
+      return { success: false, canceled: true, message: '프로필 파일 선택이 취소되었습니다.' };
+    }
+    const selectedPath = picked.filePaths[0];
+    const raw = fs.readFileSync(selectedPath, 'utf8').replace(/^\uFEFF/, '');
+    const parsed = JSON.parse(raw);
+    const hydrated = hydrateLocationProfile(parsed);
+    let savedToCatalog = false;
+    if (saveToCatalog) {
+      const saveRes = portableStore.saveLocationProfile(hydrated);
+      savedToCatalog = Boolean(saveRes.success);
+    }
+    return {
+      success: true,
+      profile: hydrated,
+      filePath: selectedPath,
+      savedToCatalog,
+      message: `사용장소 '${hydrated.locationName}' 프로필을 가져왔습니다.`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: `사용장소 파일 불러오기 실패: ${err && err.message ? err.message : '올바른 JSON 프로필이 아닙니다.'}`,
     };
   }
 });

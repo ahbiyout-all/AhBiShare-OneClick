@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin } from 'lucide-react';
 import {
   ClientTargetConfig,
   DiscoveredPeer,
   HostPolicySnapshot,
+  LocationClientTargetEntry,
   MountedDrive,
   OsNetworkPolicyStatus,
   PipelineStep,
@@ -32,6 +33,12 @@ interface ClientPanelProps {
   pendingAutoFillEntry?: PortableHostShareEntry | null;
   onClearPendingAutoFill?: () => void;
   onPortableAutoFill?: (entry: PortableHostShareEntry) => void;
+  initialConfig?: ClientTargetConfig;
+  pendingLocationTarget?: { key: string; target: LocationClientTargetEntry } | null;
+  savedLocationTargets?: LocationClientTargetEntry[];
+  activeLocationName?: string;
+  onClearPendingLocationTarget?: () => void;
+  onConfigChange?: (config: ClientTargetConfig) => void;
   onOpenMatrix?: () => void;
   onScanLan: () => Promise<void>;
   onConnect: (config: ClientTargetConfig) => Promise<void>;
@@ -56,6 +63,12 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   pendingAutoFillEntry = null,
   onClearPendingAutoFill,
   onPortableAutoFill,
+  initialConfig,
+  pendingLocationTarget = null,
+  savedLocationTargets = [],
+  activeLocationName,
+  onClearPendingLocationTarget,
+  onConfigChange,
   onOpenMatrix,
   onScanLan,
   onConnect,
@@ -72,15 +85,41 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
   const mountedSet = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
 
-  const [config, setConfig] = useState<ClientTargetConfig>({
-    targetHost: '192.168.0.10',
-    shareName: 'WorkDocs',
-    driveLetter: 'Z:',
-    authMode: 'guest',
-    username: '',
-    password: '',
-    persistent: true,
-  });
+  const [config, setConfig] = useState<ClientTargetConfig>(() =>
+    initialConfig || {
+      targetHost: '192.168.0.10',
+      shareName: 'WorkDocs',
+      driveLetter: 'Z:',
+      authMode: 'guest',
+      username: '',
+      password: '',
+      persistent: true,
+    }
+  );
+  const lastLocationTargetKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    onConfigChange?.(config);
+  }, [config, onConfigChange]);
+
+  useEffect(() => {
+    if (!pendingLocationTarget || pendingLocationTarget.key === lastLocationTargetKeyRef.current) return;
+    lastLocationTargetKeyRef.current = pendingLocationTarget.key;
+    const t = pendingLocationTarget.target;
+    setValidationError(null);
+    setRawCodeInput('');
+    setCodeParseState('empty');
+    setConfig({
+      targetHost: t.targetHost,
+      shareName: t.shareName,
+      driveLetter: (t.driveLetter || 'Z:').replace(/:?$/, ':').toUpperCase(),
+      authMode: t.authMode,
+      username: t.authMode === 'account' ? t.username || '' : '',
+      password: t.authMode === 'account' ? t.password || '' : '',
+      persistent: t.persistent !== false,
+    });
+    onClearPendingLocationTarget?.();
+  }, [pendingLocationTarget, onClearPendingLocationTarget]);
 
   // Reset dismissal/index cleanly if portable share entries update
   useEffect(() => {
@@ -395,6 +434,45 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 </p>
               )}
             </div>
+
+            {savedLocationTargets.length > 0 && (
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    {activeLocationName ? `'${activeLocationName}' 저장 연결 대상` : '저장된 장소 연결 대상'} ({savedLocationTargets.length})
+                  </span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                    항목을 클릭하면 아래 입력란에 즉시 채워집니다
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {savedLocationTargets.map((target, idx) => (
+                    <button
+                      key={`${target.driveLetter}-${target.targetHost}-${target.shareName}-${idx}`}
+                      type="button"
+                      onClick={() => {
+                        setValidationError(null);
+                        setRawCodeInput('');
+                        setCodeParseState('empty');
+                        setConfig({
+                          targetHost: target.targetHost,
+                          shareName: target.shareName,
+                          driveLetter: target.driveLetter,
+                          authMode: target.authMode,
+                          username: target.authMode === 'account' ? target.username || '' : '',
+                          password: target.authMode === 'account' ? target.password || '' : '',
+                          persistent: target.persistent !== false,
+                        });
+                      }}
+                      className="px-3 py-1.5 text-xs tabular-data font-medium text-slate-800 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 border border-slate-300 dark:border-slate-700 hover:border-indigo-400 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                    >
+                      {target.driveLetter} · \\{target.targetHost}\{target.shareName}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="pt-2">
               <div className="flex items-center justify-between mb-2">

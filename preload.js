@@ -13,4 +13,10 @@ contextBridge.exposeInMainWorld('ahbiShareElectron', {
   savePortableData: (document) => ipcRenderer.invoke('save-portable-data', { document }),
   triggerSystemReboot: () => ipcRenderer.invoke('trigger-system-reboot'),
   saveLegacyScripts: (payload) => ipcRenderer.invoke('save-legacy-scripts', payload),
+  listLocationProfiles: () => ipcRenderer.invoke('list-location-profiles'),
+  saveLocationProfile: (profile) => ipcRenderer.invoke('save-location-profile', { profile }),
+  loadLocationProfile: (profileId) => ipcRenderer.invoke('load-location-profile', { profileId }),
+  deleteLocationProfile: (profileId) => ipcRenderer.invoke('delete-location-profile', { profileId }),
+  exportLocationProfileFile: (profile) => ipcRenderer.invoke('export-location-profile-file', { profile }),
+  importLocationProfileFile: (payload) => ipcRenderer.invoke('import-location-profile-file', payload),
 });

@@ -374,3 +374,78 @@ export interface PortableSaveResult {
   document: PortableShareDocument;
   status: PortableStorageStatus;
 }
+
+export interface LocationClientTargetEntry {
+  targetHost: string;
+  shareName: string;
+  driveLetter: string;
+  authMode: AuthMode;
+  username?: string;
+  password?: string;
+  encryptedCredentials?: PortableEncryptedCredentials;
+  persistent: boolean;
+}
+
+export interface LocationHostPreset {
+  folderPath: string;
+  shareName: string;
+  authMode: AuthMode;
+  permission: SharePermission;
+  username: string;
+  password: string;
+  encryptedCredentials?: PortableEncryptedCredentials;
+  ttlMinutes?: number;
+  autoRevokeOnExpiry?: boolean;
+}
+
+export interface LocationNetworkHint {
+  subnetPrefix: string;
+  primaryIp: string;
+  hostname: string;
+  adapterName?: string;
+}
+
+export interface LocationProfileFile {
+  schemaVersion: 1;
+  profileId: string;
+  locationName: string;
+  description: string;
+  networkHint: LocationNetworkHint;
+  createdAt: string;
+  updatedAt: string;
+  hostPreset?: LocationHostPreset;
+  savedShares: PortableHostShareEntry[];
+  clientTargets: LocationClientTargetEntry[];
+  preferredPatchMode?: PolicyPatchMode;
+}
+
+export interface LocationProfileSummary {
+  profileId: string;
+  locationName: string;
+  description: string;
+  networkHint: LocationNetworkHint;
+  shareCount: number;
+  clientTargetCount: number;
+  preferredPatchMode?: PolicyPatchMode;
+  createdAt: string;
+  updatedAt: string;
+  fileName: string;
+}
+
+export interface LocationBatchApplyItemResult {
+  kind: 'share' | 'mount';
+  label: string;
+  success: boolean;
+  message: string;
+}
+
+export interface LocationBatchApplyResult {
+  success: boolean;
+  appliedShares: number;
+  failedShares: number;
+  appliedMounts: number;
+  failedMounts: number;
+  summary: string;
+  details: LocationBatchApplyItemResult[];
+}
+

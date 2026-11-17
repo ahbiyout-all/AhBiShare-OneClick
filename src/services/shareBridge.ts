@@ -23,6 +23,12 @@ import {
   WindowsNetworkEra,
   LegacyRollbackSnapshot,
   LegacyScriptBundle,
+  LocationClientTargetEntry,
+  LocationHostPreset,
+  LocationProfileFile,
+  LocationProfileSummary,
+  LocationBatchApplyResult,
+  LocationBatchApplyItemResult,
 } from '@/types/share';
 import { decodeConnectionCode, encodeConnectionCode, validateTargetHost } from '@/utils/connectionCode';
 import {
@@ -71,6 +77,43 @@ declare global {
         folderName: string;
         files: Array<{ name: string; content: string }>;
       }) => Promise<{ success: boolean; directory: string; savedFiles: string[]; message: string }>;
+      listLocationProfiles?: () => Promise<{
+        success: boolean;
+        directory: string;
+        writable: boolean;
+        profiles: LocationProfileSummary[];
+      }>;
+      saveLocationProfile?: (profile: LocationProfileFile) => Promise<{
+        success: boolean;
+        profile?: LocationProfileFile;
+        summary?: LocationProfileSummary;
+        filePath?: string;
+        error?: string;
+      }>;
+      loadLocationProfile?: (profileId: string) => Promise<{
+        success: boolean;
+        profile?: LocationProfileFile;
+        filePath?: string;
+        error?: string;
+      }>;
+      deleteLocationProfile?: (profileId: string) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+      exportLocationProfileFile?: (profile: LocationProfileFile) => Promise<{
+        success: boolean;
+        canceled?: boolean;
+        filePath?: string;
+        message: string;
+      }>;
+      importLocationProfileFile?: (payload?: { saveToCatalog?: boolean }) => Promise<{
+        success: boolean;
+        canceled?: boolean;
+        profile?: LocationProfileFile;
+        filePath?: string;
+        savedToCatalog?: boolean;
+        message: string;
+      }>;
     };
   }
 }
@@ -79,6 +122,7 @@ const STORAGE_SHARES_KEY = 'ahbishare_oneclick_shares_v1';
 const STORAGE_MOUNTS_KEY = 'ahbishare_oneclick_mounts_v1';
 const STORAGE_PORTABLE_SIM_KEY = 'ahbishare_portable_json_sim_v1';
 const STORAGE_LEGACY_ROLLBACK_KEY = 'ahbishare_legacy_rollback_snapshot_v1';
+const STORAGE_LOCATIONS_SIM_KEY = 'ahbishare_location_profiles_sim_v1';
 const PORTABLE_FILE_NAME = 'AhBiShare_OneClick.portable.json';
 
 // Simulated Windows 11 24H2 baseline policy state used only in browser preview mode
@@ -120,6 +164,8 @@ let webSimPolicyBase: Omit<OsNetworkPolicyStatus, 'compatibilityScore' | 'detect
 // Runtime in-memory credential cache so passwords decrypted from USB or entered on Host PC
 // are immediately available for 1-click auto-fill without persisting plaintext passwords to disk.
 const runtimeSharePasswordCache = new Map<string, string>();
+const runtimeLocationHostPasswordCache = new Map<string, string>();
+const runtimeLocationTargetPasswordCache = new Map<string, string>();
 let latestPortableDoc: PortableShareDocument = { schemaVersion: 1, updatedAt: '', shares: [] };
 let latestPortableStatus: PortableStorageStatus = {
   supported: true,
@@ -578,6 +624,34 @@ function sanitizeLocalShareForStorage(share: ActiveShare, netInfo: LocalNetworkI
     ...(typeof share.ttlMinutes === 'number' && share.ttlMinutes > 0 ? { ttlMinutes: share.ttlMinutes } : {}),
     ...(share.expiresAt ? { expiresAt: share.expiresAt } : {}),
     ...(typeof share.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: share.autoRevokeOnExpiry } : {}),
+  };
+}
+
+function sanitizeLocationShareForSim(entry: PortableHostShareEntry): PortableHostShareEntry {
+  const cleanCode = stripPasswordFromCode(entry.connectionCode, {
+    shareName: entry.shareName,
+    authMode: entry.authMode,
+    username: entry.username,
+    createdAt: entry.createdAt,
+    hostName: entry.sourceHostName,
+    ip: entry.sourceIp,
+  });
+  return {
+    sourceHostName: entry.sourceHostName,
+    sourceIp: entry.sourceIp,
+    shareName: entry.shareName,
+    folderPath: entry.folderPath,
+    uncPath: entry.uncPath,
+    authMode: entry.authMode,
+    permission: entry.permission,
+    ...(entry.username ? { username: entry.username } : {}),
+    ...(entry.encryptedCredentials ? { encryptedCredentials: entry.encryptedCredentials } : {}),
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+    ...(typeof entry.ttlMinutes === 'number' && entry.ttlMinutes > 0 ? { ttlMinutes: entry.ttlMinutes } : {}),
+    ...(entry.expiresAt ? { expiresAt: entry.expiresAt } : {}),
+    ...(typeof entry.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: entry.autoRevokeOnExpiry } : {}),
+    connectionCode: cleanCode,
   };
 }
 
@@ -2042,5 +2116,571 @@ export const shareBridge = {
         message: `브릿지 데이터 파싱 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`,
       };
     }
+  },
+
+  buildLocationProfileSnapshot(params: {
+    profileId?: string;
+    locationName: string;
+    description?: string;
+    netInfo: LocalNetworkInfo;
+    includeHost?: boolean;
+    includeClient?: boolean;
+    includeNetworkHint?: boolean;
+    hostConfig?: HostConfig;
+    activeShares?: ActiveShare[];
+    clientConfig?: ClientTargetConfig;
+    mountedDrives?: MountedDrive[];
+    preferredPatchMode?: PolicyPatchMode;
+    existingCreatedAt?: string;
+  }): LocationProfileFile {
+    const cleanName = params.locationName.trim() || '새 사용장소';
+    const fallbackSlug = cleanName
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 32);
+    let hash = 0;
+    for (let i = 0; i < cleanName.length; i++) {
+      hash = (hash * 31 + cleanName.charCodeAt(i)) >>> 0;
+    }
+    const generatedId =
+      !/[^\x00-\x7F]/.test(cleanName) && fallbackSlug
+        ? fallbackSlug
+        : `${fallbackSlug ? `${fallbackSlug}-` : 'loc-'}${hash.toString(16).padStart(8, '0')}`;
+    const profileId = (params.profileId || generatedId).trim();
+    const nowIso = new Date().toISOString();
+
+    const includeHost = params.includeHost !== false;
+    const includeClient = params.includeClient !== false;
+    const includeNetworkHint = params.includeNetworkHint !== false;
+
+    const hostPreset: LocationHostPreset | undefined =
+      includeHost && params.hostConfig
+        ? {
+            folderPath: params.hostConfig.folderPath,
+            shareName: params.hostConfig.shareName,
+            authMode: params.hostConfig.authMode,
+            permission: params.hostConfig.permission,
+            username: params.hostConfig.username,
+            password: params.hostConfig.authMode === 'account' ? params.hostConfig.password : '',
+            ttlMinutes: params.hostConfig.ttlMinutes,
+            autoRevokeOnExpiry: params.hostConfig.autoRevokeOnExpiry,
+          }
+        : undefined;
+
+    const savedShares: PortableHostShareEntry[] = includeHost
+      ? (params.activeShares || []).map((sh) => {
+          const decoded = decodeConnectionCode(sh.connectionCode);
+          const pwd =
+            sh.restoredPassword ||
+            decoded?.password ||
+            getCachedPassword(sh.sourceHostName || params.netInfo.hostname, sh.shareName) ||
+            '';
+          return {
+            sourceHostName: sh.sourceHostName || params.netInfo.hostname,
+            sourceIp: sh.sourceIp || params.netInfo.primaryIp,
+            shareName: sh.shareName,
+            folderPath: sh.folderPath,
+            uncPath: sh.uncPath,
+            authMode: sh.authMode,
+            permission: sh.permission,
+            username: sh.username,
+            ...(pwd ? { password: pwd } : {}),
+            createdAt: sh.createdAt,
+            updatedAt: sh.updatedAt || nowIso,
+            ...(typeof sh.ttlMinutes === 'number' && sh.ttlMinutes > 0 ? { ttlMinutes: sh.ttlMinutes } : {}),
+            ...(sh.expiresAt ? { expiresAt: sh.expiresAt } : {}),
+            ...(typeof sh.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: sh.autoRevokeOnExpiry } : {}),
+            connectionCode: rehydrateCodeWithPassword(
+              {
+                sourceHostName: sh.sourceHostName || params.netInfo.hostname,
+                sourceIp: sh.sourceIp || params.netInfo.primaryIp,
+                shareName: sh.shareName,
+                authMode: sh.authMode,
+                username: sh.username,
+                createdAt: sh.createdAt,
+                connectionCode: sh.connectionCode,
+              },
+              pwd || undefined
+            ),
+          };
+        })
+      : [];
+
+    const clientMap = new Map<string, LocationClientTargetEntry>();
+    if (includeClient) {
+      for (const m of params.mountedDrives || []) {
+        const dl = m.driveLetter.replace(/:?$/, ':').toUpperCase();
+        const formMatch =
+          params.clientConfig &&
+          params.clientConfig.targetHost.trim().toLowerCase() === m.targetHost.trim().toLowerCase() &&
+          params.clientConfig.shareName.trim().toLowerCase() === m.shareName.trim().toLowerCase();
+        clientMap.set(dl, {
+          targetHost: m.targetHost,
+          shareName: m.shareName,
+          driveLetter: dl,
+          authMode: m.authMode,
+          ...(formMatch && params.clientConfig?.username ? { username: params.clientConfig.username } : {}),
+          ...(formMatch && params.clientConfig?.authMode === 'account' && params.clientConfig.password
+            ? { password: params.clientConfig.password }
+            : {}),
+          persistent: formMatch ? params.clientConfig?.persistent !== false : true,
+        });
+      }
+      if (params.clientConfig && params.clientConfig.targetHost.trim() && params.clientConfig.shareName.trim()) {
+        const dl = (params.clientConfig.driveLetter || 'Z:').replace(/:?$/, ':').toUpperCase();
+        if (!clientMap.has(dl)) {
+          clientMap.set(dl, {
+            targetHost: params.clientConfig.targetHost.trim(),
+            shareName: params.clientConfig.shareName.trim(),
+            driveLetter: dl,
+            authMode: params.clientConfig.authMode,
+            ...(params.clientConfig.username.trim() ? { username: params.clientConfig.username.trim() } : {}),
+            ...(params.clientConfig.authMode === 'account' && params.clientConfig.password
+              ? { password: params.clientConfig.password }
+              : {}),
+            persistent: params.clientConfig.persistent,
+          });
+        }
+      }
+    }
+
+    return {
+      schemaVersion: 1,
+      profileId,
+      locationName: cleanName,
+      description: (params.description || '').trim(),
+      networkHint: includeNetworkHint
+        ? {
+            subnetPrefix: params.netInfo.subnetPrefix,
+            primaryIp: params.netInfo.primaryIp,
+            hostname: params.netInfo.hostname,
+            adapterName: params.netInfo.adapterName,
+          }
+        : { subnetPrefix: '', primaryIp: '', hostname: '' },
+      createdAt: params.existingCreatedAt || nowIso,
+      updatedAt: nowIso,
+      ...(hostPreset ? { hostPreset } : {}),
+      savedShares,
+      clientTargets: Array.from(clientMap.values()),
+      ...(params.preferredPatchMode ? { preferredPatchMode: params.preferredPatchMode } : {}),
+    };
+  },
+
+  async listLocationProfiles(): Promise<{
+    success: boolean;
+    directory: string;
+    writable: boolean;
+    profiles: LocationProfileSummary[];
+  }> {
+    if (window.ahbiShareElectron?.listLocationProfiles) {
+      return await window.ahbiShareElectron.listLocationProfiles();
+    }
+    const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    const summaries: LocationProfileSummary[] = stored
+      .map((p) => ({
+        profileId: p.profileId,
+        locationName: p.locationName,
+        description: p.description || '',
+        networkHint: p.networkHint || { subnetPrefix: '', primaryIp: '', hostname: '' },
+        shareCount: Array.isArray(p.savedShares) ? p.savedShares.length : 0,
+        clientTargetCount: Array.isArray(p.clientTargets) ? p.clientTargets.length : 0,
+        ...(p.preferredPatchMode ? { preferredPatchMode: p.preferredPatchMode } : {}),
+        createdAt: p.createdAt || '',
+        updatedAt: p.updatedAt || '',
+        fileName: `${p.profileId}.location.json`,
+      }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return {
+      success: true,
+      directory: '웹 브라우저 사용장소 보관함',
+      writable: true,
+      profiles: summaries,
+    };
+  },
+
+  async saveLocationProfile(profile: LocationProfileFile): Promise<{
+    success: boolean;
+    profile?: LocationProfileFile;
+    summary?: LocationProfileSummary;
+    filePath?: string;
+    error?: string;
+  }> {
+    // Keep runtime secrets in memory cache and sanitize any browser localStorage copy
+    if (profile.hostPreset?.authMode === 'account' && profile.hostPreset.password) {
+      runtimeLocationHostPasswordCache.set(profile.profileId, profile.hostPreset.password);
+    }
+    for (const sh of profile.savedShares) {
+      if (sh.password) {
+        setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
+      }
+    }
+    for (const ct of profile.clientTargets) {
+      if (ct.authMode === 'account' && ct.password) {
+        runtimeLocationTargetPasswordCache.set(
+          `${profile.profileId}::${ct.driveLetter.toUpperCase()}`,
+          ct.password
+        );
+      }
+    }
+
+    if (window.ahbiShareElectron?.saveLocationProfile) {
+      return await window.ahbiShareElectron.saveLocationProfile(profile);
+    }
+
+    const existing = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    const sanitizedForSim: LocationProfileFile = {
+      ...profile,
+      ...(profile.hostPreset ? { hostPreset: { ...profile.hostPreset, password: '' } } : {}),
+      savedShares: profile.savedShares.map((s) => sanitizeLocationShareForSim(s)),
+      clientTargets: profile.clientTargets.map((t) => ({
+        targetHost: t.targetHost,
+        shareName: t.shareName,
+        driveLetter: t.driveLetter,
+        authMode: t.authMode,
+        ...(t.username ? { username: t.username } : {}),
+        ...(t.encryptedCredentials ? { encryptedCredentials: t.encryptedCredentials } : {}),
+        persistent: t.persistent,
+      })),
+    };
+    const nextList = [sanitizedForSim, ...existing.filter((p) => p.profileId !== profile.profileId)];
+    writeStore(STORAGE_LOCATIONS_SIM_KEY, nextList);
+    return {
+      success: true,
+      profile,
+      summary: {
+        profileId: profile.profileId,
+        locationName: profile.locationName,
+        description: profile.description || '',
+        networkHint: profile.networkHint,
+        shareCount: profile.savedShares.length,
+        clientTargetCount: profile.clientTargets.length,
+        ...(profile.preferredPatchMode ? { preferredPatchMode: profile.preferredPatchMode } : {}),
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+        fileName: `${profile.profileId}.location.json`,
+      },
+    };
+  },
+
+  async loadLocationProfile(profileId: string): Promise<{
+    success: boolean;
+    profile?: LocationProfileFile;
+    filePath?: string;
+    error?: string;
+  }> {
+    if (window.ahbiShareElectron?.loadLocationProfile) {
+      const res = await window.ahbiShareElectron.loadLocationProfile(profileId);
+      if (res.success && res.profile) {
+        for (const sh of res.profile.savedShares) {
+          if (sh.password) {
+            setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
+          }
+        }
+      }
+      return res;
+    }
+
+    const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    const found = stored.find((p) => p.profileId === profileId);
+    if (!found) {
+      return { success: false, error: '해당 사용장소 프로필을 찾을 수 없습니다.' };
+    }
+
+    const hostPwd = runtimeLocationHostPasswordCache.get(found.profileId) || '';
+    const hydrated: LocationProfileFile = {
+      ...found,
+      ...(found.hostPreset
+        ? {
+            hostPreset: {
+              ...found.hostPreset,
+              password: found.hostPreset.authMode === 'account' ? hostPwd : '',
+            },
+          }
+        : {}),
+      savedShares: (found.savedShares || []).map((s) => {
+        const cachedPass = getCachedPassword(s.sourceHostName || 'LOCATION', s.shareName);
+        if (!cachedPass) return s;
+        return {
+          ...s,
+          password: cachedPass,
+          connectionCode: rehydrateCodeWithPassword(s, cachedPass),
+        };
+      }),
+      clientTargets: (found.clientTargets || []).map((ct) => {
+        const targetPass = runtimeLocationTargetPasswordCache.get(
+          `${found.profileId}::${ct.driveLetter.toUpperCase()}`
+        );
+        return {
+          ...ct,
+          ...(ct.authMode === 'account' && targetPass ? { password: targetPass } : {}),
+        };
+      }),
+    };
+    return { success: true, profile: hydrated };
+  },
+
+  async deleteLocationProfile(profileId: string): Promise<{ success: boolean; error?: string }> {
+    runtimeLocationHostPasswordCache.delete(profileId);
+    if (window.ahbiShareElectron?.deleteLocationProfile) {
+      return await window.ahbiShareElectron.deleteLocationProfile(profileId);
+    }
+    const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    writeStore(
+      STORAGE_LOCATIONS_SIM_KEY,
+      stored.filter((p) => p.profileId !== profileId)
+    );
+    return { success: true };
+  },
+
+  async exportLocationProfileFile(profile: LocationProfileFile): Promise<{
+    success: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    message: string;
+  }> {
+    if (window.ahbiShareElectron?.exportLocationProfileFile) {
+      return await window.ahbiShareElectron.exportLocationProfileFile(profile);
+    }
+
+    const sanitizedExport = {
+      ...profile,
+      schemaVersion: 1 as const,
+      kind: 'ahbishare-location-profile',
+      ...(profile.hostPreset ? { hostPreset: { ...profile.hostPreset, password: '' } } : {}),
+      savedShares: profile.savedShares.map((s) => sanitizeLocationShareForSim(s)),
+      clientTargets: profile.clientTargets.map((ct) => ({
+        targetHost: ct.targetHost,
+        shareName: ct.shareName,
+        driveLetter: ct.driveLetter,
+        authMode: ct.authMode,
+        ...(ct.username ? { username: ct.username } : {}),
+        ...(ct.encryptedCredentials ? { encryptedCredentials: ct.encryptedCredentials } : {}),
+        persistent: ct.persistent,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(sanitizedExport, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${profile.profileId}.location.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return {
+      success: true,
+      filePath: a.download,
+      message: `사용장소 '${profile.locationName}' 프로필 파일(${a.download})을 다운로드했습니다.`,
+    };
+  },
+
+  async importLocationProfileFile(saveToCatalog = true): Promise<{
+    success: boolean;
+    canceled?: boolean;
+    profile?: LocationProfileFile;
+    filePath?: string;
+    savedToCatalog?: boolean;
+    message: string;
+  }> {
+    if (window.ahbiShareElectron?.importLocationProfileFile) {
+      const res = await window.ahbiShareElectron.importLocationProfileFile({ saveToCatalog });
+      if (res.success && res.profile) {
+        for (const sh of res.profile.savedShares) {
+          if (sh.password) {
+            setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
+          }
+        }
+      }
+      return res;
+    }
+    return {
+      success: false,
+      message: '브라우저 환경에서는 파일 업로드 input을 통해 JSON을 가져옵니다.',
+    };
+  },
+
+  async importLocationProfileFromJson(
+    jsonText: string,
+    saveToCatalog = true
+  ): Promise<{
+    success: boolean;
+    profile?: LocationProfileFile;
+    message: string;
+  }> {
+    try {
+      const cleanText = jsonText.replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(cleanText) as Partial<LocationProfileFile>;
+      if (!parsed || typeof parsed !== 'object' || !parsed.locationName) {
+        return { success: false, message: '사용장소 이름(locationName)이 포함된 올바른 프로필 JSON이 아닙니다.' };
+      }
+      const normalized: LocationProfileFile = {
+        schemaVersion: 1,
+        profileId: String(parsed.profileId || parsed.locationName).trim(),
+        locationName: String(parsed.locationName).trim(),
+        description: String(parsed.description || ''),
+        networkHint: parsed.networkHint || { subnetPrefix: '', primaryIp: '', hostname: '' },
+        createdAt: String(parsed.createdAt || new Date().toISOString()),
+        updatedAt: String(parsed.updatedAt || new Date().toISOString()),
+        ...(parsed.hostPreset ? { hostPreset: parsed.hostPreset } : {}),
+        savedShares: Array.isArray(parsed.savedShares) ? parsed.savedShares : [],
+        clientTargets: Array.isArray(parsed.clientTargets) ? parsed.clientTargets : [],
+        ...(parsed.preferredPatchMode ? { preferredPatchMode: parsed.preferredPatchMode } : {}),
+      };
+      if (saveToCatalog) {
+        const saved = await this.saveLocationProfile(normalized);
+        if (!saved.success) {
+          return { success: false, message: saved.error || '사용장소 목록 등록 실패' };
+        }
+        return {
+          success: true,
+          profile: saved.profile || normalized,
+          message: `사용장소 '${normalized.locationName}' 프로필을 가져와 저장했습니다.`,
+        };
+      }
+      return {
+        success: true,
+        profile: normalized,
+        message: `사용장소 '${normalized.locationName}' 프로필을 불러왔습니다.`,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `JSON 파일 파싱 실패: ${err instanceof Error ? err.message : '형식 오류'}`,
+      };
+    }
+  },
+
+  async applyLocationProfileBatch(
+    profile: LocationProfileFile,
+    netInfo: LocalNetworkInfo,
+    callbacks?: {
+      onHostSteps?: (steps: PipelineStep[]) => void;
+      onClientSteps?: (steps: PipelineStep[]) => void;
+      onProgressText?: (text: string) => void;
+    }
+  ): Promise<LocationBatchApplyResult> {
+    const details: LocationBatchApplyItemResult[] = [];
+    let appliedShares = 0;
+    let failedShares = 0;
+    let appliedMounts = 0;
+    let failedMounts = 0;
+
+    // 1. Apply saved host shares if present (and fallback to hostPreset if savedShares is empty? Only apply explicit savedShares!)
+    for (let i = 0; i < profile.savedShares.length; i++) {
+      const sh = profile.savedShares[i];
+      if (!sh.folderPath || !sh.shareName) continue;
+      callbacks?.onProgressText?.(`호스트 공유폴더(${i + 1}/${profile.savedShares.length}): ${sh.shareName}`);
+      const hostCfg: HostConfig = {
+        folderPath: sh.folderPath,
+        shareName: sh.shareName,
+        authMode: sh.authMode,
+        permission: sh.permission,
+        username: sh.username || 'AhBiShare',
+        password: sh.password || getCachedPassword(sh.sourceHostName || netInfo.hostname, sh.shareName) || '',
+        ttlMinutes: sh.ttlMinutes,
+        autoRevokeOnExpiry: sh.autoRevokeOnExpiry,
+      };
+      try {
+        const res = await this.runHostOneClick(hostCfg, netInfo, (steps) => callbacks?.onHostSteps?.(steps));
+        if (res.success) {
+          appliedShares++;
+          details.push({
+            kind: 'share',
+            label: `${sh.shareName} (${sh.folderPath})`,
+            success: true,
+            message: '공유폴더 개설 및 방화벽 설정 완료',
+          });
+        } else {
+          failedShares++;
+          details.push({
+            kind: 'share',
+            label: `${sh.shareName} (${sh.folderPath})`,
+            success: false,
+            message: '공유폴더 개설 중 오류가 발생했습니다.',
+          });
+        }
+      } catch (err) {
+        failedShares++;
+        details.push({
+          kind: 'share',
+          label: `${sh.shareName} (${sh.folderPath})`,
+          success: false,
+          message: err instanceof Error ? err.message : '알 수 없는 오류',
+        });
+      }
+    }
+
+    // 2. Apply saved client network drive targets
+    for (let i = 0; i < profile.clientTargets.length; i++) {
+      const ct = profile.clientTargets[i];
+      callbacks?.onProgressText?.(`네트워크 드라이브(${i + 1}/${profile.clientTargets.length}): ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`);
+      const clientCfg: ClientTargetConfig = {
+        targetHost: ct.targetHost,
+        shareName: ct.shareName,
+        driveLetter: ct.driveLetter,
+        authMode: ct.authMode,
+        username: ct.username || '',
+        password:
+          ct.password ||
+          runtimeLocationTargetPasswordCache.get(`${profile.profileId}::${ct.driveLetter.toUpperCase()}`) ||
+          '',
+        persistent: ct.persistent,
+      };
+      try {
+        const res = await this.runClientOneClick(
+          clientCfg,
+          (steps) => callbacks?.onClientSteps?.(steps),
+          netInfo.osEra
+        );
+        if (res.success) {
+          appliedMounts++;
+          details.push({
+            kind: 'mount',
+            label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
+            success: true,
+            message: '네트워크 드라이브 연결 완료',
+          });
+        } else {
+          failedMounts++;
+          details.push({
+            kind: 'mount',
+            label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
+            success: false,
+            message: '네트워크 드라이브 연결 실패 (대상 PC 전원·LAN·계정 확인 필요)',
+          });
+        }
+      } catch (err) {
+        failedMounts++;
+        details.push({
+          kind: 'mount',
+          label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
+          success: false,
+          message: err instanceof Error ? err.message : '알 수 없는 오류',
+        });
+      }
+    }
+
+    const totalAttempted = appliedShares + failedShares + appliedMounts + failedMounts;
+    const totalSucceeded = appliedShares + appliedMounts;
+    const totalFailed = failedShares + failedMounts;
+
+    const summary =
+      totalAttempted === 0
+        ? `'${profile.locationName}'에 일괄 실행할 공유폴더나 드라이브 항목이 없습니다.`
+        : totalFailed === 0
+          ? `'${profile.locationName}' 일괄 적용 완료 (공유 ${appliedShares}건 · 드라이브 ${appliedMounts}건)`
+          : `'${profile.locationName}' 부분 적용 완료 (성공 ${totalSucceeded}건 · 실패 ${totalFailed}건)`;
+
+    return {
+      success: totalAttempted > 0 && totalFailed === 0,
+      appliedShares,
+      failedShares,
+      appliedMounts,
+      failedMounts,
+      summary,
+      details,
+    };
   },
 };

@@ -11,6 +11,10 @@ interface HostPanelProps {
   steps: PipelineStep[];
   isExecuting: boolean;
   nowMs?: number;
+  initialConfig?: HostConfig;
+  pendingHostPreset?: { key: string; config: Partial<HostConfig> } | null;
+  onClearPendingHostPreset?: () => void;
+  onConfigChange?: (config: HostConfig) => void;
   onSelectFolder: (currentPath: string) => Promise<string | null>;
   onCreateShare: (config: HostConfig) => Promise<void>;
   onRemoveShare: (shareName: string) => Promise<void>;
@@ -54,27 +58,58 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   steps,
   isExecuting,
   nowMs = Date.now(),
+  initialConfig,
+  pendingHostPreset = null,
+  onClearPendingHostPreset,
+  onConfigChange,
   onSelectFolder,
   onCreateShare,
   onRemoveShare,
   onOpenFolder,
 }) => {
-  const [config, setConfig] = useState<HostConfig>({
-    folderPath: 'C:\\AhBiShared',
-    shareName: 'AhBiShared',
-    authMode: 'guest',
-    permission: 'full',
-    username: 'AhBiShare',
-    password: generateSecureSharePassword(10),
-    ttlMinutes: 0,
-    autoRevokeOnExpiry: true,
-  });
+  const [config, setConfig] = useState<HostConfig>(() =>
+    initialConfig || {
+      folderPath: 'C:\\AhBiShared',
+      shareName: 'AhBiShared',
+      authMode: 'guest',
+      permission: 'full',
+      username: 'AhBiShare',
+      password: generateSecureSharePassword(10),
+      ttlMinutes: 0,
+      autoRevokeOnExpiry: true,
+    }
+  );
 
-  const [shareNameCustomized, setShareNameCustomized] = useState(false);
+  const [shareNameCustomized, setShareNameCustomized] = useState(
+    Boolean(initialConfig?.shareName && initialConfig.shareName !== 'AhBiShared')
+  );
   const [validationError, setValidationError] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [qrTarget, setQrTarget] = useState<ActiveShare | null>(null);
   const copyTimerRef = useRef<number | null>(null);
+  const lastAppliedPresetKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    onConfigChange?.(config);
+  }, [config, onConfigChange]);
+
+  useEffect(() => {
+    if (!pendingHostPreset || pendingHostPreset.key === lastAppliedPresetKeyRef.current) return;
+    lastAppliedPresetKeyRef.current = pendingHostPreset.key;
+    setValidationError(null);
+    setConfig((prev) => ({
+      ...prev,
+      ...pendingHostPreset.config,
+      password:
+        pendingHostPreset.config.authMode === 'account'
+          ? pendingHostPreset.config.password || prev.password || generateSecureSharePassword(10)
+          : prev.password,
+    }));
+    if (pendingHostPreset.config.shareName) {
+      setShareNameCustomized(true);
+    }
+    onClearPendingHostPreset?.();
+  }, [pendingHostPreset, onClearPendingHostPreset]);
 
   useEffect(() => {
     return () => {

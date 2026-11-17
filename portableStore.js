@@ -337,6 +337,250 @@ function atomicWriteJson(filePath, payloadObj) {
   }
 }
 
+const LOCATIONS_DIR_NAME = 'locations';
+const LOCATION_FILE_EXT = '.location.json';
+
+function sanitizeLocationId(rawId, fallbackName) {
+  const source = String(rawId || fallbackName || '').trim();
+  const hash6 = crypto
+    .createHash('sha1')
+    .update(String(fallbackName || rawId || Date.now()))
+    .digest('hex')
+    .slice(0, 8);
+  const candidate = source
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+  const hadNonAscii = /[^\x00-\x7F]/.test(source);
+  if (!hadNonAscii && candidate && /^[a-z0-9]/.test(candidate)) {
+    return candidate;
+  }
+  return candidate ? `${candidate}-${hash6}` : `loc-${hash6}`;
+}
+
+function getLocationFileName(profileId, locationName) {
+  return `${sanitizeLocationId(profileId, locationName)}${LOCATION_FILE_EXT}`;
+}
+
+function resolveSafeLocationFilePath(baseDir, profileId, locationName) {
+  const locDir = path.resolve(baseDir, LOCATIONS_DIR_NAME);
+  const fileName = getLocationFileName(profileId, locationName);
+  const filePath = path.resolve(locDir, fileName);
+  if (!filePath.startsWith(locDir + path.sep)) {
+    throw new Error('허용되지 않은 사용장소 파일 경로입니다.');
+  }
+  return { locDir, fileName, filePath };
+}
+
+function prepareLocationClientTargetsForDisk(targets) {
+  if (!Array.isArray(targets)) return [];
+  const out = [];
+  for (const item of targets) {
+    if (!item || !item.targetHost || !item.shareName) continue;
+    const authMode = item.authMode === 'account' ? 'account' : 'guest';
+    const plainUsername = item.username ? String(item.username) : '';
+    const plainPassword = item.password ? String(item.password) : '';
+    let encryptedCredentials = item.encryptedCredentials;
+    if (authMode === 'account' && plainPassword) {
+      encryptedCredentials = encryptCredentials({
+        username: plainUsername,
+        password: plainPassword,
+      });
+    } else if (authMode !== 'account') {
+      encryptedCredentials = undefined;
+    }
+    out.push({
+      targetHost: String(item.targetHost).trim(),
+      shareName: String(item.shareName).trim(),
+      driveLetter: String(item.driveLetter || 'Z:').trim().replace(/:?$/, ':').toUpperCase(),
+      authMode,
+      ...(plainUsername ? { username: plainUsername } : {}),
+      ...(encryptedCredentials ? { encryptedCredentials } : {}),
+      persistent: item.persistent !== false,
+    });
+  }
+  return out;
+}
+
+function hydrateLocationClientTargets(rawTargets) {
+  if (!Array.isArray(rawTargets)) return [];
+  const out = [];
+  for (const item of rawTargets) {
+    if (!item || !item.targetHost || !item.shareName) continue;
+    const authMode = item.authMode === 'account' ? 'account' : 'guest';
+    let username = item.username ? String(item.username) : '';
+    let password = '';
+    if (authMode === 'account') {
+      if (item.encryptedCredentials) {
+        const dec = decryptCredentials(item.encryptedCredentials);
+        if (dec.ok) {
+          username = dec.username || username;
+          password = dec.password;
+        }
+      } else if (item.password) {
+        password = String(item.password);
+      }
+    }
+    out.push({
+      targetHost: String(item.targetHost),
+      shareName: String(item.shareName),
+      driveLetter: String(item.driveLetter || 'Z:').replace(/:?$/, ':').toUpperCase(),
+      authMode,
+      ...(username ? { username } : {}),
+      ...(password ? { password } : {}),
+      ...(item.encryptedCredentials ? { encryptedCredentials: item.encryptedCredentials } : {}),
+      persistent: item.persistent !== false,
+    });
+  }
+  return out;
+}
+
+function prepareLocationHostPresetForDisk(preset) {
+  if (!preset || typeof preset !== 'object') return undefined;
+  const authMode = preset.authMode === 'account' ? 'account' : 'guest';
+  const plainUsername = preset.username ? String(preset.username) : '';
+  const plainPassword = preset.password ? String(preset.password) : '';
+  let encryptedCredentials = preset.encryptedCredentials;
+  if (authMode === 'account' && plainPassword) {
+    encryptedCredentials = encryptCredentials({
+      username: plainUsername,
+      password: plainPassword,
+    });
+  } else if (authMode !== 'account') {
+    encryptedCredentials = undefined;
+  }
+  return {
+    folderPath: String(preset.folderPath || 'C:\\AhBiShared'),
+    shareName: String(preset.shareName || 'AhBiShared'),
+    authMode,
+    permission: preset.permission === 'read' ? 'read' : 'full',
+    username: plainUsername,
+    ...(encryptedCredentials ? { encryptedCredentials } : {}),
+    ...(typeof preset.ttlMinutes === 'number' ? { ttlMinutes: preset.ttlMinutes } : {}),
+    ...(typeof preset.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: preset.autoRevokeOnExpiry } : {}),
+  };
+}
+
+function hydrateLocationHostPreset(rawPreset) {
+  if (!rawPreset || typeof rawPreset !== 'object') return undefined;
+  const authMode = rawPreset.authMode === 'account' ? 'account' : 'guest';
+  let username = rawPreset.username ? String(rawPreset.username) : '';
+  let password = '';
+  if (authMode === 'account') {
+    if (rawPreset.encryptedCredentials) {
+      const dec = decryptCredentials(rawPreset.encryptedCredentials);
+      if (dec.ok) {
+        username = dec.username || username;
+        password = dec.password;
+      }
+    } else if (rawPreset.password) {
+      password = String(rawPreset.password);
+    }
+  }
+  return {
+    folderPath: String(rawPreset.folderPath || 'C:\\AhBiShared'),
+    shareName: String(rawPreset.shareName || 'AhBiShared'),
+    authMode,
+    permission: rawPreset.permission === 'read' ? 'read' : 'full',
+    username,
+    password,
+    ...(rawPreset.encryptedCredentials ? { encryptedCredentials: rawPreset.encryptedCredentials } : {}),
+    ...(typeof rawPreset.ttlMinutes === 'number' ? { ttlMinutes: rawPreset.ttlMinutes } : {}),
+    ...(typeof rawPreset.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: rawPreset.autoRevokeOnExpiry } : {}),
+  };
+}
+
+function prepareLocationProfileForDisk(rawProfile) {
+  const nowIso = new Date().toISOString();
+  const locationName = String(rawProfile?.locationName || '이름 없는 장소').trim() || '이름 없는 장소';
+  const profileId = sanitizeLocationId(rawProfile?.profileId, locationName);
+  const preparedSharesDoc = prepareDiskDocument({
+    updatedAt: nowIso,
+    shares: Array.isArray(rawProfile?.savedShares) ? rawProfile.savedShares : [],
+  });
+  const hostPreset = prepareLocationHostPresetForDisk(rawProfile?.hostPreset);
+  const clientTargets = prepareLocationClientTargetsForDisk(rawProfile?.clientTargets);
+  const netHint = rawProfile?.networkHint && typeof rawProfile.networkHint === 'object'
+    ? {
+        subnetPrefix: String(rawProfile.networkHint.subnetPrefix || ''),
+        primaryIp: String(rawProfile.networkHint.primaryIp || ''),
+        hostname: String(rawProfile.networkHint.hostname || ''),
+        ...(rawProfile.networkHint.adapterName ? { adapterName: String(rawProfile.networkHint.adapterName) } : {}),
+      }
+    : { subnetPrefix: '', primaryIp: '', hostname: '' };
+
+  return {
+    schemaVersion: 1,
+    kind: 'ahbishare-location-profile',
+    profileId,
+    locationName,
+    description: String(rawProfile?.description || '').trim(),
+    networkHint: netHint,
+    createdAt: String(rawProfile?.createdAt || nowIso),
+    updatedAt: nowIso,
+    ...(hostPreset ? { hostPreset } : {}),
+    savedShares: preparedSharesDoc.shares,
+    clientTargets,
+    ...(rawProfile?.preferredPatchMode ? { preferredPatchMode: String(rawProfile.preferredPatchMode) } : {}),
+  };
+}
+
+function hydrateLocationProfile(diskProfile) {
+  if (!diskProfile || typeof diskProfile !== 'object') {
+    throw new Error('올바르지 않은 사용장소 프로필 형식입니다.');
+  }
+  const locationName = String(diskProfile.locationName || '').trim();
+  if (!locationName) {
+    throw new Error('사용장소 이름(locationName)이 누락된 파일입니다.');
+  }
+  const profileId = sanitizeLocationId(diskProfile.profileId, locationName);
+  const hydratedSharesDoc = hydrateRuntimeDocument({
+    updatedAt: diskProfile.updatedAt || '',
+    shares: Array.isArray(diskProfile.savedShares) ? diskProfile.savedShares : [],
+  });
+  const hostPreset = hydrateLocationHostPreset(diskProfile.hostPreset);
+  const clientTargets = hydrateLocationClientTargets(diskProfile.clientTargets);
+  const netHint = diskProfile.networkHint && typeof diskProfile.networkHint === 'object'
+    ? {
+        subnetPrefix: String(diskProfile.networkHint.subnetPrefix || ''),
+        primaryIp: String(diskProfile.networkHint.primaryIp || ''),
+        hostname: String(diskProfile.networkHint.hostname || ''),
+        ...(diskProfile.networkHint.adapterName ? { adapterName: String(diskProfile.networkHint.adapterName) } : {}),
+      }
+    : { subnetPrefix: '', primaryIp: '', hostname: '' };
+
+  return {
+    schemaVersion: 1,
+    profileId,
+    locationName,
+    description: String(diskProfile.description || ''),
+    networkHint: netHint,
+    createdAt: String(diskProfile.createdAt || ''),
+    updatedAt: String(diskProfile.updatedAt || ''),
+    ...(hostPreset ? { hostPreset } : {}),
+    savedShares: hydratedSharesDoc.shares,
+    clientTargets,
+    ...(diskProfile.preferredPatchMode ? { preferredPatchMode: String(diskProfile.preferredPatchMode) } : {}),
+  };
+}
+
+function toLocationProfileSummary(profile, fileName) {
+  return {
+    profileId: profile.profileId,
+    locationName: profile.locationName,
+    description: profile.description || '',
+    networkHint: profile.networkHint || { subnetPrefix: '', primaryIp: '', hostname: '' },
+    shareCount: Array.isArray(profile.savedShares) ? profile.savedShares.length : 0,
+    clientTargetCount: Array.isArray(profile.clientTargets) ? profile.clientTargets.length : 0,
+    ...(profile.preferredPatchMode ? { preferredPatchMode: profile.preferredPatchMode } : {}),
+    createdAt: profile.createdAt || '',
+    updatedAt: profile.updatedAt || '',
+    fileName: fileName || getLocationFileName(profile.profileId, profile.locationName),
+  };
+}
+
 function createPortableStore(options = {}) {
   const getLocation = () => resolvePortableLocation(options);
 
@@ -416,6 +660,102 @@ function createPortableStore(options = {}) {
     };
   };
 
+  const listLocationProfiles = () => {
+    const loc = getLocation();
+    const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
+    const profiles = [];
+    if (fs.existsSync(locDir)) {
+      try {
+        for (const entry of fs.readdirSync(locDir)) {
+          if (!entry.toLowerCase().endsWith(LOCATION_FILE_EXT)) continue;
+          const fullPath = path.resolve(locDir, entry);
+          if (!fullPath.startsWith(locDir + path.sep)) continue;
+          try {
+            const raw = fs.readFileSync(fullPath, 'utf8').replace(/^\uFEFF/, '');
+            const parsed = JSON.parse(raw);
+            const hydrated = hydrateLocationProfile(parsed);
+            profiles.push(toLocationProfileSummary(hydrated, entry));
+          } catch {}
+        }
+      } catch {}
+    }
+    profiles.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return {
+      success: true,
+      directory: locDir,
+      writable: loc.writable,
+      profiles,
+    };
+  };
+
+  const saveLocationProfile = (rawProfile) => {
+    const loc = getLocation();
+    const diskProfile = prepareLocationProfileForDisk(rawProfile);
+    const { locDir, fileName, filePath } = resolveSafeLocationFilePath(
+      loc.directory,
+      diskProfile.profileId,
+      diskProfile.locationName
+    );
+    try {
+      fs.mkdirSync(locDir, { recursive: true });
+    } catch (err) {
+      return {
+        success: false,
+        error: `사용장소 보관 폴더 생성 실패: ${err && err.message ? err.message : '권한 없음'}`,
+      };
+    }
+    const writeRes = atomicWriteJson(filePath, diskProfile);
+    if (!writeRes.success) {
+      return {
+        success: false,
+        error: writeRes.error || '사용장소 프로필 저장에 실패했습니다.',
+      };
+    }
+    const hydrated = hydrateLocationProfile(diskProfile);
+    return {
+      success: true,
+      profile: hydrated,
+      summary: toLocationProfileSummary(hydrated, fileName),
+      filePath,
+    };
+  };
+
+  const loadLocationProfile = (profileId) => {
+    const loc = getLocation();
+    const { filePath } = resolveSafeLocationFilePath(loc.directory, profileId, profileId);
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: '해당 사용장소 프로필 파일을 찾을 수 없습니다.' };
+    }
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(raw);
+      const hydrated = hydrateLocationProfile(parsed);
+      return { success: true, profile: hydrated, filePath };
+    } catch (err) {
+      return {
+        success: false,
+        error: `사용장소 프로필 읽기 실패: ${err && err.message ? err.message : '파일 손상'}`,
+      };
+    }
+  };
+
+  const deleteLocationProfile = (profileId) => {
+    const loc = getLocation();
+    const { filePath } = resolveSafeLocationFilePath(loc.directory, profileId, profileId);
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: '삭제할 사용장소 파일이 존재하지 않습니다.' };
+    }
+    try {
+      fs.unlinkSync(filePath);
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: `사용장소 파일 삭제 실패: ${err && err.message ? err.message : '권한 오류'}`,
+      };
+    }
+  };
+
   return {
     getStatus: () => {
       const loc = getLocation();
@@ -435,15 +775,26 @@ function createPortableStore(options = {}) {
     },
     loadPortableData,
     savePortableData,
+    listLocationProfiles,
+    saveLocationProfile,
+    loadLocationProfile,
+    deleteLocationProfile,
   };
 }
 
 module.exports = {
   PORTABLE_FILE_NAME,
+  LOCATIONS_DIR_NAME,
+  LOCATION_FILE_EXT,
+  sanitizeLocationId,
   encryptCredentials,
   decryptCredentials,
   resolvePortableLocation,
   prepareDiskDocument,
   hydrateRuntimeDocument,
+  prepareLocationProfileForDisk,
+  hydrateLocationProfile,
+  toLocationProfileSummary,
+  atomicWriteJson,
   createPortableStore,
 };

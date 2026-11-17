@@ -21,8 +21,13 @@ import {
   LegacyRollbackSnapshot,
   LegacyScriptBundle,
   LegacyTargetOs,
+  LocationClientTargetEntry,
+  LocationProfileFile,
+  LocationProfileSummary,
+  LocationBatchApplyResult,
 } from '@/types/share';
-import { shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
+import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
+import { generateSecureSharePassword } from '@/utils/connectionCode';
 import { formatEraShortLabel } from '@/services/networkEvolution';
 import { TopBar } from '@/components/TopBar';
 import { HostPanel } from '@/components/HostPanel';
@@ -30,6 +35,8 @@ import { ClientPanel } from '@/components/ClientPanel';
 import { RollbackPanel } from '@/components/RollbackPanel';
 import { NetworkMatrixPanel } from '@/components/NetworkMatrixPanel';
 import { LegacySharingPanel } from '@/components/LegacySharingPanel';
+import { LocationProfileBar } from '@/components/LocationProfileBar';
+import { LocationManagerModal } from '@/components/LocationManagerModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
 import { checkForUpdates, ReleaseInfo } from './services/updateChecker';
@@ -104,6 +111,42 @@ export const App: React.FC = () => {
   const [legacyHostSteps, setLegacyHostSteps] = useState<PipelineStep[]>([]);
   const [legacyClientSteps, setLegacyClientSteps] = useState<PipelineStep[]>([]);
 
+  const [locationProfiles, setLocationProfiles] = useState<LocationProfileSummary[]>([]);
+  const [locationStorageDir, setLocationStorageDir] = useState<string>('locations');
+  const [activeLocationProfile, setActiveLocationProfile] = useState<LocationProfileFile | null>(null);
+  const [locationModalOpen, setLocationModalOpen] = useState(false);
+  const [locationModalTab, setLocationModalTab] = useState<'save' | 'manage'>('manage');
+  const [isLocationBatchApplying, setIsLocationBatchApplying] = useState(false);
+  const [locationBatchProgress, setLocationBatchProgress] = useState<string | null>(null);
+  const [lastLocationBatchResult, setLastLocationBatchResult] = useState<LocationBatchApplyResult | null>(null);
+  const locationFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [hostDraft, setHostDraft] = useState<HostConfig>(() => ({
+    folderPath: 'C:\\AhBiShared',
+    shareName: 'AhBiShared',
+    authMode: 'guest',
+    permission: 'full',
+    username: 'AhBiShare',
+    password: generateSecureSharePassword(10),
+    ttlMinutes: 0,
+    autoRevokeOnExpiry: true,
+  }));
+  const [pendingHostPreset, setPendingHostPreset] = useState<{ key: string; config: Partial<HostConfig> } | null>(null);
+
+  const [clientDraft, setClientDraft] = useState<ClientTargetConfig>({
+    targetHost: '192.168.0.10',
+    shareName: 'WorkDocs',
+    driveLetter: 'Z:',
+    authMode: 'guest',
+    username: '',
+    password: '',
+    persistent: true,
+  });
+  const [pendingLocationTarget, setPendingLocationTarget] = useState<{
+    key: string;
+    target: LocationClientTargetEntry;
+  } | null>(null);
+
   useEffect(() => {
     const root = document.documentElement;
     if (isDark) root.classList.add('dark');
@@ -168,6 +211,14 @@ export const App: React.FC = () => {
     setHostPolicySnapshots(snap.document.hostPolicies ? { ...snap.document.hostPolicies } : {});
   }, []);
 
+  const refreshLocationProfiles = useCallback(async () => {
+    try {
+      const listRes = await shareBridge.listLocationProfiles();
+      setLocationProfiles(listRes.profiles);
+      if (listRes.directory) setLocationStorageDir(listRes.directory);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     const bootstrap = async () => {
       try {
@@ -196,9 +247,10 @@ export const App: React.FC = () => {
         setShares(shareBridge.getSavedShares());
         setMounts(shareBridge.getSavedMounts());
       }
+      await refreshLocationProfiles();
     };
     void bootstrap();
-  }, [appendLog, refreshPortableSnapshot]);
+  }, [appendLog, refreshPortableSnapshot, refreshLocationProfiles]);
 
   // 1-second timer tick for active timed shares
   useEffect(() => {
@@ -763,6 +815,257 @@ export const App: React.FC = () => {
     [handlePortableAutoFillLog]
   );
 
+  const applyLocationProfileToWorkspace = useCallback(
+    (profile: LocationProfileFile, notify = true) => {
+      setActiveLocationProfile(profile);
+      setLastLocationBatchResult(null);
+      const stamp = `${profile.profileId}-${Date.now()}`;
+
+      if (profile.hostPreset) {
+        const nextHost: HostConfig = {
+          folderPath: profile.hostPreset.folderPath,
+          shareName: profile.hostPreset.shareName,
+          authMode: profile.hostPreset.authMode,
+          permission: profile.hostPreset.permission,
+          username: profile.hostPreset.username,
+          password: profile.hostPreset.password || hostDraft.password,
+          ttlMinutes: profile.hostPreset.ttlMinutes,
+          autoRevokeOnExpiry: profile.hostPreset.autoRevokeOnExpiry,
+        };
+        setHostDraft(nextHost);
+        setPendingHostPreset({ key: stamp, config: nextHost });
+      } else if (profile.savedShares.length > 0) {
+        const firstShare = profile.savedShares[0];
+        const nextHost: HostConfig = {
+          folderPath: firstShare.folderPath || 'C:\\AhBiShared',
+          shareName: firstShare.shareName,
+          authMode: firstShare.authMode,
+          permission: firstShare.permission,
+          username: firstShare.username || 'AhBiShare',
+          password: firstShare.password || hostDraft.password,
+          ttlMinutes: firstShare.ttlMinutes,
+          autoRevokeOnExpiry: firstShare.autoRevokeOnExpiry,
+        };
+        setHostDraft(nextHost);
+        setPendingHostPreset({ key: stamp, config: nextHost });
+      }
+
+      if (profile.clientTargets.length > 0) {
+        const firstTarget = profile.clientTargets[0];
+        setClientDraft({
+          targetHost: firstTarget.targetHost,
+          shareName: firstTarget.shareName,
+          driveLetter: firstTarget.driveLetter,
+          authMode: firstTarget.authMode,
+          username: firstTarget.username || '',
+          password: firstTarget.password || '',
+          persistent: firstTarget.persistent !== false,
+        });
+        setPendingLocationTarget({ key: stamp, target: firstTarget });
+      }
+
+      if (notify) {
+        appendLog(
+          '사용장소',
+          `'${profile.locationName}' 프로필 불러오기 및 입력 폼 자동 채움 완료 (공유 ${profile.savedShares.length}건 · 드라이브 ${profile.clientTargets.length}건)`,
+          'success'
+        );
+        showToast(
+          `'${profile.locationName}' 설정을 불러왔습니다. 필요 시 [이 장소 일괄 적용]을 실행하세요.`
+        );
+      }
+    },
+    [hostDraft.password, appendLog, showToast]
+  );
+
+  const handleSelectLocationProfile = useCallback(
+    async (profileId: string) => {
+      if (!profileId) {
+        setActiveLocationProfile(null);
+        setLastLocationBatchResult(null);
+        return;
+      }
+      const res = await shareBridge.loadLocationProfile(profileId);
+      if (!res.success || !res.profile) {
+        showToast(res.error || '사용장소 프로필 파일을 불러오지 못했습니다.');
+        return;
+      }
+      applyLocationProfileToWorkspace(res.profile, true);
+    },
+    [applyLocationProfileToWorkspace, showToast]
+  );
+
+  const handleSaveLocationProfile = useCallback(
+    async (options: {
+      overwriteProfileId?: string;
+      locationName: string;
+      description: string;
+      includeHost: boolean;
+      includeClient: boolean;
+      includeNetworkHint: boolean;
+    }): Promise<boolean> => {
+      const snapshot = shareBridge.buildLocationProfileSnapshot({
+        profileId: options.overwriteProfileId,
+        locationName: options.locationName,
+        description: options.description,
+        netInfo,
+        includeHost: options.includeHost,
+        includeClient: options.includeClient,
+        includeNetworkHint: options.includeNetworkHint,
+        hostConfig: hostDraft,
+        activeShares: shares,
+        clientConfig: clientDraft,
+        mountedDrives: mounts,
+        existingCreatedAt:
+          options.overwriteProfileId && activeLocationProfile?.profileId === options.overwriteProfileId
+            ? activeLocationProfile.createdAt
+            : undefined,
+      });
+
+      const res = await shareBridge.saveLocationProfile(snapshot);
+      if (!res.success || !res.profile) {
+        const msg = res.error || '사용장소 파일 저장에 실패했습니다.';
+        appendLog('사용장소', msg, 'error');
+        showToast(msg);
+        return false;
+      }
+
+      setActiveLocationProfile(res.profile);
+      await refreshLocationProfiles();
+      appendLog(
+        '사용장소',
+        `'${res.profile.locationName}' 프로필 저장 완료 (${res.profile.profileId}.location.json)`,
+        'success'
+      );
+      showToast(`사용장소 '${res.profile.locationName}' 설정을 개별 파일로 저장했습니다.`);
+      return true;
+    },
+    [netInfo, hostDraft, shares, clientDraft, mounts, activeLocationProfile, refreshLocationProfiles, appendLog, showToast]
+  );
+
+  const handleExportLocationProfile = useCallback(
+    async (profileId: string) => {
+      const loaded = await shareBridge.loadLocationProfile(profileId);
+      if (!loaded.success || !loaded.profile) {
+        showToast(loaded.error || '내보낼 사용장소 데이터를 찾지 못했습니다.');
+        return;
+      }
+      const res = await shareBridge.exportLocationProfileFile(loaded.profile);
+      if (res.canceled) return;
+      appendLog('사용장소', res.message, res.success ? 'success' : 'error');
+      showToast(res.message);
+    },
+    [appendLog, showToast]
+  );
+
+  const handleImportLocationJson = useCallback(async () => {
+    if (isElectronRuntime()) {
+      const res = await shareBridge.importLocationProfileFile(true);
+      if (res.canceled) return;
+      if (!res.success || !res.profile) {
+        appendLog('사용장소', res.message, 'error');
+        showToast(res.message);
+        return;
+      }
+      await refreshLocationProfiles();
+      applyLocationProfileToWorkspace(res.profile, false);
+      appendLog('사용장소', res.message, 'success');
+      showToast(res.message);
+      return;
+    }
+    locationFileInputRef.current?.click();
+  }, [refreshLocationProfiles, applyLocationProfileToWorkspace, appendLog, showToast]);
+
+  const handleWebLocationFileSelected = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const res = await shareBridge.importLocationProfileFromJson(text, true);
+        if (!res.success || !res.profile) {
+          appendLog('사용장소', res.message, 'error');
+          showToast(res.message);
+          return;
+        }
+        await refreshLocationProfiles();
+        applyLocationProfileToWorkspace(res.profile, false);
+        appendLog('사용장소', res.message, 'success');
+        showToast(res.message);
+      } catch {
+        showToast('선택한 JSON 파일을 읽는 중 오류가 발생했습니다.');
+      }
+    },
+    [refreshLocationProfiles, applyLocationProfileToWorkspace, appendLog, showToast]
+  );
+
+  const handleDeleteLocationProfile = useCallback(
+    async (profileId: string, locationName: string) => {
+      const res = await shareBridge.deleteLocationProfile(profileId);
+      if (!res.success) {
+        showToast(res.error || '사용장소 파일 삭제에 실패했습니다.');
+        return;
+      }
+      if (activeLocationProfile?.profileId === profileId) {
+        setActiveLocationProfile(null);
+        setLastLocationBatchResult(null);
+      }
+      await refreshLocationProfiles();
+      appendLog('사용장소', `'${locationName}' 프로필 파일 삭제 완료`, 'success');
+      showToast(`'${locationName}' 사용장소 프로필을 삭제했습니다.`);
+    },
+    [activeLocationProfile, refreshLocationProfiles, appendLog, showToast]
+  );
+
+  const handleBatchApplyLocation = useCallback(
+    async (profileIdOverride?: string) => {
+      let targetProfile = activeLocationProfile;
+      if (profileIdOverride) {
+        const loaded = await shareBridge.loadLocationProfile(profileIdOverride);
+        if (!loaded.success || !loaded.profile) {
+          showToast(loaded.error || '적용할 사용장소 파일을 불러오지 못했습니다.');
+          return;
+        }
+        targetProfile = loaded.profile;
+        applyLocationProfileToWorkspace(loaded.profile, false);
+      }
+      if (!targetProfile) {
+        showToast('먼저 적용할 사용장소 프로필을 선택하세요.');
+        return;
+      }
+
+      setLocationModalOpen(false);
+      setIsLocationBatchApplying(true);
+      setLocationBatchProgress(`'${targetProfile.locationName}' 설정 일괄 적용 준비 중...`);
+      try {
+        const freshNet = await shareBridge.getLocalNetworkInfo();
+        setNetInfo(freshNet);
+        const batchRes = await shareBridge.applyLocationProfileBatch(targetProfile, freshNet, {
+          onHostSteps: (steps) => setHostSteps(steps),
+          onClientSteps: (steps) => setClientSteps(steps),
+          onProgressText: (text) => setLocationBatchProgress(text),
+        });
+        setShares(shareBridge.getSavedShares());
+        setMounts(shareBridge.getSavedMounts());
+        refreshPortableSnapshot(freshNet.hostname);
+        const updatedPeers = await shareBridge.scanLanPeers(freshNet);
+        setPeers(updatedPeers);
+        setLastLocationBatchResult(batchRes);
+        appendLog('장소 일괄 적용', batchRes.summary, batchRes.success ? 'success' : 'error');
+        showToast(batchRes.summary);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+        appendLog('장소 일괄 적용', `실행 예외: ${msg}`, 'error');
+        showToast(`사용장소 일괄 적용 실패: ${msg}`);
+      } finally {
+        setIsLocationBatchApplying(false);
+        setLocationBatchProgress(null);
+      }
+    },
+    [activeLocationProfile, applyLocationProfileToWorkspace, refreshPortableSnapshot, appendLog, showToast]
+  );
+
   return (
     <div className={`${isEmbedded ? 'min-h-full' : 'min-h-screen'} flex flex-col bg-slate-50 dark:bg-[#0F172A] text-slate-900 dark:text-slate-100`}>
       <TopBar
@@ -891,6 +1194,28 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {activeSection === 'workspace' && (
+          <LocationProfileBar
+            profiles={locationProfiles}
+            activeProfile={activeLocationProfile}
+            isBatchApplying={isLocationBatchApplying}
+            batchProgressText={locationBatchProgress}
+            lastBatchResult={lastLocationBatchResult}
+            onSelectProfile={(id) => void handleSelectLocationProfile(id)}
+            onOpenSaveModal={() => {
+              setLocationModalTab('save');
+              setLocationModalOpen(true);
+            }}
+            onOpenManagerModal={() => {
+              setLocationModalTab('manage');
+              setLocationModalOpen(true);
+            }}
+            onQuickImportJson={() => void handleImportLocationJson()}
+            onBatchApply={() => void handleBatchApplyLocation()}
+            onDismissBatchResult={() => setLastLocationBatchResult(null)}
+          />
+        )}
+
         {activeSection === 'workspace' && roleMode === 'host' && remotePortableShares.length > 0 && (
           <div className="px-5 py-4 rounded-xl border border-indigo-500/35 bg-indigo-500/5 dark:bg-indigo-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
@@ -915,8 +1240,12 @@ export const App: React.FC = () => {
             netInfo={netInfo}
             shares={shares}
             steps={hostSteps}
-            isExecuting={isHostExecuting}
+            isExecuting={isHostExecuting || isLocationBatchApplying}
             nowMs={nowMs}
+            initialConfig={hostDraft}
+            pendingHostPreset={pendingHostPreset}
+            onClearPendingHostPreset={() => setPendingHostPreset(null)}
+            onConfigChange={setHostDraft}
             onSelectFolder={shareBridge.selectFolder}
             onCreateShare={handleCreateShare}
             onRemoveShare={handleRemoveShare}
@@ -930,7 +1259,7 @@ export const App: React.FC = () => {
             mounts={mounts}
             steps={clientSteps}
             isScanning={isScanning}
-            isConnecting={isClientConnecting}
+            isConnecting={isClientConnecting || isLocationBatchApplying}
             portableShares={portableShares}
             portableStatus={portableStatus}
             currentHostname={netInfo.hostname}
@@ -939,6 +1268,12 @@ export const App: React.FC = () => {
             pendingAutoFillEntry={pendingAutoFillEntry}
             onClearPendingAutoFill={() => setPendingAutoFillEntry(null)}
             onPortableAutoFill={handlePortableAutoFillLog}
+            initialConfig={clientDraft}
+            pendingLocationTarget={pendingLocationTarget}
+            savedLocationTargets={activeLocationProfile?.clientTargets || []}
+            activeLocationName={activeLocationProfile?.locationName}
+            onClearPendingLocationTarget={() => setPendingLocationTarget(null)}
+            onConfigChange={setClientDraft}
             onOpenMatrix={() => setActiveSection('matrix')}
             onScanLan={handleScanLan}
             onConnect={handleConnectClient}
@@ -1132,6 +1467,39 @@ export const App: React.FC = () => {
         currentVersion="1.0.0"
         release={latestRelease}
         onClose={() => setUpdateModalOpen(false)}
+      />
+
+      <LocationManagerModal
+        isOpen={locationModalOpen}
+        initialTab={locationModalTab}
+        netInfo={netInfo}
+        profiles={locationProfiles}
+        storageDirectory={locationStorageDir}
+        activeProfile={activeLocationProfile}
+        hostDraft={hostDraft}
+        activeShares={shares}
+        clientDraft={clientDraft}
+        mountedDrives={mounts}
+        isBatchApplying={isLocationBatchApplying}
+        onClose={() => setLocationModalOpen(false)}
+        onSaveProfile={handleSaveLocationProfile}
+        onSelectProfile={async (id) => {
+          await handleSelectLocationProfile(id);
+          setLocationModalOpen(false);
+        }}
+        onBatchApplyProfile={handleBatchApplyLocation}
+        onExportProfile={handleExportLocationProfile}
+        onImportJsonFile={handleImportLocationJson}
+        onDeleteProfile={handleDeleteLocationProfile}
+      />
+
+      <input
+        ref={locationFileInputRef}
+        type="file"
+        accept=".json,application/json"
+        aria-label="사용장소 프로필 JSON 파일 선택"
+        onChange={(e) => void handleWebLocationFileSelected(e)}
+        className="hidden"
       />
     </div>
   );

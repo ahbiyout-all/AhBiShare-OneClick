@@ -72,6 +72,12 @@ for (const ipc of [
   'save-portable-data',
   'trigger-system-reboot',
   'save-legacy-scripts',
+  'list-location-profiles',
+  'save-location-profile',
+  'load-location-profile',
+  'delete-location-profile',
+  'export-location-profile-file',
+  'import-location-profile-file',
 ]) {
   assert(modMain.includes(ipc), `main.js missing IPC handler: ${ipc}`);
   assert(modPreload.includes(ipc), `preload.js missing IPC channel: ${ipc}`);
@@ -84,6 +90,12 @@ for (const bridgeMethod of [
   'savePortableData',
   'triggerSystemReboot',
   'saveLegacyScripts',
+  'listLocationProfiles',
+  'saveLocationProfile',
+  'loadLocationProfile',
+  'deleteLocationProfile',
+  'exportLocationProfileFile',
+  'importLocationProfileFile',
 ]) {
   assert(modPreload.includes(bridgeMethod), `preload.js missing bridge API: ${bridgeMethod}`);
 }
@@ -204,6 +216,84 @@ try {
   assert.strictEqual(reloadedUnlimited.document.shares[0].ttlMinutes, undefined);
   assert.strictEqual(reloadedUnlimited.document.shares[0].expiresAt, undefined);
   pass('portableStore.js AES-256-GCM encryption, BOM resilience, TTL clear & hostPolicies roundtrip verified');
+
+  // 3b. Per-location .location.json storage, collision guard, BOM & AES-256-GCM roundtrip
+  const locIdOffice1 = portableStore.sanitizeLocationId('사무실 1', '사무실 1');
+  const locIdHome1 = portableStore.sanitizeLocationId('집 1', '집 1');
+  assert.notStrictEqual(
+    locIdOffice1,
+    locIdHome1,
+    'Mixed non-ASCII + ASCII location IDs must not collide after sanitization'
+  );
+
+  const locSaveRes = store.saveLocationProfile({
+    locationName: '본사 사무실 1',
+    description: '디자인실 공유 + NAS Z드라이브',
+    networkHint: { subnetPrefix: '192.168.10', primaryIp: '192.168.10.25', hostname: 'OFFICE-PC' },
+    hostPreset: {
+      folderPath: 'D:\\OfficeShare',
+      shareName: 'OfficeDocs',
+      authMode: 'account',
+      permission: 'full',
+      username: 'OfficeAdmin',
+      password: 'LocHostSecret!1',
+    },
+    savedShares: [
+      {
+        sourceHostName: 'OFFICE-PC',
+        sourceIp: '192.168.10.25',
+        shareName: 'OfficeDocs',
+        folderPath: 'D:\\OfficeShare',
+        uncPath: '\\\\192.168.10.25\\OfficeDocs',
+        authMode: 'account',
+        permission: 'full',
+        username: 'OfficeAdmin',
+        password: 'LocShareSecret!2',
+        createdAt: '09:00:00',
+        updatedAt: '2026-11-17T09:00:00.000Z',
+        connectionCode: 'ABSHARE://placeholder',
+      },
+    ],
+    clientTargets: [
+      {
+        targetHost: '192.168.10.200',
+        shareName: 'DesignNAS',
+        driveLetter: 'z',
+        authMode: 'account',
+        username: 'NasUser',
+        password: 'LocClientSecret!3',
+        persistent: true,
+      },
+    ],
+  });
+  assert.strictEqual(locSaveRes.success, true, 'saveLocationProfile failed');
+  assert(fs.existsSync(locSaveRes.filePath), 'Location .location.json file missing on disk');
+
+  const rawLocDisk = fs.readFileSync(locSaveRes.filePath, 'utf8');
+  assert(!rawLocDisk.includes('LocHostSecret!1'), 'Plaintext hostPreset password leaked in .location.json!');
+  assert(!rawLocDisk.includes('LocShareSecret!2'), 'Plaintext savedShare password leaked in .location.json!');
+  assert(!rawLocDisk.includes('LocClientSecret!3'), 'Plaintext clientTarget password leaked in .location.json!');
+
+  fs.writeFileSync(locSaveRes.filePath, `\uFEFF${rawLocDisk}`, 'utf8');
+
+  const locList = store.listLocationProfiles();
+  assert.strictEqual(locList.success, true);
+  assert.strictEqual(locList.profiles.length, 1);
+  assert.strictEqual(locList.profiles[0].locationName, '본사 사무실 1');
+  assert.strictEqual(locList.profiles[0].shareCount, 1);
+  assert.strictEqual(locList.profiles[0].clientTargetCount, 1);
+
+  const locLoaded = store.loadLocationProfile(locSaveRes.profile.profileId);
+  assert.strictEqual(locLoaded.success, true);
+  assert.strictEqual(locLoaded.profile.hostPreset?.password, 'LocHostSecret!1');
+  assert.strictEqual(locLoaded.profile.savedShares[0].password, 'LocShareSecret!2');
+  assert.strictEqual(locLoaded.profile.clientTargets[0].password, 'LocClientSecret!3');
+  assert.strictEqual(locLoaded.profile.clientTargets[0].driveLetter, 'Z:');
+
+  const locDel = store.deleteLocationProfile(locSaveRes.profile.profileId);
+  assert.strictEqual(locDel.success, true);
+  assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
+  pass('Per-location .location.json AES-256-GCM encryption, BOM resilience, mixed-script ID safety & CRUD verified');
 } finally {
   fs.rmSync(tempUsbDir, { recursive: true, force: true });
 }
@@ -359,6 +449,8 @@ for (const ignoredEntry of [
   '/app/',
   'metadata.json',
   '*.portable.json',
+  '*.location.json',
+  '/locations/',
   'AhBiShare_CrossOS_Sync_Bridge*.json',
   'AhBiShare_Legacy_Win7_Win8_Kit/',
   '/release-win7/',
@@ -469,7 +561,48 @@ if (fs.existsSync(distAssetsDir)) {
   }
 }
 assert(fs.existsSync(path.join(rootDir, 'src', 'services', 'updateChecker.ts')), 'Missing updateChecker.ts');
-pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, accessibility & versioned GitHub workflow verified');
+
+// 8. Verify per-location UI components, bridge methods, and App.tsx wiring
+const locBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationProfileBar.tsx'), 'utf8');
+const locModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationManagerModal.tsx'), 'utf8');
+for (const uiId of [
+  'location-profile-bar',
+  'select-location-profile',
+  'btn-open-save-location',
+  'btn-quick-import-location',
+  'btn-open-location-manager',
+  'btn-batch-apply-location',
+  'location-batch-result',
+]) {
+  assert(locBarSrc.includes(uiId), `LocationProfileBar.tsx missing control: ${uiId}`);
+}
+assert(
+  locModalSrc.includes('role="dialog"') &&
+    locModalSrc.includes('aria-modal="true"') &&
+    locModalSrc.includes('btn-save-new-location') &&
+    locModalSrc.includes('btn-modal-import-json'),
+  'LocationManagerModal.tsx missing accessible dialog or save/import controls'
+);
+for (const fnMarker of [
+  'buildLocationProfileSnapshot',
+  'listLocationProfiles',
+  'saveLocationProfile',
+  'loadLocationProfile',
+  'deleteLocationProfile',
+  'exportLocationProfileFile',
+  'importLocationProfileFile',
+  'importLocationProfileFromJson',
+  'applyLocationProfileBatch',
+]) {
+  assert(bridgeSrc.includes(fnMarker), `shareBridge.ts missing location method: ${fnMarker}`);
+}
+assert(
+  appSrc.includes('LocationProfileBar') &&
+    appSrc.includes('LocationManagerModal') &&
+    appSrc.includes('applyLocationProfileToWorkspace'),
+  'App.tsx missing LocationProfileBar / LocationManagerModal / workspace auto-fill wiring'
+);
+pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);
