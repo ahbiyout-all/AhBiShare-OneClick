@@ -2,12 +2,19 @@ name: Build and Publish AhBiShare OneClick Release
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -47,31 +54,43 @@ jobs:
           $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
           Compress-Archive -Path dist\* -DestinationPath "dist/AhBiShare_OneClick-WebAssets-v$ver.zip" -Force
 
-      - name: Package Windows Executables with electron-builder
-        run: npx electron-builder --win
+      - name: Package Windows Executables & Lite EXEs
+        run: |
+          npm run electron:build:all
+          npx electron-builder --win nsis --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Release Notes
+      - name: Extract Version and Release Notes
         shell: bash
         run: |
           node -e "
             const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const ver = pkg.version;
+            console.log('APP_VERSION=' + ver);
+            fs.writeFileSync('.env.release', 'APP_VERSION=' + ver + '\n');
+            
             try {
               const txt = fs.readFileSync('docs/PATCH_NOTES.md', 'utf8');
               const sections = txt.split(/^# /m);
               const latest = sections[1] ? '# ' + sections[1] : txt.slice(0, 2000);
               fs.writeFileSync('RELEASE_CHANGELOG.md', latest.trim());
             } catch (e) {
-              fs.writeFileSync('RELEASE_CHANGELOG.md', 'AhBiShare OneClick Release ' + process.env.GITHUB_REF_NAME);
+              fs.writeFileSync('RELEASE_CHANGELOG.md', 'AhBiShare OneClick Release v' + ver);
             }
           "
+
+      - name: Read Version Environment
+        shell: bash
+        run: |
+          cat .env.release >> $GITHUB_ENV
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: AhBiShare OneClick ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', env.APP_VERSION) }}
+          name: AhBiShare OneClick v${{ env.APP_VERSION }}
           body_path: RELEASE_CHANGELOG.md
           draft: false
           prerelease: false
