@@ -11,7 +11,7 @@
     "name": "AhBiYout · (주)청운정보시스템 (cisnet.co.kr)",
     "url": "https://www.cisnet.co.kr"
   },
-  "homepage": "https://github.com/AhBiYout-all",
+  "homepage": "https://github.com/ahbiyout-all/AhBiShare-OneClick",
   "scripts": {
     "dev": "vite --port 3000 --host 0.0.0.0",
     "build": "vite build",

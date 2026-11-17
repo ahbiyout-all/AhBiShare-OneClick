@@ -131,28 +131,38 @@ function main() {
   verifyLiteUnpackedDir(path.join(liteDir, 'win-unpacked'));
 
   const liteOutPath = path.join(liteDir, 'AhBiShare_OneClick-Lite.exe');
-  const sharedLiteDest = path.join(releaseDir, 'AhBiShare_OneClick-Lite.exe');
+  const sharedLiteDest = path.join(releaseDir, 'AhBiShare_OneClick-Lite_v1.0.0.exe');
+  const sharedLiteBaseDest = path.join(releaseDir, 'AhBiShare_OneClick-Lite.exe');
   if (fs.existsSync(liteOutPath)) {
     fs.copyFileSync(liteOutPath, sharedLiteDest);
+    fs.copyFileSync(liteOutPath, sharedLiteBaseDest);
   }
 
-  const stdExe = path.join(releaseDir, 'AhBiShare_OneClick.exe');
+  const stdExeRaw = path.join(releaseDir, 'AhBiShare_OneClick.exe');
+  const stdExeVersioned = path.join(releaseDir, 'AhBiShare_OneClick_v1.0.0.exe');
+  if (fs.existsSync(stdExeRaw)) {
+    try {
+      fs.copyFileSync(stdExeRaw, stdExeVersioned);
+    } catch {}
+  }
+
   console.log('\n=======================================================');
   console.log('[*] Portable EXE Build Summary (Win 7~11 Standalone)');
   console.log('=======================================================');
+  const stdExe = fs.existsSync(stdExeVersioned) ? stdExeVersioned : stdExeRaw;
   if (fs.existsSync(stdExe)) {
     const stdBytes = fs.statSync(stdExe).size;
-    console.log(`  Standard EXE : release/AhBiShare_OneClick.exe (${formatMb(stdBytes)})`);
+    console.log(`  Standard EXE : release/AhBiShare_OneClick_v1.0.0.exe (${formatMb(stdBytes)})`);
     if (fs.existsSync(sharedLiteDest)) {
       const liteBytes = fs.statSync(sharedLiteDest).size;
       const savedBytes = stdBytes - liteBytes;
       const savedPct = stdBytes > 0 ? ((savedBytes / stdBytes) * 100).toFixed(1) : '0.0';
-      console.log(`  Lite EXE     : release/AhBiShare_OneClick-Lite.exe (${formatMb(liteBytes)})`);
+      console.log(`  Lite EXE     : release/AhBiShare_OneClick-Lite_v1.0.0.exe (${formatMb(liteBytes)})`);
       console.log(`  Size Reduced : -${formatMb(savedBytes)} (-${savedPct}%)`);
     }
   } else if (fs.existsSync(sharedLiteDest)) {
     const liteBytes = fs.statSync(sharedLiteDest).size;
-    console.log(`  Lite EXE     : release/AhBiShare_OneClick-Lite.exe (${formatMb(liteBytes)})`);
+    console.log(`  Lite EXE     : release/AhBiShare_OneClick-Lite_v1.0.0.exe (${formatMb(liteBytes)})`);
   }
   console.log('=======================================================\n');
 }

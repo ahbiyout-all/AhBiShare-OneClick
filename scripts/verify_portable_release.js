@@ -91,7 +91,7 @@ assert(
 );
 const appTsxSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8');
 for (const channelMarker of [
-  'https://github.com/AhBiYout-all',
+  'https://github.com/ahbiyout-all/AhBiShare-OneClick',
   'https://ahbiyoutvibe.blogspot.com/',
   'https://www.cisnet.co.kr',
   '(주)청운정보시스템',

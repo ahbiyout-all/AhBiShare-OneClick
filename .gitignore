@@ -14,6 +14,8 @@
 # github_release.bat
 # prepare_github_core.bat
 # scripts/export_github_core.js
+push_github.bat
+build_release.bat
 github_core/
 release_notes_temp.md
 RELEASE_CHANGELOG.md

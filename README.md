@@ -38,7 +38,7 @@ npm run electron:build:all   # 표준 + 경량 포터블 EXE 2종 일괄 빌드 
 
 ## 제작자 및 공식 채널 안내
 - **개발자**: AhBiYout
-- **GitHub 저장소**: https://github.com/AhBiYout-all
+- **GitHub 저장소**: https://github.com/ahbiyout-all/AhBiShare-OneClick
 - **공식 구글 블로그**: https://ahbiyoutvibe.blogspot.com/
 - **소속**: https://www.cisnet.co.kr
 - **소속회사**: (주)청운정보시스템 (cisnet.co.kr)

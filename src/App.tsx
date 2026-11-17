@@ -30,7 +30,9 @@ import { ClientPanel } from '@/components/ClientPanel';
 import { RollbackPanel } from '@/components/RollbackPanel';
 import { NetworkMatrixPanel } from '@/components/NetworkMatrixPanel';
 import { LegacySharingPanel } from '@/components/LegacySharingPanel';
-import { DiagnosticsModal, SuggestedPingTarget } from '@/components/DiagnosticsModal';
+import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
+import { UpdateModal } from './components/UpdateModal';
+import { checkForUpdates, ReleaseInfo } from './services/updateChecker';
 
 interface ActivityEntry {
   id: string;
@@ -107,6 +109,18 @@ export const App: React.FC = () => {
     if (isDark) root.classList.add('dark');
     else root.classList.remove('dark');
   }, [isDark]);
+
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [latestRelease, setLatestRelease] = useState<ReleaseInfo | null>(null);
+
+  useEffect(() => {
+    checkForUpdates('1.0.0').then((res: { hasUpdate: boolean; release?: ReleaseInfo }) => {
+      if (res.hasUpdate && res.release) {
+        setLatestRelease(res.release);
+        setUpdateModalOpen(true);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1066,12 +1080,12 @@ export const App: React.FC = () => {
             <span>
               GitHub 저장소:{' '}
               <a
-                href="https://github.com/AhBiYout-all"
+                href="https://github.com/ahbiyout-all/AhBiShare-OneClick"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-indigo-600 dark:text-indigo-400 hover:underline underline-offset-2"
               >
-                github.com/AhBiYout-all
+                github.com/ahbiyout-all/AhBiShare-OneClick
               </a>
             </span>
             <span>
@@ -1100,6 +1114,13 @@ export const App: React.FC = () => {
         onPingHost={handlePingHost}
         onClose={() => setDiagOpen(false)}
         onRerun={() => void handleOpenDiagnostics()}
+      />
+
+      <UpdateModal
+        isOpen={updateModalOpen}
+        currentVersion="1.0.0"
+        release={latestRelease}
+        onClose={() => setUpdateModalOpen(false)}
       />
     </div>
   );
