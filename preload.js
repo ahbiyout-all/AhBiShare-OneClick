@@ -21,4 +21,13 @@ contextBridge.exposeInMainWorld('ahbiShareElectron', {
   importLocationProfileFile: (payload) => ipcRenderer.invoke('import-location-profile-file', payload),
   checkGitHubUpdates: () => ipcRenderer.invoke('check-github-updates'),
   openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', { url }),
+  getUpdateRuntimeInfo: () => ipcRenderer.invoke('get-update-runtime-info'),
+  installPortableUpdate: (payload) => ipcRenderer.invoke('install-portable-update', payload),
+  cancelPortableUpdate: () => ipcRenderer.invoke('cancel-portable-update'),
+  onUpdateProgress: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('github-update-progress', handler);
+    return () => ipcRenderer.removeListener('github-update-progress', handler);
+  },
 });

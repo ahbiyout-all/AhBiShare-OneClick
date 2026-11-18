@@ -16,6 +16,7 @@
     "main.js",
     "preload.js",
     "portableStore.js",
+    "portableUpdater.js",
     "package.json",
     "icon.ico",
     "public/config.json",

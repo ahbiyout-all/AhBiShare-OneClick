@@ -1,3 +1,5 @@
+import { APP_VERSION } from '@/version';
+
 export interface ReleaseAsset {
   name: string;
   browserDownloadUrl: string;
@@ -111,6 +113,95 @@ export function shouldAutoPromptUpdate(tagName: string): boolean {
   return !skipped || skipped.toLowerCase() !== String(tagName || '').trim().toLowerCase();
 }
 
+export type PortableEdition = 'standard' | 'lite' | 'win7';
+
+export interface PortableUpdateRuntimeInfo {
+  isPackaged: boolean;
+  isPortable: boolean;
+  canSelfReplace: boolean;
+  edition: PortableEdition;
+  currentVersion: string;
+  portableExePath: string;
+  portableDir: string;
+  currentExeName: string;
+  reason?: string;
+}
+
+export interface PortableUpdateProgress {
+  phase: 'downloading' | 'verifying' | 'replacing' | 'error' | 'cancelled';
+  percent: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  message: string;
+}
+
+export function isPortableExeAsset(asset: ReleaseAsset): boolean {
+  const lower = String(asset?.name || '').toLowerCase();
+  return lower.endsWith('.exe') && !lower.includes('setup');
+}
+
+export function selectRecommendedPortableAsset(
+  assets: ReleaseAsset[] = [],
+  edition?: PortableEdition,
+  osBuild?: number
+): ReleaseAsset | undefined {
+  const portableAssets = assets.filter(isPortableExeAsset);
+  if (portableAssets.length === 0) return undefined;
+
+  const isLegacyWin = edition === 'win7' || (typeof osBuild === 'number' && osBuild > 0 && osBuild < 10240);
+  if (isLegacyWin) {
+    const win7 = portableAssets.find((a) => a.name.toLowerCase().includes('win7'));
+    if (win7) return win7;
+  }
+  if (edition === 'lite') {
+    const lite = portableAssets.find((a) => a.name.toLowerCase().includes('lite'));
+    if (lite) return lite;
+  }
+  const standard = portableAssets.find((a) => {
+    const lower = a.name.toLowerCase();
+    return !lower.includes('win7') && !lower.includes('lite');
+  });
+  return standard || portableAssets[0];
+}
+
+export async function getUpdateRuntimeInfo(): Promise<PortableUpdateRuntimeInfo | null> {
+  if (!window.ahbiShareElectron?.getUpdateRuntimeInfo) return null;
+  try {
+    return await window.ahbiShareElectron.getUpdateRuntimeInfo();
+  } catch {
+    return null;
+  }
+}
+
+export async function installPortableUpdate(asset: ReleaseAsset): Promise<{
+  success: boolean;
+  cancelled?: boolean;
+  oldExePath?: string;
+  targetExePath?: string;
+  error?: string;
+}> {
+  if (!window.ahbiShareElectron?.installPortableUpdate) {
+    return { success: false, error: 'Electron 데스크톱 앱에서만 포터블 자동 교체를 지원합니다.' };
+  }
+  return await window.ahbiShareElectron.installPortableUpdate({
+    downloadUrl: asset.browserDownloadUrl,
+    assetName: asset.name,
+    expectedSize: asset.size,
+  });
+}
+
+export async function cancelPortableUpdate(): Promise<{ success: boolean; cancelled: boolean }> {
+  if (!window.ahbiShareElectron?.cancelPortableUpdate) {
+    return { success: true, cancelled: false };
+  }
+  return await window.ahbiShareElectron.cancelPortableUpdate();
+}
+
+export function subscribeUpdateProgress(callback: (progress: PortableUpdateProgress) => void): () => void {
+  if (!window.ahbiShareElectron?.onUpdateProgress) return () => {};
+  return window.ahbiShareElectron.onUpdateProgress(callback);
+}
+
 export async function openExternalReleaseUrl(url: string): Promise<void> {
   const target = String(url || '').trim() || GITHUB_RELEASES_URL;
   if (window.ahbiShareElectron?.openExternalUrl) {
@@ -129,7 +220,7 @@ export async function openExternalReleaseUrl(url: string): Promise<void> {
   }
 }
 
-export async function checkForUpdates(currentVersion: string = '1.0.0'): Promise<UpdateCheckResult> {
+export async function checkForUpdates(currentVersion: string = APP_VERSION): Promise<UpdateCheckResult> {
   const checkedAt = new Date().toISOString();
 
   // Prefer Electron Main Process HTTPS query (handles Win 7 TLS, custom User-Agent & Atom feed fallback)

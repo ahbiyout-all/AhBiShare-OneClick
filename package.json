@@ -1,6 +1,6 @@
 {
   "name": "ahbishare-oneclick",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "main.js",
   "description": "AhBiShare OneClick - 1-Click Host & Client LAN Shared Folder Setup & Legacy Windows Compatibility Utility",
@@ -24,7 +24,8 @@
     "electron:build:win7": "node scripts/build_win7_exe.js",
     "electron:build:all": "node scripts/build_lite_exe.js --all",
     "verify": "node scripts/verify_portable_release.js",
-    "verify:share-oneclick": "node scripts/verify_portable_release.js"
+    "verify:share-oneclick": "node scripts/verify_portable_release.js",
+    "version:bump": "node scripts/bump_version.js"
   },
   "dependencies": {
     "lucide-react": "^1.21.0",
@@ -54,6 +55,7 @@
       "main.js",
       "preload.js",
       "portableStore.js",
+      "portableUpdater.js",
       "package.json",
       "icon.ico",
       "public/config.json"

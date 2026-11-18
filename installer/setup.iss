@@ -3,7 +3,7 @@
 
 #define AppName "AhBiShare OneClick"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #define AppPublisher "AhBiYout"
 #define AppCopyright "Copyright (c) 1998-2026 AhBiYout. All rights reserved."

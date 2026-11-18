@@ -12,6 +12,21 @@ const {
   hydrateLocationProfile,
   atomicWriteJson,
 } = require('./portableStore');
+const {
+  detectPortableRuntimeInfo,
+  isAllowedGitHubDownloadUrl,
+  sanitizeAssetExeName,
+  parseExpandedAssetsHtml,
+  validateDownloadedExecutable,
+  buildPortableSelfUpdatePsScript,
+} = require('./portableUpdater');
+const APP_PKG_VERSION = (() => {
+  try {
+    return require('./package.json').version || '1.1.0';
+  } catch {
+    return '1.1.0';
+  }
+})();
 
 let mainWindow = null;
 const portableStore = createPortableStore({ env: process.env, app, baseDir: __dirname });
@@ -619,8 +634,9 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
   }
 
   const resolvedBase = path.resolve(baseDir);
+  const resolvedBasePrefix = resolvedBase.endsWith(path.sep) ? resolvedBase : resolvedBase + path.sep;
   const targetDir = path.resolve(resolvedBase, folderName);
-  if (!targetDir.startsWith(resolvedBase + path.sep)) {
+  if (!targetDir.startsWith(resolvedBasePrefix)) {
     return {
       success: false,
       directory: '',
@@ -630,12 +646,13 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
   }
   try {
     fs.mkdirSync(targetDir, { recursive: true });
+    const targetDirPrefix = targetDir.endsWith(path.sep) ? targetDir : targetDir + path.sep;
     const savedFiles = [];
     for (const item of files) {
       const safeName = path.basename(String(item?.name || ''));
       if (!safeName || !/^[A-Za-z0-9_.-]+$/.test(safeName)) continue;
       const outPath = path.resolve(targetDir, safeName);
-      if (!outPath.startsWith(targetDir + path.sep)) continue;
+      if (!outPath.startsWith(targetDirPrefix)) continue;
       const rawContent = String(item?.content || '');
       if (safeName.toLowerCase().endsWith('.reg')) {
         // UTF-16LE with BOM ensures Windows 7/8/10/11 regedit.exe imports cleanly regardless of system codepage
@@ -767,7 +784,7 @@ function fetchTextHttps(urlString, headers = {}, redirectsLeft = 3) {
       urlString,
       {
         headers: {
-          'User-Agent': `AhBiShare-OneClick/${app.getVersion() || '1.0.0'}`,
+          'User-Agent': `AhBiShare-OneClick/${app.getVersion() || APP_PKG_VERSION}`,
           ...headers,
         },
         timeout: 8000,
@@ -867,6 +884,14 @@ ipcMain.handle('check-github-updates', async () => {
               .trim()
           : 'GitHub Releases 페이지에서 최신 릴리즈 상세 내역 및 설치 파일을 확인할 수 있습니다.';
         if (tagName) {
+          let fallbackAssets = [];
+          try {
+            const expandedUrl = `https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/expanded_assets/${encodeURIComponent(tagName)}`;
+            const expandedRes = await fetchTextHttps(expandedUrl, { Accept: 'text/html' });
+            if (expandedRes.status >= 200 && expandedRes.status < 300) {
+              fallbackAssets = parseExpandedAssetsHtml(expandedRes.body);
+            }
+          } catch {}
           return {
             ok: true,
             release: {
@@ -875,7 +900,7 @@ ipcMain.handle('check-github-updates', async () => {
               body: bodyText || '새로운 업데이트가 출시되었습니다.',
               htmlUrl,
               publishedAt: updatedMatch ? updatedMatch[1].trim() : '',
-              assets: [],
+              assets: fallbackAssets,
             },
           };
         }
@@ -900,6 +925,376 @@ ipcMain.handle('open-external-url', async (_event, { url }) => {
     return { success: true };
   } catch (err) {
     return { success: false, error: err && err.message ? err.message : '외부 브라우저 열기에 실패했습니다.' };
+  }
+});
+
+let activeUpdateDownload = null;
+
+function emitUpdateProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('github-update-progress', payload);
+    } catch {}
+  }
+}
+
+function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, onProgress, stateRef, redirectsLeft = 6) {
+  return new Promise((resolve, reject) => {
+    if (stateRef.cancelled) {
+      reject(new Error('사용자에 의해 다운로드가 취소되었습니다.'));
+      return;
+    }
+    if (!isAllowedGitHubDownloadUrl(urlString)) {
+      reject(new Error('허용되지 않은 업데이트 다운로드 URL입니다.'));
+      return;
+    }
+
+    let settled = false;
+    const req = https.get(
+      urlString,
+      {
+        headers: {
+          'User-Agent': `AhBiShare-OneClick/${app.getVersion() || APP_PKG_VERSION}`,
+          Accept: 'application/octet-stream,*/*',
+        },
+        timeout: 30000,
+      },
+      (res) => {
+        stateRef.res = res;
+        const status = res.statusCode || 0;
+        if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
+          res.resume();
+          if (redirectsLeft <= 0) {
+            settled = true;
+            reject(new Error('리다이렉트 횟수를 초과했습니다.'));
+            return;
+          }
+          let nextUrl = '';
+          try {
+            nextUrl = new URL(res.headers.location, urlString).toString();
+          } catch {
+            settled = true;
+            reject(new Error('잘못된 리다이렉트 URL입니다.'));
+            return;
+          }
+          downloadFileHttpsWithProgress(nextUrl, destFilePath, expectedSize, onProgress, stateRef, redirectsLeft - 1).then(
+            resolve,
+            reject
+          );
+          return;
+        }
+
+        if (status < 200 || status >= 300) {
+          res.resume();
+          settled = true;
+          reject(new Error(`다운로드 HTTP 오류 (${status})`));
+          return;
+        }
+
+        const headerLen = Number(res.headers['content-length']) || 0;
+        const totalBytes = headerLen > 0 ? headerLen : Number(expectedSize) || 0;
+        let downloadedBytes = 0;
+        let lastEmitAt = 0;
+
+        const outStream = fs.createWriteStream(destFilePath);
+        stateRef.stream = outStream;
+
+        const failWithClose = (err) => {
+          if (settled) return;
+          settled = true;
+          try {
+            res.unpipe(outStream);
+          } catch {}
+          try {
+            req.destroy();
+          } catch {}
+          try {
+            res.destroy();
+          } catch {}
+          try {
+            outStream.close(() => reject(err));
+          } catch {
+            try {
+              outStream.destroy();
+            } catch {}
+            reject(err);
+          }
+        };
+
+        res.on('data', (chunk) => {
+          if (stateRef.cancelled) {
+            failWithClose(new Error('사용자에 의해 다운로드가 취소되었습니다.'));
+            return;
+          }
+          downloadedBytes += chunk.length;
+          const now = Date.now();
+          if (now - lastEmitAt >= 120 || (totalBytes > 0 && downloadedBytes >= totalBytes)) {
+            lastEmitAt = now;
+            const percent = totalBytes > 0 ? Math.min(99, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
+            onProgress({ downloadedBytes, totalBytes, percent });
+          }
+        });
+
+        res.on('aborted', () => {
+          failWithClose(
+            new Error(stateRef.cancelled ? '사용자에 의해 다운로드가 취소되었습니다.' : '다운로드 연결이 중단되었습니다.')
+          );
+        });
+
+        res.on('close', () => {
+          if (!settled && !res.complete) {
+            failWithClose(
+              new Error(stateRef.cancelled ? '사용자에 의해 다운로드가 취소되었습니다.' : '다운로드가 완료되기 전에 연결이 종료되었습니다.')
+            );
+          }
+        });
+
+        res.on('error', (err) => failWithClose(err));
+        outStream.on('error', (err) => failWithClose(err));
+
+        outStream.on('finish', () => {
+          outStream.close(() => {
+            if (settled) return;
+            if (stateRef.cancelled) {
+              settled = true;
+              reject(new Error('사용자에 의해 다운로드가 취소되었습니다.'));
+              return;
+            }
+            if (!res.complete) {
+              settled = true;
+              reject(new Error('다운로드 스트림이 불완전하게 종료되었습니다.'));
+              return;
+            }
+            settled = true;
+            resolve({ downloadedBytes, totalBytes });
+          });
+        });
+
+        res.pipe(outStream);
+      }
+    );
+
+    stateRef.req = req;
+    req.on('timeout', () => {
+      req.destroy(new Error('업데이트 파일 다운로드 응답 시간이 초과되었습니다.'));
+    });
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(stateRef.cancelled ? new Error('사용자에 의해 다운로드가 취소되었습니다.') : err);
+    });
+  });
+}
+
+ipcMain.handle('get-update-runtime-info', async () => {
+  const osInfo = getWindowsOsDetails();
+  return detectPortableRuntimeInfo({
+    env: process.env,
+    app,
+    execPath: process.execPath,
+    osBuild: osInfo.osBuild,
+  });
+});
+
+ipcMain.handle('cancel-portable-update', async () => {
+  const targetDownload = activeUpdateDownload;
+  if (!targetDownload) {
+    return { success: true, cancelled: false };
+  }
+  targetDownload.cancelled = true;
+  try {
+    if (targetDownload.req) targetDownload.req.destroy();
+  } catch {}
+  try {
+    if (targetDownload.res) targetDownload.res.destroy();
+  } catch {}
+  if (targetDownload.cleanupPromise) {
+    try {
+      await targetDownload.cleanupPromise;
+    } catch {}
+  }
+  emitUpdateProgress({
+    phase: 'cancelled',
+    percent: 0,
+    downloadedBytes: 0,
+    totalBytes: 0,
+    message: '업데이트 다운로드가 취소되었습니다.',
+  });
+  return { success: true, cancelled: true };
+});
+
+ipcMain.handle('install-portable-update', async (_event, payload) => {
+  if (activeUpdateDownload) {
+    return { success: false, error: '이미 업데이트 다운로드가 진행 중입니다.' };
+  }
+
+  const osInfo = getWindowsOsDetails();
+  const runtime = detectPortableRuntimeInfo({
+    env: process.env,
+    app,
+    execPath: process.execPath,
+    osBuild: osInfo.osBuild,
+  });
+
+  if (!runtime.canSelfReplace || !runtime.portableExePath) {
+    return {
+      success: false,
+      error: runtime.reason || '포터블 EXE 실행 환경이 아니므로 자동 교체를 실행할 수 없습니다.',
+    };
+  }
+
+  const downloadUrl = String(payload?.downloadUrl || '').trim();
+  const safeAssetName = sanitizeAssetExeName(payload?.assetName);
+  const expectedSize = Number(payload?.expectedSize) || 0;
+
+  if (!isAllowedGitHubDownloadUrl(downloadUrl)) {
+    return { success: false, error: '신뢰할 수 있는 GitHub 공식 릴리즈 다운로드 주소가 아닙니다.' };
+  }
+  if (!safeAssetName || safeAssetName.toLowerCase().includes('setup')) {
+    return { success: false, error: '포터블 교체용 실행 파일(.exe)만 자동 교체를 지원합니다.' };
+  }
+
+  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-portable-update-'));
+  const partFilePath = path.join(stagingDir, `${safeAssetName}.part`);
+  const stagedExePath = path.join(stagingDir, safeAssetName);
+  const psScriptPath = path.join(stagingDir, 'apply_portable_update.ps1');
+  const targetExePath = path.join(runtime.portableDir, safeAssetName);
+
+  let resolveCleanup = () => {};
+  const cleanupPromise = new Promise((res) => {
+    resolveCleanup = res;
+  });
+
+  const downloadState = {
+    cancelled: false,
+    req: null,
+    res: null,
+    stream: null,
+    stagingDir,
+    cleanupPromise,
+  };
+  activeUpdateDownload = downloadState;
+
+  const cleanupStaging = () => {
+    try {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    } catch {}
+  };
+
+  try {
+    emitUpdateProgress({
+      phase: 'downloading',
+      percent: 0,
+      downloadedBytes: 0,
+      totalBytes: expectedSize,
+      message: `${safeAssetName} 내려받는 중...`,
+    });
+
+    const dlRes = await downloadFileHttpsWithProgress(
+      downloadUrl,
+      partFilePath,
+      expectedSize,
+      ({ downloadedBytes, totalBytes, percent }) => {
+        emitUpdateProgress({
+          phase: 'downloading',
+          percent,
+          downloadedBytes,
+          totalBytes,
+          message: `${safeAssetName} 내려받는 중... (${percent}%)`,
+        });
+      },
+      downloadState
+    );
+
+    emitUpdateProgress({
+      phase: 'verifying',
+      percent: 100,
+      downloadedBytes: dlRes.downloadedBytes,
+      totalBytes: dlRes.totalBytes || dlRes.downloadedBytes,
+      message: '다운로드 파일 무결성(PE 실행 헤더) 검증 중...',
+    });
+
+    const verifyRes = validateDownloadedExecutable(partFilePath, dlRes.totalBytes || expectedSize);
+    if (!verifyRes.valid) {
+      cleanupStaging();
+      emitUpdateProgress({
+        phase: 'error',
+        percent: 0,
+        downloadedBytes: dlRes.downloadedBytes,
+        totalBytes: dlRes.totalBytes,
+        message: verifyRes.error || '다운로드된 파일 검증에 실패했습니다.',
+      });
+      return { success: false, error: verifyRes.error || '다운로드된 파일 검증 실패' };
+    }
+
+    fs.renameSync(partFilePath, stagedExePath);
+
+    const psScript = buildPortableSelfUpdatePsScript({
+      appPid: process.pid,
+      parentPid: process.ppid || 0,
+      oldExePath: runtime.portableExePath,
+      stagedExePath,
+      targetExePath,
+      stagingDir,
+    });
+    fs.writeFileSync(psScriptPath, `\uFEFF${psScript}`, 'utf8');
+
+    emitUpdateProgress({
+      phase: 'replacing',
+      percent: 100,
+      downloadedBytes: dlRes.downloadedBytes,
+      totalBytes: dlRes.downloadedBytes,
+      message: `기존 포터블(${runtime.currentExeName}) 종료·제거 후 ${safeAssetName} 교체·재실행 중...`,
+    });
+
+    const updaterProc = spawn(
+      getPowerShellExe(),
+      ['-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', psScriptPath],
+      {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      }
+    );
+    updaterProc.unref();
+
+    setTimeout(() => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy();
+        }
+      } catch {}
+      app.exit(0);
+    }, 350);
+
+    return {
+      success: true,
+      oldExePath: runtime.portableExePath,
+      targetExePath,
+    };
+  } catch (err) {
+    const errMsg = err && err.message ? err.message : '포터블 자동 업데이트 중 오류가 발생했습니다.';
+    const wasCancelled = downloadState.cancelled;
+    cleanupStaging();
+    if (!wasCancelled) {
+      emitUpdateProgress({
+        phase: 'error',
+        percent: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        message: errMsg,
+      });
+    }
+    return {
+      success: false,
+      cancelled: wasCancelled,
+      error: errMsg,
+    };
+  } finally {
+    if (activeUpdateDownload === downloadState) {
+      activeUpdateDownload = null;
+    }
+    resolveCleanup();
   }
 });
 

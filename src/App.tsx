@@ -27,6 +27,7 @@ import {
   LocationBatchApplyResult,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
+import { APP_VERSION } from '@/version';
 import { generateSecureSharePassword } from '@/utils/connectionCode';
 import { formatEraShortLabel } from '@/services/networkEvolution';
 import { TopBar } from '@/components/TopBar';
@@ -210,7 +211,7 @@ export const App: React.FC = () => {
       updateCheckInFlightRef.current = true;
       setIsCheckingUpdates(true);
       try {
-        const res = await checkForUpdates('1.0.0');
+        const res = await checkForUpdates(APP_VERSION);
         if (res.hasUpdate && res.release) {
           setLatestRelease(res.release);
           if (manual) {
@@ -231,8 +232,8 @@ export const App: React.FC = () => {
             showToast(`업데이트 확인 실패: ${res.error}`);
             appendLog('GitHub 업데이트', `확인 실패: ${res.error}`, 'error');
           } else {
-            showToast('현재 최신 버전(v1.0.0)을 사용 중입니다.');
-            appendLog('GitHub 업데이트', '최신 버전(v1.0.0) 확인 완료', 'success');
+            showToast(`현재 최신 버전(v${APP_VERSION})을 사용 중입니다.`);
+            appendLog('GitHub 업데이트', `최신 버전(v${APP_VERSION}) 확인 완료`, 'success');
           }
         }
       } finally {
@@ -1471,7 +1472,7 @@ export const App: React.FC = () => {
         <div className="max-w-6xl mx-auto flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <span className="tabular-data font-medium text-slate-700 dark:text-slate-300">
-              AhBiShare OneClick v1.0.0 · Copyright © 1998-2026 AhBiYout. All rights reserved.
+              AhBiShare OneClick v{APP_VERSION} · Copyright © 1998-2026 AhBiYout. All rights reserved.
             </span>
             <div className="flex flex-wrap items-center gap-4">
               <button
@@ -1547,7 +1548,7 @@ export const App: React.FC = () => {
 
       <UpdateModal
         isOpen={updateModalOpen}
-        currentVersion="1.0.0"
+        currentVersion={APP_VERSION}
         release={latestRelease}
         osBuild={policyStatus?.osBuild || netInfo.osBuild}
         isRechecking={isCheckingUpdates}

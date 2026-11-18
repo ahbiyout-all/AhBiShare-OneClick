@@ -28,15 +28,22 @@ console.log('=======================================================');
 const rootPkg = readJson(path.join(rootDir, 'package.json'));
 const rootConfig = readJson(path.join(rootDir, 'public', 'config.json'));
 
-for (const reqFile of ['dist/**/*', 'main.js', 'preload.js', 'portableStore.js', 'package.json']) {
+for (const reqFile of ['dist/**/*', 'main.js', 'preload.js', 'portableStore.js', 'portableUpdater.js', 'package.json']) {
   assert(
     Array.isArray(rootPkg.build?.files) && rootPkg.build.files.includes(reqFile),
     `package.json build.files missing "${reqFile}"`
   );
 }
 assert.strictEqual(rootPkg.name, 'ahbishare-oneclick');
-assert.strictEqual(rootPkg.version, '1.0.0');
+assert(/^\d+\.\d+\.\d+$/.test(rootPkg.version), `package.json version must strictly follow SemVer MAJOR.MINOR.PATCH (got "${rootPkg.version}")`);
+assert.strictEqual(rootPkg.version, '1.1.0');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
+const srcVersionTs = fs.readFileSync(path.join(rootDir, 'src', 'version.ts'), 'utf8');
+assert(
+  srcVersionTs.includes(`APP_VERSION = '${rootPkg.version}'`),
+  `src/version.ts must match package.json version (${rootPkg.version})`
+);
+assert(fs.existsSync(path.join(rootDir, 'scripts', 'bump_version.js')), 'Missing scripts/bump_version.js');
 assert.strictEqual(rootPkg.build?.win?.requestedExecutionLevel, 'requireAdministrator');
 assert.strictEqual(rootPkg.build?.win?.artifactName, 'AhBiShare_OneClick_v${version}.${ext}');
 assert.strictEqual(rootPkg.build?.nsis?.artifactName, 'AhBiShare_OneClick-Setup_v${version}.${ext}');
@@ -46,12 +53,14 @@ const liteCfg = readJson(path.join(rootDir, 'build-config-lite.json'));
 assert.strictEqual(liteCfg.compression, 'maximum');
 assert.strictEqual(liteCfg.afterPack, 'scripts/prune_electron_pack.js');
 assert(Array.isArray(liteCfg.electronLanguages) && liteCfg.electronLanguages.includes('ko') && liteCfg.electronLanguages.includes('en-US'), 'build-config-lite.json must preserve ko and en-US locales');
+assert(Array.isArray(liteCfg.files) && liteCfg.files.includes('portableUpdater.js'), 'build-config-lite.json files missing portableUpdater.js');
 assert(Array.isArray(liteCfg.files) && liteCfg.files.includes('!**/node_modules/**/*'), 'build-config-lite.json must exclude redundant node_modules from app.asar');
 assert.strictEqual(liteCfg.win?.requestedExecutionLevel, 'requireAdministrator');
 assert.strictEqual(liteCfg.portable?.artifactName, 'AhBiShare_OneClick-Lite_v${version}.${ext}');
 
 const win7Cfg = readJson(path.join(rootDir, 'build-config-win7.json'));
 assert.strictEqual(win7Cfg.electronVersion, '21.4.4');
+assert(Array.isArray(win7Cfg.files) && win7Cfg.files.includes('portableUpdater.js'), 'build-config-win7.json files missing portableUpdater.js');
 assert.strictEqual(win7Cfg.portable?.artifactName, 'AhBiShare_OneClick_Win7_v${version}.${ext}');
 for (const [cfgName, c] of [
   ['package.json', rootPkg.build?.copyright],
@@ -87,8 +96,12 @@ for (const ipc of [
   'import-location-profile-file',
   'check-github-updates',
   'open-external-url',
+  'get-update-runtime-info',
+  'install-portable-update',
+  'cancel-portable-update',
+  'github-update-progress',
 ]) {
-  assert(modMain.includes(ipc), `main.js missing IPC handler: ${ipc}`);
+  assert(modMain.includes(ipc), `main.js missing IPC handler/event: ${ipc}`);
   assert(modPreload.includes(ipc), `preload.js missing IPC channel: ${ipc}`);
 }
 for (const bridgeMethod of [
@@ -107,6 +120,10 @@ for (const bridgeMethod of [
   'importLocationProfileFile',
   'checkGitHubUpdates',
   'openExternalUrl',
+  'getUpdateRuntimeInfo',
+  'installPortableUpdate',
+  'cancelPortableUpdate',
+  'onUpdateProgress',
 ]) {
   assert(modPreload.includes(bridgeMethod), `preload.js missing bridge API: ${bridgeMethod}`);
 }
@@ -446,8 +463,22 @@ for (const marker of [
   assert(issSrc.includes(marker), `installer/setup.iss missing marker: ${marker}`);
 }
 
-for (const docFile of ['PATCH_NOTES.md', 'google_blogger_post.md', 'github_release_guide.md']) {
+for (const docFile of [
+  'README.md',
+  'PATCH_NOTES.md',
+  'VERSIONING.md',
+  'google_blogger_post.md',
+  'github_release_post.md',
+  'github_release_guide.md',
+]) {
   assert(fs.existsSync(path.join(rootDir, 'docs', docFile)), `Missing docs/${docFile}`);
+}
+for (const verDoc of ['PATCH_NOTES.md', 'google_blogger_post.md', 'github_release_post.md']) {
+  const docBody = fs.readFileSync(path.join(rootDir, 'docs', verDoc), 'utf8');
+  assert(
+    docBody.includes(`v${rootPkg.version}`),
+    `docs/${verDoc} must record the current release version v${rootPkg.version}`
+  );
 }
 
 const workflowSrc = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'release.yml'), 'utf8');
@@ -458,14 +489,22 @@ assert(!workflowSrc.includes('dist/*.zip') && !workflowSrc.includes('android') &
 const gitignoreSrc = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
 for (const ignoredEntry of [
   'push_github.bat',
+  'push_github*.bat',
   'build_release.bat',
   '/app/',
+  '.aistudio/',
   'metadata.json',
+  '/public/assets/aistudio/',
   '*.portable.json',
   '*.location.json',
   '/locations/',
   'AhBiShare_CrossOS_Sync_Bridge*.json',
   'AhBiShare_Legacy_Win7_Win8_Kit/',
+  'AhBiShare_*.bat',
+  'AhBiShare_*.reg',
+  '_ahbishare_update/',
+  '*.part',
+  '*apply_portable_update.ps1',
   '/release-win7/',
   '/release-github/',
   'builder-debug.yml',
@@ -480,8 +519,12 @@ if (fs.existsSync(pushBatPath)) {
   assert(
     pushBatSrc.includes('EnableDelayedExpansion') &&
       pushBatSrc.includes('git reset --soft origin/main') &&
+      pushBatSrc.includes('core.quotepath=false') &&
+      pushBatSrc.includes('public/assets/aistudio') &&
+      pushBatSrc.includes('git ls-files --cached --error-unmatch') &&
+      pushBatSrc.includes('git push -u origin HEAD:main') &&
       pushBatSrc.includes('--cached --ignore-unmatch app metadata.json push_github.bat'),
-    'push_github.bat must enable delayed expansion, link origin/main safely, and untrack stale excluded files'
+    'push_github.bat must enable delayed expansion, link origin/main safely, untrack public/assets/aistudio & non-ASCII ignored paths, guard excluded files, and push to main'
   );
 }
 
@@ -510,8 +553,11 @@ assert(
 assert(
   mainJsSrc.includes('Get-Variable -Name PSDefaultParameterValues') &&
     mainJsSrc.includes('decodeXmlEntities(contentMatch[1])') &&
-    mainJsSrc.includes('return { ok: true, release: null };'),
-  'main.js must guard PSDefaultParameterValues for PS 2.0, decode XML entities before stripping Atom HTML, and handle empty <feed>'
+    mainJsSrc.includes('return { ok: true, release: null };') &&
+    mainJsSrc.includes('resolvedBasePrefix') &&
+    mainJsSrc.includes('res.complete') &&
+    mainJsSrc.includes('cleanupPromise'),
+  'main.js must guard PSDefaultParameterValues, handle empty Atom feed, support drive-root save-legacy-scripts, and guard stream completeness/cancel cleanup'
 );
 
 assert(
@@ -524,12 +570,12 @@ assert(
 
 const appSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8');
 assert(
-  appSrc.includes(`checkForUpdates('${rootPkg.version}')`) &&
-    appSrc.includes(`currentVersion="${rootPkg.version}"`) &&
+  appSrc.includes('checkForUpdates(APP_VERSION)') &&
+    appSrc.includes('currentVersion={APP_VERSION}') &&
     appSrc.includes('autoRevoked: revoked') &&
     appSrc.includes('updateCheckInFlightRef') &&
     appSrc.includes('z-[60]'),
-  `App.tsx update checker version must match package.json (${rootPkg.version}), prevent overlapping checks, render toasts above modals, and report accurate autoRevoked state`
+  'App.tsx must use centralized APP_VERSION, prevent overlapping checks, render toasts above modals, and report accurate autoRevoked state'
 );
 
 const updateModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'UpdateModal.tsx'), 'utf8');
@@ -538,8 +584,12 @@ assert(
     updateModalSrc.includes('aria-modal="true"') &&
     updateModalSrc.includes('github-update-modal') &&
     updateModalSrc.includes('btn-update-download') &&
+    updateModalSrc.includes('btn-auto-replace-portable') &&
+    updateModalSrc.includes('btn-cancel-portable-update') &&
+    updateModalSrc.includes('portable-update-progress') &&
+    updateModalSrc.includes('hasUserSelectedAssetRef') &&
     updateModalSrc.includes('btn-skip-update-version'),
-  'UpdateModal.tsx must provide accessible dialog ARIA attributes and update confirmation actions'
+  'UpdateModal.tsx must provide accessible dialog ARIA attributes, update confirmation, sticky selection, and portable auto-replace progress actions'
 );
 
 assert(
@@ -642,6 +692,143 @@ assert(
   'App.tsx missing LocationProfileBar / LocationManagerModal / workspace auto-fill wiring or AhBiYout copyright'
 );
 pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
+
+// 9. Functional unit test of portableUpdater.js (runtime detection, edition matching, URL allowlist, PE verification, PS 2.0 script)
+const portableUpdater = require(path.join(rootDir, 'portableUpdater.js'));
+const tmpUpdaterDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-updater-verify-'));
+try {
+  const fakeOldExe = path.join(tmpUpdaterDir, "AhBiShare_OneClick-Lite_v1.0.0'test.exe");
+  const validPeBuf = Buffer.concat([Buffer.from([0x4d, 0x5a]), Buffer.alloc(2046, 0)]);
+  fs.writeFileSync(fakeOldExe, validPeBuf);
+
+  const peCheck = portableUpdater.validateDownloadedExecutable(fakeOldExe, validPeBuf.length);
+  assert.strictEqual(peCheck.valid, true, 'Valid MZ PE buffer must pass validateDownloadedExecutable');
+
+  const badPePath = path.join(tmpUpdaterDir, 'bad.exe');
+  fs.writeFileSync(badPePath, '<html>404 Not Found</html>'.repeat(100));
+  const badCheck = portableUpdater.validateDownloadedExecutable(badPePath);
+  assert.strictEqual(badCheck.valid, false, 'HTML response must fail PE validation');
+
+  const liteRuntime = portableUpdater.detectPortableRuntimeInfo({
+    env: { PORTABLE_EXECUTABLE_FILE: fakeOldExe },
+    app: { isPackaged: true, getName: () => 'AhBiShare_OneClick_Lite', getVersion: () => '1.0.0' },
+    execPath: 'C:\\Temp\\app.exe',
+    platform: 'win32',
+    osBuild: 26100,
+  });
+  assert.strictEqual(liteRuntime.isPortable, true);
+  assert.strictEqual(liteRuntime.canSelfReplace, true);
+  assert.strictEqual(liteRuntime.edition, 'lite');
+
+  assert.strictEqual(
+    portableUpdater.detectEdition({
+      appName: 'AhBiShare_OneClick',
+      portableExePath: 'D:\\Win7_Backup\\Lite_Folder\\AhBiShare_OneClick_v1.0.0.exe',
+      execPath: 'C:\\LiteTemp\\app.exe',
+      electronVersion: '41.3.0',
+      osBuild: 26100,
+    }),
+    'standard',
+    'detectEdition must ignore win7/lite substrings in parent directory names'
+  );
+
+  const sampleAssets = [
+    { name: 'AhBiShare_OneClick-Setup_v1.1.0.exe', browserDownloadUrl: 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/download/v1.1.0/AhBiShare_OneClick-Setup_v1.1.0.exe', size: 100 },
+    { name: 'AhBiShare_OneClick_v1.1.0.exe', browserDownloadUrl: 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/download/v1.1.0/AhBiShare_OneClick_v1.1.0.exe', size: 100 },
+    { name: 'AhBiShare_OneClick-Lite_v1.1.0.exe', browserDownloadUrl: 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/download/v1.1.0/AhBiShare_OneClick-Lite_v1.1.0.exe', size: 100 },
+    { name: 'AhBiShare_OneClick_Win7_v1.1.0.exe', browserDownloadUrl: 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/download/v1.1.0/AhBiShare_OneClick_Win7_v1.1.0.exe', size: 100 },
+  ];
+  assert.strictEqual(
+    portableUpdater.selectMatchingPortableAsset(sampleAssets, { edition: 'standard', osBuild: 26100 }).name,
+    'AhBiShare_OneClick_v1.1.0.exe'
+  );
+  assert.strictEqual(
+    portableUpdater.selectMatchingPortableAsset(sampleAssets, { edition: 'lite', osBuild: 26100 }).name,
+    'AhBiShare_OneClick-Lite_v1.1.0.exe'
+  );
+  assert.strictEqual(
+    portableUpdater.selectMatchingPortableAsset(sampleAssets, { edition: 'win7', osBuild: 7601 }).name,
+    'AhBiShare_OneClick_Win7_v1.1.0.exe'
+  );
+
+  assert.strictEqual(
+    portableUpdater.isAllowedGitHubDownloadUrl('https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/download/v1.1.0/AhBiShare_OneClick_v1.1.0.exe'),
+    true
+  );
+  assert.strictEqual(
+    portableUpdater.isAllowedGitHubDownloadUrl('https://objects.githubusercontent.com/github-production-release-asset-2e65be/test'),
+    true
+  );
+  assert.strictEqual(
+    portableUpdater.isAllowedGitHubDownloadUrl('https://evil.example.com/payload.exe'),
+    false
+  );
+
+  const parsedHtmlAssets = portableUpdater.parseExpandedAssetsHtml(
+    '<a href="/ahbiyout-all/AhBiShare-OneClick/releases/download/v1.1.0/AhBiShare_OneClick_v1.1.0.exe">dl</a>'
+  );
+  assert.strictEqual(parsedHtmlAssets.length, 1);
+  assert.strictEqual(parsedHtmlAssets[0].name, 'AhBiShare_OneClick_v1.1.0.exe');
+
+  const psSelfScript = portableUpdater.buildPortableSelfUpdatePsScript({
+    appPid: 1234,
+    parentPid: 1200,
+    oldExePath: fakeOldExe,
+    stagedExePath: path.join(tmpUpdaterDir, 'new.exe'),
+    targetExePath: path.join(tmpUpdaterDir, 'AhBiShare_OneClick-Lite_v1.1.0.exe'),
+    stagingDir: tmpUpdaterDir,
+  });
+  assert(
+    psSelfScript.includes('Remove-Item -LiteralPath $oldExe -Force') &&
+      psSelfScript.includes('Copy-Item -LiteralPath $stagedExe -Destination $targetExe -Force') &&
+      psSelfScript.includes('Start-Process -FilePath $targetExe') &&
+      psSelfScript.includes("''test.exe") &&
+      !psSelfScript.includes('[PSCustomObject]@{') &&
+      !/\s-(?:in|notin)\b/.test(psSelfScript),
+    'buildPortableSelfUpdatePsScript must be PS 2.0 compatible, escape single quotes, delete old EXE, copy target EXE, and relaunch'
+  );
+  pass('portableUpdater.js runtime edition detection, GitHub asset allowlist, PE validation & PS 2.0 self-replacement script verified');
+} finally {
+  fs.rmSync(tmpUpdaterDir, { recursive: true, force: true });
+}
+
+// 10. Functional unit test of Semantic Versioning 3-tier bump & auto patch-note recorder
+const bumpTool = require(path.join(rootDir, 'scripts', 'bump_version.js'));
+assert.strictEqual(bumpTool.computeNextSemVer('1.1.0', 'major'), '2.0.0');
+assert.strictEqual(bumpTool.computeNextSemVer('1.1.0', 'minor'), '1.2.0');
+assert.strictEqual(bumpTool.computeNextSemVer('1.1.0', 'patch'), '1.1.1');
+const tmpBumpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-semver-verify-'));
+try {
+  fs.mkdirSync(path.join(tmpBumpRoot, 'public'), { recursive: true });
+  fs.mkdirSync(path.join(tmpBumpRoot, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(tmpBumpRoot, 'docs'), { recursive: true });
+  fs.mkdirSync(path.join(tmpBumpRoot, 'installer'), { recursive: true });
+  fs.writeFileSync(path.join(tmpBumpRoot, 'package.json'), JSON.stringify({ name: 'test', version: '1.1.0' }, null, 2));
+  fs.writeFileSync(path.join(tmpBumpRoot, 'public', 'config.json'), JSON.stringify({ version: '1.1.0' }, null, 2));
+  fs.writeFileSync(path.join(tmpBumpRoot, 'src', 'version.ts'), "export const APP_VERSION = '1.1.0';\n");
+  fs.writeFileSync(path.join(tmpBumpRoot, 'installer', 'setup.iss'), '#define AppVersion "1.1.0"\n');
+  fs.writeFileSync(path.join(tmpBumpRoot, 'README.md'), '# AhBiShare OneClick v1.1.0\nAhBiShare_OneClick_v1.1.0.exe\n');
+  fs.writeFileSync(path.join(tmpBumpRoot, 'docs', 'PATCH_NOTES.md'), '# 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)\n\n## 📅 v1.1.0\n');
+  fs.writeFileSync(path.join(tmpBumpRoot, 'docs', 'google_blogger_post.md'), 'AhBiShare OneClick v1.1.0\nAhBiShare_OneClick_v1.1.0.exe\n');
+  fs.writeFileSync(path.join(tmpBumpRoot, 'docs', 'github_release_post.md'), 'AhBiShare OneClick v1.1.0\nAhBiShare_OneClick-Lite_v1.1.0.exe\n');
+
+  const bumpRes = bumpTool.runBump({
+    level: 'patch',
+    summary: 'Win7 테스트 패치',
+    notes: ['특이점 자동 기록 테스트'],
+    targetRoot: tmpBumpRoot,
+  });
+  assert.strictEqual(bumpRes.nextVersion, '1.1.1');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(tmpBumpRoot, 'package.json'), 'utf8')).version, '1.1.1');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(tmpBumpRoot, 'public', 'config.json'), 'utf8')).version, '1.1.1');
+  assert(fs.readFileSync(path.join(tmpBumpRoot, 'src', 'version.ts'), 'utf8').includes('1.1.1'));
+  const patchText = fs.readFileSync(path.join(tmpBumpRoot, 'docs', 'PATCH_NOTES.md'), 'utf8');
+  assert(patchText.includes('v1.1.1') && patchText.includes('[PATCH]') && patchText.includes('특이점 자동 기록 테스트'));
+  assert(patchText.indexOf('v1.1.1') < patchText.indexOf('v1.1.0'), 'New patch note must appear above previous version');
+  pass('Semantic Versioning 3-tier (MAJOR.MINOR.PATCH) sync & auto PATCH_NOTES.md recorder verified');
+} finally {
+  fs.rmSync(tmpBumpRoot, { recursive: true, force: true });
+}
 
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);

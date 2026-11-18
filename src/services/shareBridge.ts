@@ -31,6 +31,7 @@ import {
   LocationBatchApplyItemResult,
 } from '@/types/share';
 import { decodeConnectionCode, encodeConnectionCode, validateTargetHost } from '@/utils/connectionCode';
+import { APP_VERSION } from '@/version';
 import {
   buildHostStepScripts,
   buildClientStepScripts,
@@ -127,6 +128,38 @@ declare global {
         error?: string;
       }>;
       openExternalUrl?: (url: string) => Promise<{ success: boolean; error?: string }>;
+      getUpdateRuntimeInfo?: () => Promise<{
+        isPackaged: boolean;
+        isPortable: boolean;
+        canSelfReplace: boolean;
+        edition: 'standard' | 'lite' | 'win7';
+        currentVersion: string;
+        portableExePath: string;
+        portableDir: string;
+        currentExeName: string;
+        reason?: string;
+      }>;
+      installPortableUpdate?: (payload: {
+        downloadUrl: string;
+        assetName: string;
+        expectedSize?: number;
+      }) => Promise<{
+        success: boolean;
+        cancelled?: boolean;
+        oldExePath?: string;
+        targetExePath?: string;
+        error?: string;
+      }>;
+      cancelPortableUpdate?: () => Promise<{ success: boolean; cancelled: boolean }>;
+      onUpdateProgress?: (
+        callback: (progress: {
+          phase: 'downloading' | 'verifying' | 'replacing' | 'error' | 'cancelled';
+          percent: number;
+          downloadedBytes: number;
+          totalBytes: number;
+          message: string;
+        }) => void
+      ) => () => void;
     };
   }
 }
@@ -1930,7 +1963,7 @@ export const shareBridge = {
     const snapshot = this.getPortableSnapshot();
     const bridgePayload = {
       app: 'AhBiShare OneClick',
-      version: '1.0.0',
+      version: APP_VERSION,
       exportedAt: new Date().toISOString(),
       shares,
       mounts,

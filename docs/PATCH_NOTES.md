@@ -1,6 +1,36 @@
 # 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)
 
-## 📅 v1.0.0 (2026-11-16) — Semantic Versioning 정식 릴리즈
+## 📅 v1.1.0 (2026-11-18) — [MINOR] 사용장소 프로필 & 포터블 원클릭 자가 교체 업데이트
+- **변경 구분**: `MINOR` (하위 호환 신규 기능 추가 및 심층 안정화)
+- **개발자 · 저작권**: AhBiYout (`Copyright © 1998-2026 AhBiYout. All rights reserved.`)
+- **소속회사**: (주)청운정보시스템 (cisnet.co.kr)
+- **GitHub 저장소**: https://github.com/ahbiyout-all/AhBiShare-OneClick
+- **배포 파일**: `AhBiShare_OneClick_v1.1.0.exe`, `AhBiShare_OneClick-Lite_v1.1.0.exe`, `AhBiShare_OneClick_Win7_v1.1.0.exe`, `AhBiShare_OneClick-Setup_v1.1.0.exe`
+
+### 1. 신규 기능 (`MINOR`)
+1. **사용장소별 개별 프로필(`.location.json`) 저장 · 재사용 · 1클릭 일괄 적용**:
+   - 사무실·집·현장 등 작업 장소마다 개별 데이터 파일(`locations/*.location.json`)을 생성·전환하고, 파일 내보내기/불러오기(`.json`)를 지원합니다.
+   - 기존 `.portable.json`과 동일하게 **AES-256-GCM 암호화**를 적용해 저장 시 평문 비밀번호가 디스크에 노출되지 않습니다.
+   - 저장된 장소 선택 시 호스트/클라이언트 설정을 자동 채움하고, **`1클릭 일괄 적용`** 버튼으로 공유 폴더 개설 및 네트워크 드라이브 연결을 한 번에 구성합니다.
+2. **GitHub 자동 업데이트 감지 및 포터블 원클릭 자가 교체(Self-Replace)**:
+   - GitHub Releases(API 및 Atom + `expanded_assets` 이중 fallback)에서 최신 릴리즈를 자동/수동 감지해 업데이트 확인창으로 안내합니다.
+   - 실행 중인 포터블 에디션(`Standard`, `Lite`, `Win7`)을 자동 판별해 동일 에디션의 `.exe`를 권장 선택하고, 공식 GitHub 도메인 검증 및 Windows PE 실행 헤더(`MZ`) 무결성 검증을 수행합니다.
+   - 업데이트 실행 시 진행률(%)·다운로드 용량 표시 및 취소 기능을 제공하며, 다운로드 검증 완료 후 **기존 포터블 EXE를 종료·삭제하고 새 포터블 EXE로 교체·자동 재실행**합니다(기존 `.portable.json` 및 `locations/` 데이터 유지).
+
+### 2. 특이점 및 심층 점검 오류 수정 (`Deep Audit & PATCH` 반영)
+1. **Windows 7 화면 렌더링 및 PowerShell 2.0 호환성 수정**:
+   - Vite/LightningCSS 빌드 타깃을 `chrome106`/`chrome100`으로 낮춰 Tailwind CSS v4 `oklch()` 색상으로 인해 Windows 7(Electron 21) 화면이 검게 표시되던 문제를 해결했습니다.
+   - 콘솔이 연결되지 않은 GUI 환경에서 `[Console]::InputEncoding`/`OutputEncoding` 예외를 안전 처리하고, PowerShell 2.0에 없는 `$PSDefaultParameterValues` 참조 및 `$null` NetBT 루프를 가드했습니다.
+2. **에디션 오인·스트림 취소·경로 검증·UI 겹침 결함 해결**:
+   - 포터블 에디션 판별 시 상위 폴더명이 아닌 실행 파일명(`basename`)과 앱 이름만 검사해 폴더명에 의한 에디션 오인을 차단했습니다.
+   - HTTP 청크 다운로드 스트림 완료(`res.complete`) 검증 및 `cleanupPromise` 기반 취소 동기화로 불완전 파일 실행과 재시도 충돌을 방지했습니다.
+   - USB 루트 드라이브(`E:\`)에서 구형 OS 키트 저장 시 경로 접두사 검증이 실패하던 문제와 모달 뒤 토스트 가림(`z-[60]`), 클라이언트 드라이브 문자 덮어쓰기, Atom HTML 엔티티 디코딩 순서, SemVer 2.0 pre-release 비교 오류를 모두 수정했습니다.
+3. **저작권 일원화 및 문서/버전 자동 관리 체계 구축**:
+   - 전체 UI·메타데이터·스크립트·라이선스 저작권을 `AhBiYout`으로 통일하고 `scripts/bump_version.js` 기반 SemVer 3단계 자동 버전 동기화 및 패치 노트 기록 체계를 도입했습니다.
+
+---
+
+## 📅 v1.0.0 (2026-11-16) — [MAJOR] Semantic Versioning 정식 릴리즈
 - **개발자**: AhBiYout
 - **소속회사**: (주)청운정보시스템 (cisnet.co.kr)
 - **GitHub 저장소**: https://github.com/ahbiyout-all/AhBiShare-OneClick

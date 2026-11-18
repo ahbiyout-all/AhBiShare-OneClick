@@ -3,35 +3,43 @@
 # Repository: https://github.com/ahbiyout-all/AhBiShare-OneClick
 # Policy: Track ONLY core source code, official docs, build/CI configs,
 #         and root build.bat. Strictly exclude local push scripts,
-#         build binaries, runtime portable/bridge data, and platform meta.
+#         platform prompt assets, build binaries, and runtime user data.
 # =======================================================================
 
 # -----------------------------------------------------------------------
 # 1. Local GitHub Push, Maintainer & Release Automation Scripts
 # -----------------------------------------------------------------------
 push_github.bat
+push_github*.bat
 build_release.bat
 github_core/
 release_notes_temp.md
 RELEASE_CHANGELOG.md
 
 # -----------------------------------------------------------------------
-# 2. Accidental Nested Paths & AI Studio Platform Metadata
+# 2. Accidental Nested Paths, AI Studio Metadata & Prompt Assets
 # -----------------------------------------------------------------------
 /app/
 .aistudio/
 metadata.json
+/public/assets/aistudio/
 
 # -----------------------------------------------------------------------
-# 3. Runtime User Data, Portable Credentials & Generated LAN Kits
+# 3. Runtime User Data, Portable Credentials, Profiles & Updater Temp
 # -----------------------------------------------------------------------
 *.portable.json
 *.portable.corrupt-*.json
 *.location.json
+*.location.corrupt-*.json
 /locations/
 AhBiShare_CrossOS_Sync_Bridge*.json
 AhBiShare_Legacy_Win7_Win8_Kit/
+AhBiShare_*.bat
+AhBiShare_*.reg
 Backup_Before_Apply/
+_ahbishare_update/
+*.part
+*apply_portable_update.ps1
 
 # -----------------------------------------------------------------------
 # 4. Node Dependencies & Non-Canonical Package Manager Locks
@@ -41,6 +49,7 @@ node_modules/
 .pnp
 .pnp.js
 package-lock.json.bak
+npm-shrinkwrap.json
 bun.lock
 bun.lockb
 yarn.lock
@@ -63,6 +72,8 @@ pnpm-debug.log*
 /release-github/
 /installer/Output/
 /Output/
+win-unpacked/
+win-ia32-unpacked/
 builder-debug.yml
 builder-effective-config.yaml
 *.blockmap
@@ -70,16 +81,18 @@ builder-effective-config.yaml
 .vite/
 .turbo/
 .cache/
+coverage/
 *.tsbuildinfo
 
 # -----------------------------------------------------------------------
-# 6. Compiled Windows Binaries & Archives
+# 6. Compiled Windows Binaries, Installers & Archives
 # -----------------------------------------------------------------------
 *.exe
 *.dll
 *.asar
 *.msi
 *.appx
+*.cab
 *.zip
 *.7z
 *.rar
@@ -98,6 +111,8 @@ builder-effective-config.yaml
 *.key
 *.cert
 *.pfx
+*.p12
+*.snk
 
 # -----------------------------------------------------------------------
 # 8. Logs, Editor State, OS Junk & Scratch Files
@@ -127,3 +142,4 @@ tmp/
 *.tmp
 *.temp
 *.bak
+*.orig
