@@ -102,6 +102,17 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     onConfigChange?.(config);
   }, [config, onConfigChange]);
 
+  // Automatically pick an available drive letter if the currently selected letter becomes occupied
+  useEffect(() => {
+    const occupied = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
+    setConfig((prev) => {
+      if (!occupied.has(prev.driveLetter.toUpperCase())) return prev;
+      const nextFree = DRIVE_LETTERS.find((dl) => !occupied.has(dl));
+      if (!nextFree || nextFree === prev.driveLetter) return prev;
+      return { ...prev, driveLetter: nextFree };
+    });
+  }, [mounts]);
+
   useEffect(() => {
     if (!pendingLocationTarget || pendingLocationTarget.key === lastLocationTargetKeyRef.current) return;
     lastLocationTargetKeyRef.current = pendingLocationTarget.key;
@@ -130,17 +141,6 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       setBannerDismissed(false);
     }
   }, [portableShares.length, selectedPortableIdx]);
-
-  // Automatically pick an available drive letter if the currently selected letter becomes occupied
-  useEffect(() => {
-    const occupied = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
-    setConfig((prev) => {
-      if (!occupied.has(prev.driveLetter.toUpperCase())) return prev;
-      const nextFree = DRIVE_LETTERS.find((dl) => !occupied.has(dl));
-      if (!nextFree || nextFree === prev.driveLetter) return prev;
-      return { ...prev, driveLetter: nextFree };
-    });
-  }, [mounts]);
 
   useEffect(() => {
     onTargetHostChange?.(config.targetHost);
@@ -277,6 +277,24 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       (item) => item.status === 'conflict'
     );
   }, [matchedHostPolicy, localPolicyStatus]);
+
+  const driveLetterOptions = React.useMemo(() => {
+    const seen = new Set<string>(DRIVE_LETTERS);
+    const list = [...DRIVE_LETTERS];
+    const extra = [
+      config.driveLetter,
+      ...savedLocationTargets.map((t) => t.driveLetter),
+      ...mounts.map((m) => m.driveLetter),
+    ];
+    for (const raw of extra) {
+      const normalized = String(raw || '').trim().replace(/:?$/, ':').toUpperCase();
+      if (/^[A-Z]:$/.test(normalized) && !seen.has(normalized)) {
+        seen.add(normalized);
+        list.push(normalized);
+      }
+    }
+    return list;
+  }, [config.driveLetter, savedLocationTargets, mounts]);
 
   return (
     <div className="space-y-8">
@@ -597,7 +615,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   onChange={(e) => setConfig({ ...config, driveLetter: e.target.value })}
                   className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  {DRIVE_LETTERS.map((dl) => (
+                  {driveLetterOptions.map((dl) => (
                     <option key={dl} value={dl}>
                       {dl} 드라이브{mountedSet.has(dl) ? ' (연결됨)' : ''}
                     </option>

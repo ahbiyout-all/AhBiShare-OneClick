@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
+const https = require('https');
 const dns = require('dns').promises;
 const { spawn, execFile, execFileSync } = require('child_process');
 const {
@@ -104,12 +105,14 @@ function executePowerShellScript(script, timeoutMs = 45000) {
     }
 
     const wrapped = [
-      '$script:__AhBiOemEnc = [Console]::OutputEncoding',
+      'try { $script:__AhBiOemEnc = [Console]::OutputEncoding } catch { $script:__AhBiOemEnc = [System.Text.Encoding]::Default }',
       '$script:__AhBiUtf8NoBom = New-Object System.Text.UTF8Encoding($false)',
-      '[Console]::InputEncoding = $script:__AhBiUtf8NoBom',
-      '[Console]::OutputEncoding = $script:__AhBiUtf8NoBom',
+      'try {',
+      '  [Console]::InputEncoding = $script:__AhBiUtf8NoBom',
+      '  [Console]::OutputEncoding = $script:__AhBiUtf8NoBom',
+      '} catch {}',
       '$OutputEncoding = $script:__AhBiUtf8NoBom',
-      "$PSDefaultParameterValues['*:Encoding'] = 'utf8'",
+      "if (Get-Variable -Name PSDefaultParameterValues -ErrorAction SilentlyContinue) { $PSDefaultParameterValues['*:Encoding'] = 'utf8' }",
       script,
     ].join('\n');
 
@@ -399,9 +402,9 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
         `
           $p_ip = '${peer.ip}'
           $h = try { ([System.Net.Dns]::GetHostEntry($p_ip)).HostName.Split('.')[0] } catch { $p_ip }
-          [Console]::OutputEncoding = $script:__AhBiOemEnc
+          try { [Console]::OutputEncoding = $script:__AhBiOemEnc } catch {}
           $raw = & net.exe view "\\\\$p_ip" 2>$null
-          [Console]::OutputEncoding = $script:__AhBiUtf8NoBom
+          try { [Console]::OutputEncoding = $script:__AhBiUtf8NoBom } catch {}
           $s = @()
           foreach ($line in $raw) {
             if ($line -match '^(.+?)\\s{2,}(Disk|디스크)\\b') {
@@ -755,6 +758,148 @@ ipcMain.handle('import-location-profile-file', async (_event, payload) => {
       success: false,
       message: `사용장소 파일 불러오기 실패: ${err && err.message ? err.message : '올바른 JSON 프로필이 아닙니다.'}`,
     };
+  }
+});
+
+function fetchTextHttps(urlString, headers = {}, redirectsLeft = 3) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      urlString,
+      {
+        headers: {
+          'User-Agent': `AhBiShare-OneClick/${app.getVersion() || '1.0.0'}`,
+          ...headers,
+        },
+        timeout: 8000,
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          const nextUrl = new URL(res.headers.location, urlString).toString();
+          fetchTextHttps(nextUrl, headers, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          resolve({
+            status,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error('GitHub update check timed out'));
+    });
+    req.on('error', reject);
+  });
+}
+
+function decodeXmlEntities(text) {
+  return String(text || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+ipcMain.handle('check-github-updates', async () => {
+  const apiUrl = 'https://api.github.com/repos/ahbiyout-all/AhBiShare-OneClick/releases/latest';
+  const atomUrl = 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases.atom';
+
+  try {
+    const apiRes = await fetchTextHttps(apiUrl, { Accept: 'application/vnd.github.v3+json' });
+    if (apiRes.status >= 200 && apiRes.status < 300) {
+      const data = JSON.parse(apiRes.body);
+      const tagName = String(data.tag_name || '').trim();
+      if (tagName) {
+        const assets = Array.isArray(data.assets)
+          ? data.assets
+              .filter((a) => a && a.name && a.browser_download_url)
+              .map((a) => ({
+                name: String(a.name),
+                browserDownloadUrl: String(a.browser_download_url),
+                size: Number(a.size) || 0,
+              }))
+          : [];
+        return {
+          ok: true,
+          release: {
+            tagName,
+            name: String(data.name || tagName),
+            body: String(data.body || '새로운 업데이트가 출시되었습니다.'),
+            htmlUrl: String(data.html_url || 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases'),
+            publishedAt: String(data.published_at || ''),
+            assets,
+          },
+        };
+      }
+    }
+  } catch {}
+
+  try {
+    const atomRes = await fetchTextHttps(atomUrl, { Accept: 'application/atom+xml,application/xml,text/xml' });
+    if (atomRes.status >= 200 && atomRes.status < 300) {
+      const entryMatch = atomRes.body.match(/<entry>([\s\S]*?)<\/entry>/i);
+      if (entryMatch) {
+        const entry = entryMatch[1];
+        const linkMatch = entry.match(/<link[^>]+href=["']([^"']+)["']/i);
+        const titleMatch = entry.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        const updatedMatch = entry.match(/<updated[^>]*>([\s\S]*?)<\/updated>/i);
+        const contentMatch = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/i);
+        const htmlUrl = linkMatch ? decodeXmlEntities(linkMatch[1]) : 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest';
+        const tagMatch = htmlUrl.match(/\/releases\/tag\/([^/?#\s]+)/i);
+        const rawTitle = titleMatch ? decodeXmlEntities(titleMatch[1]).trim() : '';
+        const tagName = tagMatch ? decodeURIComponent(tagMatch[1]) : rawTitle;
+        const bodyText = contentMatch
+          ? decodeXmlEntities(
+              decodeXmlEntities(contentMatch[1])
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/(?:p|li|h[1-6]|div)>/gi, '\n')
+                .replace(/<[^>]+>/g, ' ')
+            )
+              .replace(/[ \t]+\n/g, '\n')
+              .replace(/\n{3,}/g, '\n\n')
+              .replace(/[ \t]{2,}/g, ' ')
+              .trim()
+          : 'GitHub Releases 페이지에서 최신 릴리즈 상세 내역 및 설치 파일을 확인할 수 있습니다.';
+        if (tagName) {
+          return {
+            ok: true,
+            release: {
+              tagName,
+              name: rawTitle || tagName,
+              body: bodyText || '새로운 업데이트가 출시되었습니다.',
+              htmlUrl,
+              publishedAt: updatedMatch ? updatedMatch[1].trim() : '',
+              assets: [],
+            },
+          };
+        }
+      } else if (/<feed\b/i.test(atomRes.body)) {
+        return { ok: true, release: null };
+      }
+    }
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : 'GitHub 릴리즈 조회 실패' };
+  }
+
+  return { ok: false, error: 'GitHub 최신 릴리즈 정보를 불러오지 못했습니다.' };
+});
+
+ipcMain.handle('open-external-url', async (_event, { url }) => {
+  const safeUrl = String(url || '').trim();
+  if (!/^https?:\/\//i.test(safeUrl)) {
+    return { success: false, error: '허용되지 않은 외부 URL 형식입니다.' };
+  }
+  try {
+    await shell.openExternal(safeUrl);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : '외부 브라우저 열기에 실패했습니다.' };
   }
 });
 

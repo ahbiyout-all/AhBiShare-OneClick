@@ -19,4 +19,6 @@ contextBridge.exposeInMainWorld('ahbiShareElectron', {
   deleteLocationProfile: (profileId) => ipcRenderer.invoke('delete-location-profile', { profileId }),
   exportLocationProfileFile: (profile) => ipcRenderer.invoke('export-location-profile-file', { profile }),
   importLocationProfileFile: (payload) => ipcRenderer.invoke('import-location-profile-file', payload),
+  checkGitHubUpdates: () => ipcRenderer.invoke('check-github-updates'),
+  openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', { url }),
 });

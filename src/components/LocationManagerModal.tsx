@@ -98,6 +98,17 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
     }
   }, [isOpen, initialTab, activeProfile]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isSaving && !isBatchApplying) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, isSaving, isBatchApplying, onClose]);
+
   if (!isOpen) return null;
 
   const filteredProfiles = profiles.filter((p) => {
@@ -154,6 +165,11 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="location-modal-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !isSaving && !isBatchApplying) {
+          onClose();
+        }
+      }}
     >
       <div className="w-full max-w-3xl max-h-[90vh] flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4 shrink-0">

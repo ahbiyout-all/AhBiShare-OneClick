@@ -4,6 +4,8 @@ import { AppSection, RoleMode } from '@/types/share';
 interface TopBarProps {
   activeSection: AppSection;
   roleMode: RoleMode;
+  availableUpdateTag?: string | null;
+  onOpenUpdateModal?: () => void;
   onNavigate: (section: AppSection, role?: RoleMode) => void;
   onOpenDiagnostics: () => void;
 }
@@ -11,6 +13,8 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({
   activeSection,
   roleMode,
+  availableUpdateTag = null,
+  onOpenUpdateModal,
   onNavigate,
   onOpenDiagnostics,
 }) => {
@@ -55,7 +59,17 @@ export const TopBar: React.FC<TopBarProps> = ({
           ))}
         </nav>
 
-        <div className="order-2 md:order-3 shrink-0">
+        <div className="order-2 md:order-3 shrink-0 flex items-center gap-2">
+          {availableUpdateTag && onOpenUpdateModal && (
+            <button
+              id="btn-topbar-update-available"
+              type="button"
+              onClick={onOpenUpdateModal}
+              className="px-3 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/35 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-data"
+            >
+              업데이트 {availableUpdateTag}
+            </button>
+          )}
           <button
             type="button"
             onClick={onOpenDiagnostics}

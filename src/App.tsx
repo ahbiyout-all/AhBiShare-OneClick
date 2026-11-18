@@ -39,7 +39,13 @@ import { LocationProfileBar } from '@/components/LocationProfileBar';
 import { LocationManagerModal } from '@/components/LocationManagerModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
-import { checkForUpdates, ReleaseInfo } from './services/updateChecker';
+import {
+  checkForUpdates,
+  clearSkippedUpdateTag,
+  ReleaseInfo,
+  shouldAutoPromptUpdate,
+  skipUpdateTag,
+} from './services/updateChecker';
 
 interface ActivityEntry {
   id: string;
@@ -155,15 +161,9 @@ export const App: React.FC = () => {
 
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [latestRelease, setLatestRelease] = useState<ReleaseInfo | null>(null);
-
-  useEffect(() => {
-    checkForUpdates('1.0.0').then((res: { hasUpdate: boolean; release?: ReleaseInfo }) => {
-      if (res.hasUpdate && res.release) {
-        setLatestRelease(res.release);
-        setUpdateModalOpen(true);
-      }
-    });
-  }, []);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const autoPromptedTagRef = useRef<string | null>(null);
+  const updateCheckInFlightRef = useRef(false);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -203,6 +203,53 @@ export const App: React.FC = () => {
       ...prev,
     ]);
   }, []);
+
+  const runUpdateCheck = useCallback(
+    async (manual: boolean) => {
+      if (updateCheckInFlightRef.current) return;
+      updateCheckInFlightRef.current = true;
+      setIsCheckingUpdates(true);
+      try {
+        const res = await checkForUpdates('1.0.0');
+        if (res.hasUpdate && res.release) {
+          setLatestRelease(res.release);
+          if (manual) {
+            clearSkippedUpdateTag();
+            autoPromptedTagRef.current = res.release.tagName;
+            setUpdateModalOpen(true);
+            appendLog('GitHub 업데이트', `새 릴리즈 ${res.release.tagName} 확인창 열림`, 'success');
+          } else if (
+            shouldAutoPromptUpdate(res.release.tagName) &&
+            autoPromptedTagRef.current !== res.release.tagName
+          ) {
+            autoPromptedTagRef.current = res.release.tagName;
+            setUpdateModalOpen(true);
+            appendLog('GitHub 업데이트', `GitHub 최신 버전(${res.release.tagName}) 자동 감지됨`, 'success');
+          }
+        } else if (manual) {
+          if (res.error) {
+            showToast(`업데이트 확인 실패: ${res.error}`);
+            appendLog('GitHub 업데이트', `확인 실패: ${res.error}`, 'error');
+          } else {
+            showToast('현재 최신 버전(v1.0.0)을 사용 중입니다.');
+            appendLog('GitHub 업데이트', '최신 버전(v1.0.0) 확인 완료', 'success');
+          }
+        }
+      } finally {
+        updateCheckInFlightRef.current = false;
+        setIsCheckingUpdates(false);
+      }
+    },
+    [appendLog, showToast]
+  );
+
+  useEffect(() => {
+    void runUpdateCheck(false);
+    const intervalId = window.setInterval(() => {
+      void runUpdateCheck(false);
+    }, 30 * 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [runUpdateCheck]);
 
   const refreshPortableSnapshot = useCallback((hostname: string) => {
     const snap = shareBridge.getPortableSnapshot();
@@ -822,32 +869,55 @@ export const App: React.FC = () => {
       const stamp = `${profile.profileId}-${Date.now()}`;
 
       if (profile.hostPreset) {
-        const nextHost: HostConfig = {
-          folderPath: profile.hostPreset.folderPath,
-          shareName: profile.hostPreset.shareName,
-          authMode: profile.hostPreset.authMode,
-          permission: profile.hostPreset.permission,
-          username: profile.hostPreset.username,
-          password: profile.hostPreset.password || hostDraft.password,
-          ttlMinutes: profile.hostPreset.ttlMinutes,
-          autoRevokeOnExpiry: profile.hostPreset.autoRevokeOnExpiry,
-        };
-        setHostDraft(nextHost);
-        setPendingHostPreset({ key: stamp, config: nextHost });
+        const preset = profile.hostPreset;
+        setHostDraft((prev) => ({
+          folderPath: preset.folderPath,
+          shareName: preset.shareName,
+          authMode: preset.authMode,
+          permission: preset.permission,
+          username: preset.username,
+          password: preset.password || prev.password,
+          ttlMinutes: preset.ttlMinutes,
+          autoRevokeOnExpiry: preset.autoRevokeOnExpiry,
+        }));
+        setPendingHostPreset({
+          key: stamp,
+          config: {
+            folderPath: preset.folderPath,
+            shareName: preset.shareName,
+            authMode: preset.authMode,
+            permission: preset.permission,
+            username: preset.username,
+            ...(preset.password ? { password: preset.password } : {}),
+            ttlMinutes: preset.ttlMinutes,
+            autoRevokeOnExpiry: preset.autoRevokeOnExpiry,
+          },
+        });
       } else if (profile.savedShares.length > 0) {
         const firstShare = profile.savedShares[0];
-        const nextHost: HostConfig = {
+        setHostDraft((prev) => ({
           folderPath: firstShare.folderPath || 'C:\\AhBiShared',
           shareName: firstShare.shareName,
           authMode: firstShare.authMode,
           permission: firstShare.permission,
           username: firstShare.username || 'AhBiShare',
-          password: firstShare.password || hostDraft.password,
+          password: firstShare.password || prev.password,
           ttlMinutes: firstShare.ttlMinutes,
           autoRevokeOnExpiry: firstShare.autoRevokeOnExpiry,
-        };
-        setHostDraft(nextHost);
-        setPendingHostPreset({ key: stamp, config: nextHost });
+        }));
+        setPendingHostPreset({
+          key: stamp,
+          config: {
+            folderPath: firstShare.folderPath || 'C:\\AhBiShared',
+            shareName: firstShare.shareName,
+            authMode: firstShare.authMode,
+            permission: firstShare.permission,
+            username: firstShare.username || 'AhBiShare',
+            ...(firstShare.password ? { password: firstShare.password } : {}),
+            ttlMinutes: firstShare.ttlMinutes,
+            autoRevokeOnExpiry: firstShare.autoRevokeOnExpiry,
+          },
+        });
       }
 
       if (profile.clientTargets.length > 0) {
@@ -875,7 +945,7 @@ export const App: React.FC = () => {
         );
       }
     },
-    [hostDraft.password, appendLog, showToast]
+    [appendLog, showToast]
   );
 
   const handleSelectLocationProfile = useCallback(
@@ -1071,6 +1141,8 @@ export const App: React.FC = () => {
       <TopBar
         activeSection={activeSection}
         roleMode={roleMode}
+        availableUpdateTag={latestRelease?.tagName || null}
+        onOpenUpdateModal={() => setUpdateModalOpen(true)}
         onNavigate={handleNavigate}
         onOpenDiagnostics={() => void handleOpenDiagnostics()}
       />
@@ -1389,7 +1461,7 @@ export const App: React.FC = () => {
       {toastMessage && (
         <div
           role="status"
-          className="fixed bottom-6 right-6 z-40 px-4 py-3 text-xs font-medium text-white bg-slate-900 dark:bg-slate-800 border border-slate-700 rounded-lg shadow-lg"
+          className="fixed bottom-6 right-6 z-[60] max-w-md px-4 py-3 text-xs font-medium text-white bg-slate-900 dark:bg-slate-800 border border-slate-700 rounded-lg shadow-lg"
         >
           {toastMessage}
         </div>
@@ -1401,13 +1473,24 @@ export const App: React.FC = () => {
             <span className="tabular-data font-medium text-slate-700 dark:text-slate-300">
               AhBiShare OneClick v1.0.0 · Copyright © 1998-2026 AhBiYout. All rights reserved.
             </span>
-            <button
-              type="button"
-              onClick={() => void handleOpenDiagnostics()}
-              className="hover:text-slate-900 dark:hover:text-slate-200 underline underline-offset-4 cursor-pointer"
-            >
-              SMB 서비스 및 포트 445 점검
-            </button>
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                id="btn-footer-check-updates"
+                type="button"
+                disabled={isCheckingUpdates}
+                onClick={() => void runUpdateCheck(true)}
+                className="hover:text-slate-900 dark:hover:text-slate-200 underline underline-offset-4 cursor-pointer disabled:opacity-50"
+              >
+                {isCheckingUpdates ? '업데이트 확인 중...' : 'GitHub 업데이트 확인'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleOpenDiagnostics()}
+                className="hover:text-slate-900 dark:hover:text-slate-200 underline underline-offset-4 cursor-pointer"
+              >
+                SMB 서비스 및 포트 445 점검
+              </button>
+            </div>
           </div>
           <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800/70 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]">
             <span className="font-semibold text-slate-600 dark:text-slate-300">제작자 및 공식 채널 안내</span>
@@ -1466,6 +1549,13 @@ export const App: React.FC = () => {
         isOpen={updateModalOpen}
         currentVersion="1.0.0"
         release={latestRelease}
+        osBuild={policyStatus?.osBuild || netInfo.osBuild}
+        isRechecking={isCheckingUpdates}
+        onRecheck={() => void runUpdateCheck(true)}
+        onSkipVersion={(tag) => {
+          skipUpdateTag(tag);
+          showToast(`${tag} 버전 자동 알림을 건너뜁니다. 상단/하단 버튼에서 언제든 다시 확인할 수 있습니다.`);
+        }}
         onClose={() => setUpdateModalOpen(false)}
       />
 

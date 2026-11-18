@@ -114,6 +114,19 @@ declare global {
         savedToCatalog?: boolean;
         message: string;
       }>;
+      checkGitHubUpdates?: () => Promise<{
+        ok: boolean;
+        release?: {
+          tagName: string;
+          name: string;
+          body: string;
+          htmlUrl: string;
+          publishedAt: string;
+          assets?: Array<{ name: string; browserDownloadUrl: string; size: number }>;
+        };
+        error?: string;
+      }>;
+      openExternalUrl?: (url: string) => Promise<{ success: boolean; error?: string }>;
     };
   }
 }
@@ -653,6 +666,26 @@ function sanitizeLocationShareForSim(entry: PortableHostShareEntry): PortableHos
     ...(typeof entry.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: entry.autoRevokeOnExpiry } : {}),
     connectionCode: cleanCode,
   };
+}
+
+function normalizeLocationProfileId(rawId: string | undefined, locationName: string): string {
+  const source = String(rawId || locationName || '').trim() || '새 사용장소';
+  const fallbackSlug = source
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+  if (!/[^\x00-\x7F]/.test(source) && fallbackSlug && /^[a-z0-9]/.test(fallbackSlug)) {
+    return fallbackSlug;
+  }
+  let hash = 0;
+  for (let i = 0; i < source.length; i++) {
+    hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+  }
+  return fallbackSlug
+    ? `${fallbackSlug}-${hash.toString(16).padStart(8, '0')}`
+    : `loc-${hash.toString(16).padStart(8, '0')}`;
 }
 
 export const isElectronRuntime = (): boolean => Boolean(window.ahbiShareElectron?.isElectron);
@@ -2134,21 +2167,7 @@ export const shareBridge = {
     existingCreatedAt?: string;
   }): LocationProfileFile {
     const cleanName = params.locationName.trim() || '새 사용장소';
-    const fallbackSlug = cleanName
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 32);
-    let hash = 0;
-    for (let i = 0; i < cleanName.length; i++) {
-      hash = (hash * 31 + cleanName.charCodeAt(i)) >>> 0;
-    }
-    const generatedId =
-      !/[^\x00-\x7F]/.test(cleanName) && fallbackSlug
-        ? fallbackSlug
-        : `${fallbackSlug ? `${fallbackSlug}-` : 'loc-'}${hash.toString(16).padStart(8, '0')}`;
-    const profileId = (params.profileId || generatedId).trim();
+    const profileId = normalizeLocationProfileId(params.profileId, cleanName);
     const nowIso = new Date().toISOString();
 
     const includeHost = params.includeHost !== false;
@@ -2423,6 +2442,12 @@ export const shareBridge = {
 
   async deleteLocationProfile(profileId: string): Promise<{ success: boolean; error?: string }> {
     runtimeLocationHostPasswordCache.delete(profileId);
+    const targetPrefix = `${profileId}::`;
+    for (const key of Array.from(runtimeLocationTargetPasswordCache.keys())) {
+      if (key.startsWith(targetPrefix)) {
+        runtimeLocationTargetPasswordCache.delete(key);
+      }
+    }
     if (window.ahbiShareElectron?.deleteLocationProfile) {
       return await window.ahbiShareElectron.deleteLocationProfile(profileId);
     }
@@ -2515,10 +2540,11 @@ export const shareBridge = {
       if (!parsed || typeof parsed !== 'object' || !parsed.locationName) {
         return { success: false, message: '사용장소 이름(locationName)이 포함된 올바른 프로필 JSON이 아닙니다.' };
       }
+      const cleanName = String(parsed.locationName).trim();
       const normalized: LocationProfileFile = {
         schemaVersion: 1,
-        profileId: String(parsed.profileId || parsed.locationName).trim(),
-        locationName: String(parsed.locationName).trim(),
+        profileId: normalizeLocationProfileId(parsed.profileId, cleanName),
+        locationName: cleanName,
         description: String(parsed.description || ''),
         networkHint: parsed.networkHint || { subnetPrefix: '', primaryIp: '', hostname: '' },
         createdAt: String(parsed.createdAt || new Date().toISOString()),

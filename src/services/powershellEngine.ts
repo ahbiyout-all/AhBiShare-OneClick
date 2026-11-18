@@ -788,9 +788,11 @@ export function buildOsNetworkPolicyInspectScript(): string {
 
     $netbiosEnabled = $false
     $nbtIfaces = Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces' -ErrorAction SilentlyContinue
-    foreach ($iface in $nbtIfaces) {
-      $prop = Get-ItemProperty $iface.PSPath -ErrorAction SilentlyContinue
-      if ($prop -and ($prop.NetbiosOptions -eq 0 -or $prop.NetbiosOptions -eq 1)) { $netbiosEnabled = $true; break }
+    if ($nbtIfaces) {
+      foreach ($iface in $nbtIfaces) {
+        $prop = Get-ItemProperty $iface.PSPath -ErrorAction SilentlyContinue
+        if ($prop -and ($prop.NetbiosOptions -eq 0 -or $prop.NetbiosOptions -eq 1)) { $netbiosEnabled = $true; break }
+      }
     }
 
     $wsRunning = ((Get-Service LanmanWorkstation -ErrorAction SilentlyContinue).Status -eq 'Running')

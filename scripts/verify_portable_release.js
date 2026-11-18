@@ -85,6 +85,8 @@ for (const ipc of [
   'delete-location-profile',
   'export-location-profile-file',
   'import-location-profile-file',
+  'check-github-updates',
+  'open-external-url',
 ]) {
   assert(modMain.includes(ipc), `main.js missing IPC handler: ${ipc}`);
   assert(modPreload.includes(ipc), `preload.js missing IPC channel: ${ipc}`);
@@ -103,6 +105,8 @@ for (const bridgeMethod of [
   'deleteLocationProfile',
   'exportLocationProfileFile',
   'importLocationProfileFile',
+  'checkGitHubUpdates',
+  'openExternalUrl',
 ]) {
   assert(modPreload.includes(bridgeMethod), `preload.js missing bridge API: ${bridgeMethod}`);
 }
@@ -503,26 +507,39 @@ assert(
     !/\s-(?:in|notin)\b/.test(mainJsSrc),
   'main.js must use PowerShell 2.0 compatible syntax (Hashtable for JavaScriptSerializer, no [PSCustomObject]@{} or -in/-notin)'
 );
+assert(
+  mainJsSrc.includes('Get-Variable -Name PSDefaultParameterValues') &&
+    mainJsSrc.includes('decodeXmlEntities(contentMatch[1])') &&
+    mainJsSrc.includes('return { ok: true, release: null };'),
+  'main.js must guard PSDefaultParameterValues for PS 2.0, decode XML entities before stripping Atom HTML, and handle empty <feed>'
+);
 
 assert(
   !/\s-(?:in|notin)\b/.test(psEngineSrc) &&
     psEngineSrc.includes('-notcontains $_.Name') &&
+    psEngineSrc.includes('if ($nbtIfaces)') &&
     (psEngineSrc.match(/RejectUnencryptedAccess/g) || []).length >= 5,
-  'powershellEngine.ts must use PowerShell 2.0 compatible -notcontains and clear RejectUnencryptedAccess across guest & legacy compat flows'
+  'powershellEngine.ts must use PowerShell 2.0 compatible -notcontains, guard $nbtIfaces, and clear RejectUnencryptedAccess across guest & legacy compat flows'
 );
 
 const appSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8');
 assert(
   appSrc.includes(`checkForUpdates('${rootPkg.version}')`) &&
     appSrc.includes(`currentVersion="${rootPkg.version}"`) &&
-    appSrc.includes('autoRevoked: revoked'),
-  `App.tsx update checker version must match package.json (${rootPkg.version}) and report accurate autoRevoked state`
+    appSrc.includes('autoRevoked: revoked') &&
+    appSrc.includes('updateCheckInFlightRef') &&
+    appSrc.includes('z-[60]'),
+  `App.tsx update checker version must match package.json (${rootPkg.version}), prevent overlapping checks, render toasts above modals, and report accurate autoRevoked state`
 );
 
 const updateModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'UpdateModal.tsx'), 'utf8');
 assert(
-  updateModalSrc.includes('role="dialog"') && updateModalSrc.includes('aria-modal="true"'),
-  'UpdateModal.tsx must provide accessible dialog ARIA attributes'
+  updateModalSrc.includes('role="dialog"') &&
+    updateModalSrc.includes('aria-modal="true"') &&
+    updateModalSrc.includes('github-update-modal') &&
+    updateModalSrc.includes('btn-update-download') &&
+    updateModalSrc.includes('btn-skip-update-version'),
+  'UpdateModal.tsx must provide accessible dialog ARIA attributes and update confirmation actions'
 );
 
 assert(
@@ -540,8 +557,10 @@ assert(
 );
 const portableStoreSrc = fs.readFileSync(path.join(rootDir, 'portableStore.js'), 'utf8');
 assert(
-  portableStoreSrc.includes('lmCompatibilityLevel') && portableStoreSrc.includes('localAccountTokenFilterEnabled'),
-  'portableStore.js must preserve lmCompatibilityLevel and localAccountTokenFilterEnabled in hostPolicies'
+  portableStoreSrc.includes('lmCompatibilityLevel') &&
+    portableStoreSrc.includes('localAccountTokenFilterEnabled') &&
+    portableStoreSrc.includes('path.basename(filePath)'),
+  'portableStore.js must preserve lmCompatibilityLevel, localAccountTokenFilterEnabled, and use per-target temp filenames in atomicWriteJson'
 );
 assert(
   rootBuildBat.includes('HAS_EXE'),
@@ -569,7 +588,11 @@ if (fs.existsSync(distAssetsDir)) {
     assert(!cssText.includes('oklch('), `Built ${cssFile} still contains raw oklch() unsupported in Win7 Electron 21 Chromium 106`);
   }
 }
-assert(fs.existsSync(path.join(rootDir, 'src', 'services', 'updateChecker.ts')), 'Missing updateChecker.ts');
+const updateCheckerSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'updateChecker.ts'), 'utf8');
+assert(
+  updateCheckerSrc.includes('comparePreRelease') && updateCheckerSrc.includes("split('+')[0]"),
+  'updateChecker.ts must strip +buildMetadata and compare numeric pre-release identifiers per SemVer 2.0'
+);
 
 // 8. Verify per-location UI components, bridge methods, and App.tsx wiring
 const locBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationProfileBar.tsx'), 'utf8');
@@ -588,11 +611,17 @@ for (const uiId of [
 assert(
   locModalSrc.includes('role="dialog"') &&
     locModalSrc.includes('aria-modal="true"') &&
+    locModalSrc.includes("e.key === 'Escape'") &&
     locModalSrc.includes('btn-save-new-location') &&
     locModalSrc.includes('btn-modal-import-json'),
-  'LocationManagerModal.tsx missing accessible dialog or save/import controls'
+  'LocationManagerModal.tsx missing accessible dialog, Escape handler, or save/import controls'
+);
+assert(
+  clientPanelSrc.includes('driveLetterOptions'),
+  'ClientPanel.tsx missing dynamic driveLetterOptions for custom loaded location drive letters'
 );
 for (const fnMarker of [
+  'normalizeLocationProfileId',
   'buildLocationProfileSnapshot',
   'listLocationProfiles',
   'saveLocationProfile',
@@ -608,8 +637,9 @@ for (const fnMarker of [
 assert(
   appSrc.includes('LocationProfileBar') &&
     appSrc.includes('LocationManagerModal') &&
-    appSrc.includes('applyLocationProfileToWorkspace'),
-  'App.tsx missing LocationProfileBar / LocationManagerModal / workspace auto-fill wiring'
+    appSrc.includes('applyLocationProfileToWorkspace') &&
+    appSrc.includes('Copyright © 1998-2026 AhBiYout. All rights reserved.'),
+  'App.tsx missing LocationProfileBar / LocationManagerModal / workspace auto-fill wiring or AhBiYout copyright'
 );
 pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 

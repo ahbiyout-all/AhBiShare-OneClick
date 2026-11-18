@@ -314,7 +314,8 @@ function hydrateRuntimeDocument(diskDoc) {
 function atomicWriteJson(filePath, payloadObj) {
   const content = JSON.stringify(payloadObj, null, 2);
   const dir = path.dirname(filePath);
-  const tmpPath = path.join(dir, `.${PORTABLE_FILE_NAME}.${process.pid}.${Date.now()}.tmp`);
+  const baseName = path.basename(filePath);
+  const tmpPath = path.join(dir, `.${baseName}.${process.pid}.${Date.now()}.tmp`);
   try {
     fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
     try {
