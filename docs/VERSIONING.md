@@ -40,7 +40,7 @@
   npm run version:bump -- <major|minor|patch> --summary "특이점 요약" --note "세부 내용 1" --note "세부 내용 2"
   ```
 - **동기화 대상 파일 (자동 일괄 갱신)**:
-  - 앱/런타임 버전: `package.json`, `public/config.json`, `src/version.ts`, `installer/setup.iss`, `build.bat`
+  - 앱/런타임 버전: `package.json`, `public/config.json`, `src/version.ts`, `installer/setup.iss`, `build.bat` (로컬 전용 `build_release.bat`·`push_github.bat` 기본 버전 폴백 포함)
   - 공식 문서: `README.md`, `docs/PATCH_NOTES.md` (상단 누적 기록), `docs/google_blogger_post.md`, `docs/github_release_post.md`
 
 ---

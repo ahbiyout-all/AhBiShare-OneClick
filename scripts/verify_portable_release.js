@@ -480,6 +480,11 @@ for (const verDoc of ['PATCH_NOTES.md', 'google_blogger_post.md', 'github_releas
     `docs/${verDoc} must record the current release version v${rootPkg.version}`
   );
 }
+const bloggerDoc = fs.readFileSync(path.join(rootDir, 'docs', 'google_blogger_post.md'), 'utf8');
+assert(
+  bloggerDoc.includes('[작성 모드 (서식 있는 텍스트)]') && bloggerDoc.includes('[HTML 편집 모드]'),
+  'docs/google_blogger_post.md must provide both Compose Mode (Rich Text) and HTML Edit Mode sections'
+);
 
 const workflowSrc = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'release.yml'), 'utf8');
 assert(workflowSrc.includes('release-github/*_v*.exe'), '.github/workflows/release.yml must upload only version-numbered executables');

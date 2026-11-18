@@ -26,7 +26,10 @@
    - HTTP 청크 다운로드 스트림 완료(`res.complete`) 검증 및 `cleanupPromise` 기반 취소 동기화로 불완전 파일 실행과 재시도 충돌을 방지했습니다.
    - USB 루트 드라이브(`E:\`)에서 구형 OS 키트 저장 시 경로 접두사 검증이 실패하던 문제와 모달 뒤 토스트 가림(`z-[60]`), 클라이언트 드라이브 문자 덮어쓰기, Atom HTML 엔티티 디코딩 순서, SemVer 2.0 pre-release 비교 오류를 모두 수정했습니다.
 3. **저작권 일원화 및 문서/버전 자동 관리 체계 구축**:
-   - 전체 UI·메타데이터·스크립트·라이선스 저작권을 `AhBiYout`으로 통일하고 `scripts/bump_version.js` 기반 SemVer 3단계 자동 버전 동기화 및 패치 노트 기록 체계를 도입했습니다.
+   - 전체 UI·메타데이터·스크립트·라이선스 저작권을 `AhBiYout`으로 통일하고 `scripts/bump_version.js` 기반 SemVer 3단계 자동 버전 동기화(`build.bat`, `build_release.bat`, `push_github.bat` 폴백 포함) 및 패치 노트 기록 체계를 도입했습니다.
+4. **GitHub 저장소 선별 동기화(`.gitignore` 전면 개편) 및 로컬 푸시 스크립트 보안 정비**:
+   - 원격 저장소(`main`) 실사를 통해 불필요하게 추적되던 프롬프트 첨부 이미지(`/public/assets/aistudio/`)를 식별하고, 로컬 전용 스크립트(`push_github*.bat`, `build_release.bat`), 플랫폼 메타(`.aistudio/`, `metadata.json`), 업데이터 임시 파일(`_ahbishare_update/`, `*.part`, `*apply_portable_update.ps1`), 런타임 프로필·스크립트(`*.portable.json`, `*.location.json`, `locations/`, `AhBiShare_*.bat`/`.reg`)를 `.gitignore`로 엄격 차단했습니다.
+   - `push_github.bat`에 `core.quotepath=false` 비ASCII 인덱스 해제, 사전 `npm run lint`·`npm run verify` 검증 게이트, 제외 파일 스테이징 하드 차단 가드를 적용해 핵심 소스코드·공식 문서·빌드 설정만 안전하게 푸시되도록 개편했습니다.
 
 ---
 

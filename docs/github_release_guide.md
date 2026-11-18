@@ -37,8 +37,10 @@ GitHub 저장소에는 앱 빌드·실행·배포·문서화에 꼭 필요한 **
 
 ## GitHub Actions 릴리즈 자산 규칙 (빌드 버전 번호 파일 전용)
 - 워크플로 위치: `.github/workflows/release.yml`
+- 사전 검증 게이트: `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (`scripts/verify_portable_release.js` 10개 무결성·보안·업데이터·SemVer 검증 스위트 통과 필수)
 - 지원 플랫폼: **Windows x64 전용** (APK/iOS 모바일 빌드 제외)
 - 릴리즈 본문은 `docs/PATCH_NOTES.md` 내용을 자동 추출하여 반영합니다.
+- 버전 승격 시 `npm run version:bump`가 `package.json`, `public/config.json`, `src/version.ts`, `installer/setup.iss`, `build.bat`, `build_release.bat`, `push_github.bat`, `README.md`, `docs/*`를 일괄 동기화합니다.
 - GitHub Releases에는 **버전 번호(`_vX.Y.Z`)가 붙은 실행 파일만** 생성·첨부됩니다:
   - `AhBiShare_OneClick_v<version>.exe` (표준 포터블)
   - `AhBiShare_OneClick-Lite_v<version>.exe` (용량 감소 경량 포터블)
