@@ -69,6 +69,75 @@ function ConvertTo-AhBiJson {
 }
 `.trim();
 
+const PS_GUEST_RIGHTS_HELPER = `
+function Set-AhBiGuestNetworkLogonPolicy([bool]$allowGuest) {
+  $tmpInf = Join-Path $env:TEMP ("ahbi_sec_" + $PID + "_" + (Get-Random) + ".inf")
+  $tmpSdb = Join-Path $env:TEMP ("ahbi_sec_" + $PID + "_" + (Get-Random) + ".sdb")
+  $tmpLog = $tmpInf + ".log"
+  try {
+    & secedit.exe /export /cfg $tmpInf /areas USER_RIGHTS 2>$null | Out-Null
+    if (-not (Test-Path -LiteralPath $tmpInf)) { return }
+    $lines = Get-Content -LiteralPath $tmpInf
+    $guestSid = ''
+    try {
+      $gAcc = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+      if ($gAcc -and $gAcc.SID) { $guestSid = ('*' + $gAcc.SID) }
+    } catch {}
+    $updated = @()
+    $sawDeny = $false
+    foreach ($ln in $lines) {
+      if ($ln -match '^(\\s*SeDenyNetworkLogonRight\\s*=\\s*)(.*)$') {
+        $sawDeny = $true
+        $prefix = $matches[1]
+        $items = @()
+        foreach ($tok in ($matches[2] -split ',')) {
+          $t = $tok.Trim()
+          if (-not $t) { continue }
+          $isGuestTok = ($t -eq '*S-1-5-32-546') -or ($t -match '-501$') -or ($t -match '^(?:BUILTIN\\\\)?Guests?$') -or ($t -eq '게스트') -or ($guestSid -and ($t -ieq $guestSid))
+          if ($allowGuest) {
+            if (-not $isGuestTok -and ($t -ne '*S-1-5-7')) { $items += $t }
+          } else {
+            $items += $t
+          }
+        }
+        if (-not $allowGuest -and ($items -notcontains '*S-1-5-32-546')) {
+          $items += '*S-1-5-32-546'
+        }
+        $updated += ($prefix + ($items -join ','))
+      } elseif ($allowGuest -and ($ln -match '^(\\s*SeNetworkLogonRight\\s*=\\s*)(.*)$')) {
+        $prefix = $matches[1]
+        $items = @()
+        foreach ($tok in ($matches[2] -split ',')) {
+          $t = $tok.Trim()
+          if ($t) { $items += $t }
+        }
+        if ($items -notcontains '*S-1-1-0') { $items += '*S-1-1-0' }
+        if ($guestSid -and ($items -notcontains $guestSid)) { $items += $guestSid }
+        $updated += ($prefix + ($items -join ','))
+      } else {
+        $updated += $ln
+      }
+    }
+    if (-not $allowGuest -and -not $sawDeny) {
+      $nextOut = @()
+      foreach ($ln in $updated) {
+        $nextOut += $ln
+        if ($ln -match '^\\s*\\[Privilege Rights\\]\\s*$') {
+          $nextOut += 'SeDenyNetworkLogonRight = *S-1-5-32-546'
+        }
+      }
+      $updated = $nextOut
+    }
+    $updated | Out-File -FilePath $tmpInf -Encoding Unicode -Force
+    & secedit.exe /configure /db $tmpSdb /cfg $tmpInf /areas USER_RIGHTS /log $tmpLog /quiet 2>$null | Out-Null
+  } catch {} finally {
+    foreach ($p in @($tmpInf, $tmpSdb, ($tmpSdb + '.jfm'), $tmpLog)) {
+      try { if ($p -and (Test-Path -LiteralPath $p)) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+  }
+}
+`.trim();
+
 export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkEra): Array<{ id: string; title: string; detail: string; script: string }> {
   const normalizedFolder = normalizeWindowsFolderPath(config.folderPath);
   const folder = escapePsSingle(normalizedFolder);
@@ -146,6 +215,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
       script:
         config.authMode === 'guest'
           ? `
+            ${PS_GUEST_RIGHTS_HELPER}
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Failed to update LSA everyoneincludesanonymous (Admin required)" }
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f | Out-Null
@@ -169,10 +239,12 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               $guestName = if ($guestWmi) { $guestWmi.Name } else { 'Guest' }
               & net.exe user $guestName /active:yes 2>$null | Out-Null
             }
+            Set-AhBiGuestNetworkLogonPolicy $true
             Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
-            Write-Output "Passwordless guest sharing policy enabled (LanmanServer refreshed, no reboot required)"
+            Write-Output "Passwordless guest sharing & network logon rights enabled (SeDenyNetworkLogonRight cleared, no reboot)"
           `.trim()
           : `
+            ${PS_GUEST_RIGHTS_HELPER}
             $p_user = '${username}'
             $p_pass = '${password}'
             if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
@@ -205,6 +277,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               $guestName = if ($guestWmi) { $guestWmi.Name } else { 'Guest' }
               & net.exe user $guestName /active:no 2>$null | Out-Null
             }
+            Set-AhBiGuestNetworkLogonPolicy $false
             Write-Output ("Dedicated secure account ready: " + $p_user)
           `.trim(),
     },
@@ -226,8 +299,9 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
             if ($icaclsExit -ne 0) { throw ("icacls Everyone ACL 설정 실패 (" + $p_folder + "): " + $script:__out) }
             try { [Console]::OutputEncoding = [System.Text.Encoding]::Default } catch {}
             (& icacls.exe $p_icacls /grant "*S-1-5-7:${ntfsGrant}" /T /C /Q 2>&1) | Out-Null
+            (& icacls.exe $p_icacls /grant "*S-1-5-32-546:${ntfsGrant}" /T /C /Q 2>&1) | Out-Null
             try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-            Write-Output ("NTFS Everyone/Anonymous ACL applied to " + $p_folder)
+            Write-Output ("NTFS Everyone/Guests/Anonymous ACL applied to " + $p_folder)
           `.trim()
           : `
             $p_folder = '${folder}'
@@ -259,6 +333,12 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
                 shareAccess === 'Read'
                   ? "New-SmbShare -Name $p_share -Path $p_folder -ReadAccess 'Everyone' -ErrorAction Stop | Out-Null"
                   : "New-SmbShare -Name $p_share -Path $p_folder -FullAccess 'Everyone' -ErrorAction Stop | Out-Null"
+              }
+              if (Get-Command Grant-SmbShareAccess -ErrorAction SilentlyContinue) {
+                $guestAcc = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
+                if ($guestAcc) {
+                  Grant-SmbShareAccess -Name $p_share -AccountName $guestAcc.Name -AccessRight ${shareAccess} -Force -ErrorAction SilentlyContinue | Out-Null
+                }
               }
             } else {
               & net.exe share $p_share /delete /y 2>$null | Out-Null
@@ -437,7 +517,9 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             }
             & net.exe use $p_unc /delete /y 2>$null | Out-Null
             & net.exe use $p_ipc /delete /y 2>$null | Out-Null
-            Write-Output ("Cleared stale SMB sessions for " + $p_host)
+            & cmdkey.exe "/delete:$p_host" 2>$null | Out-Null
+            & cmdkey.exe "/delete:TERMSRV/$p_host" 2>$null | Out-Null
+            Write-Output ("Cleared stale SMB sessions & cached credentials for " + $p_host)
           `.trim(),
     },
     {
@@ -538,6 +620,13 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             else { $lastCode = $r2.Code; $lastOut = ($lastOut + ' | Guest: ' + $r2.Output).Trim(' |') }
           }
 
+          if (-not $mounted) {
+            Clear-HostAndDriveConflicts
+            $rAnon = Invoke-NetUseSafe @('use', $p_drive, $p_unc, '""', '/user:Anonymous', $p_persist)
+            if ($rAnon.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rAnon.Output }
+            else { $lastCode = $rAnon.Code; $lastOut = ($lastOut + ' | Anonymous: ' + $rAnon.Output).Trim(' |') }
+          }
+
           if (-not $mounted -and (Get-Command New-SmbMapping -ErrorAction SilentlyContinue)) {
             try {
               Clear-HostAndDriveConflicts
@@ -555,6 +644,10 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             $hint = ' [원인: 선택한 드라이브 문자(' + $p_drive + ')가 다른 세션에서 사용 중입니다. Y:/X: 등 다른 드라이브 문자를 선택하세요.]'
           } elseif ($lastOut -match '\\b1219\\b|다중 연결|Multiple connections') {
             $hint = ' [원인: 대상 PC(' + $p_host + ')에 다른 계정의 기존 연결 세션이 남아 있습니다. 실행 창/탐색기 열려 있는 UNC 연결을 닫고 재시도하세요.]'
+          } elseif ($lastOut -match '\\b1385\\b|로그온 유형|logon type') {
+            $hint = ' [원인: 호스트 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)에 Guest 네트워크 로그온이 차단되어 있습니다. 호스트 PC에서 최신 AhBiShare로 무비밀번호 공유를 재개설(또는 안전 호환 패치)하거나 [보안 계정 모드]로 연결하세요.]'
+          } elseif ($lastOut -match '\\b1223\\b|사용자 이름 입력|작업을 취소|canceled by the user') {
+            $hint = ' [원인: 호스트 PC가 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다. 호스트에서 공유를 재개설하거나 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.]'
           } elseif ($lastOut -match '\\b1272\\b|\\b384\\b|0x80070035|게스트|guest') {
             $hint = ' [원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]'
           } elseif ($lastOut -match '\\b1326\\b|\\b86\\b|\\b5\\b|액세스|거부|로그온|암호') {
@@ -581,6 +674,7 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
 export function buildRollbackScript(scope: 'host' | 'client'): string {
   if (scope === 'host') {
     return `
+      ${PS_GUEST_RIGHTS_HELPER}
       if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
         Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
           $_.Special -eq $false -and $_.Name -notmatch '^.*\\$$' -and (@('IPC$','ADMIN$','C$','D$') -notcontains $_.Name)
@@ -608,6 +702,7 @@ export function buildRollbackScript(scope: 'host' | 'client'): string {
         $guestName = if ($guestWmi) { $guestWmi.Name } else { 'Guest' }
         & net.exe user $guestName /active:no 2>$null | Out-Null
       }
+      Set-AhBiGuestNetworkLogonPolicy $false
       try {
         if (Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue) {
           Set-SmbServerConfiguration -RequireSecuritySignature $true -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
@@ -822,6 +917,33 @@ export function buildOsNetworkPolicyInspectScript(): string {
     $smb1Final = if ($srvCfg) { [bool]$srvCfg.EnableSMB1Protocol } else { $regSmb1 }
     if ($smb1State -eq 'Unknown') { $smb1State = if ($smb1Final) { 'Enabled' } else { 'Disabled' } }
 
+    $guestNetDenied = $false
+    $tmpSecInf = Join-Path $env:TEMP ("ahbi_chk_" + $PID + "_" + (Get-Random) + ".inf")
+    try {
+      & secedit.exe /export /cfg $tmpSecInf /areas USER_RIGHTS 2>$null | Out-Null
+      if (Test-Path -LiteralPath $tmpSecInf) {
+        $gSidChk = ''
+        try {
+          $gAccChk = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+          if ($gAccChk -and $gAccChk.SID) { $gSidChk = ('*' + $gAccChk.SID) }
+        } catch {}
+        foreach ($sLn in (Get-Content -LiteralPath $tmpSecInf -ErrorAction SilentlyContinue)) {
+          if ($sLn -match '^\\s*SeDenyNetworkLogonRight\\s*=\\s*(.*)$') {
+            foreach ($sTok in ($matches[1] -split ',')) {
+              $st = $sTok.Trim()
+              if (-not $st) { continue }
+              if (($st -eq '*S-1-5-32-546') -or ($st -match '-501$') -or ($st -match '^(?:BUILTIN\\\\)?Guests?$') -or ($st -eq '게스트') -or ($gSidChk -and ($st -ieq $gSidChk))) {
+                $guestNetDenied = $true
+                break
+              }
+            }
+          }
+        }
+      }
+    } catch {} finally {
+      try { if (Test-Path -LiteralPath $tmpSecInf) { Remove-Item -LiteralPath $tmpSecInf -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+
     @{
       osProductName = $prodName
       osDisplayVersion = $dispVer
@@ -838,6 +960,7 @@ export function buildOsNetworkPolicyInspectScript(): string {
       smbClientSigningRequired = if ($cliCfg) { [bool]$cliCfg.RequireSecuritySignature } else { $regCliSig }
       allowInsecureGuestAuth = $guestAuth
       enableInsecureGuestLogons = if ($cliCfg) { [bool]$cliCfg.EnableInsecureGuestLogons } else { $guestAuth }
+      guestNetworkLogonDenied = $guestNetDenied
       lmCompatibilityLevel = $lmLevel
       ntlmRestrictOutbound = $ntlmOut
       netbiosEnabled = $netbiosEnabled
@@ -1043,6 +1166,7 @@ export function buildOsCompatibilityPatchScript(
   if (mode === 'legacy_bridge_compat') {
     return `
       ${PS_JSON_HELPER}
+      ${PS_GUEST_RIGHTS_HELPER}
       $actions = @()
       $restarted = @()
       $netbiosChanged = $false
@@ -1089,6 +1213,8 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
+      Set-AhBiGuestNetworkLogonPolicy $true
+      $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 (오류 1385 방지)'
       $actions += 'Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환을 위해 SMB 암호화·서명 강제 해제 및 비암호화 접근 허용'
 
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f | Out-Null
@@ -1190,12 +1316,14 @@ export function buildOsCompatibilityPatchScript(
         : 3;
     const uacFilterDword = rollbackSnapshot?.localAccountTokenFilterEnabled ? 1 : 0;
     const shouldDisableSmb1 = !rollbackSnapshot?.smb1Enabled;
+    const allowGuestRightsPs = rollbackSnapshot && rollbackSnapshot.allowInsecureGuestAuth ? '$true' : '$false';
     const actionHeader = hasSnap
       ? `사전 캡처 스냅샷(${rollbackSnapshot?.capturedAt || ''}) 기준 SMB 서명·암호화·게스트·NTLMv(${lmDword})·UAC 상태 복원 완료`
       : 'SMB 서명 강제 · 비인증 게스트 차단 · UAC 원격 토큰 보호 표준 원복 완료';
 
     return `
       ${PS_JSON_HELPER}
+      ${PS_GUEST_RIGHTS_HELPER}
       $actions = @()
       $restarted = @()
       $smb1Changed = $false
@@ -1220,6 +1348,7 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d ${lmDword} /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d ${uacFilterDword} /f 2>$null | Out-Null
+      Set-AhBiGuestNetworkLogonPolicy ${allowGuestRightsPs}
       $actions += '${escapePsSingle(actionHeader)}'
 
       ${
@@ -1263,6 +1392,7 @@ export function buildOsCompatibilityPatchScript(
   if (mode === 'strict_26h2_default') {
     return `
       ${PS_JSON_HELPER}
+      ${PS_GUEST_RIGHTS_HELPER}
       $actions = @()
       $restarted = @()
       try {
@@ -1282,7 +1412,8 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 0 /f 2>$null | Out-Null
-      $actions += '비인증 게스트 로그온(서비스·GPO), 익명 세션 및 UAC 원격 토큰 필터 차단 복원'
+      Set-AhBiGuestNetworkLogonPolicy $false
+      $actions += '비인증 게스트 로그온(서비스·GPO·SeDenyNetworkLogonRight), 익명 세션 및 UAC 원격 토큰 필터 차단 복원'
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
@@ -1306,6 +1437,7 @@ export function buildOsCompatibilityPatchScript(
   // safe_compat (default): OS build aware safe compatibility without touching SMBv1 or Winsock
   return `
     ${PS_JSON_HELPER}
+    ${PS_GUEST_RIGHTS_HELPER}
     $actions = @()
     $restarted = @()
     $netbiosChanged = $false
@@ -1348,6 +1480,8 @@ export function buildOsCompatibilityPatchScript(
     reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v EnableLinkedConnections /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    Set-AhBiGuestNetworkLogonPolicy $true
+    $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 (오류 1385 방지)'
     $actions += 'Win 11 24H2~26H2 SMB 서명 강제 완화 및 게스트 로그온 · LinkedConnections 호환 허용'
 
     $lsa = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -ErrorAction SilentlyContinue

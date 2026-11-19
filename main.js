@@ -97,17 +97,33 @@ function getPowerShellExe() {
 
 function decodeWindowsBuffer(buf) {
   if (!buf || buf.length === 0) return '';
-  // UTF-16LE BOM or null-byte interleaved pattern (common in WinPE / PowerShell unicode streams)
-  if ((buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) || buf.includes(0x00)) {
-    return buf.toString('utf16le').replace(/^\uFEFF/, '');
+  // Explicit UTF-16LE BOM
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.toString('utf16le').replace(/^\uFEFF/, '').replace(/\u0000/g, '');
   }
+  // Distinguish real UTF-16LE (odd-index 0x00 interleaving) from UTF-8 containing an accidental stray 0x00 byte
+  let oddZeros = 0;
+  let evenZeros = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x00) {
+      if (i % 2 === 1) oddZeros++;
+      else evenZeros++;
+    }
+  }
+  const hasRealUtf16Interleaving =
+    oddZeros >= Math.max(4, Math.floor(buf.length * 0.2)) && oddZeros >= evenZeros * 2;
+  if (hasRealUtf16Interleaving) {
+    return buf.toString('utf16le').replace(/^\uFEFF/, '').replace(/\u0000/g, '');
+  }
+
+  const cleaned = oddZeros + evenZeros > 0 ? Buffer.from(buf.filter((b) => b !== 0x00)) : buf;
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buf).replace(/^\uFEFF/, '');
+    return new TextDecoder('utf-8', { fatal: true }).decode(cleaned).replace(/^\uFEFF/, '');
   } catch {
     try {
-      return new TextDecoder('euc-kr').decode(buf).replace(/^\uFEFF/, '');
+      return new TextDecoder('euc-kr').decode(cleaned).replace(/^\uFEFF/, '');
     } catch {
-      return buf.toString('utf8').replace(/^\uFEFF/, '');
+      return cleaned.toString('utf8').replace(/^\uFEFF/, '');
     }
   }
 }
@@ -141,6 +157,7 @@ function executePowerShellScript(script, timeoutMs = 45000) {
 
     const ps = spawn(getPowerShellExe(), ['-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', tmpFile], {
       windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const outChunks = [];

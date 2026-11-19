@@ -1,4 +1,4 @@
-# AhBiShare OneClick v1.1.0
+# AhBiShare OneClick v1.1.1
 
 [한국어](README.md) | **English**
 
@@ -13,14 +13,14 @@
 - **Client PC (1-Click Drive Mount)**:
   - Scans `/24` local subnet SMB `445` / NetBIOS hosts and auto-fills portable credentials stored in `AhBiShare_OneClick.portable.json` (AES-256-GCM encrypted).
   - Automatically diagnoses and mitigates Windows `0x80070035`, `1272`, `5`, and `1219` SMB errors before mounting drives.
-- **Per-Location Profiles & 1-Click Batch Apply (`v1.1.0`)**:
+- **Per-Location Profiles & 1-Click Batch Apply (`v1.1.1`)**:
   - Saves separate AES-256-GCM encrypted profiles (`locations/*.location.json`) per site (Office, Home, Field), supports `.json` export/import, auto-fills workspace fields, and applies host shares & client drives together in **1 click**.
 - **OS Compatibility Matrix (Win 10 ~ Win 11 26H2)**:
   - Detects host-client policy mismatches in real time (SMB signing, insecure guest auth, RPC privacy, UAC token filtering, NTLM), provides **1-click batch auto-alignment**, and evaluates reboot requirements.
 - **Legacy OS Sharing & Bidirectional Bridge (Win 7 · 8 · 8.1 ⇄ Win 10 · 11)**:
   - Provides a guided 2-step flow (**Step 1: Main Host PC** / **Step 2: Client PC**) with 1-click SMB 2.1/3.0 unencrypted compatibility bridging, 2-step acknowledged SMB 1.0 safety control, and pre-change registry snapshot rollback (`Backup_Before_Apply`).
   - Generates pure Windows 7 `cmd.exe`-compatible `.bat` + UTF-16LE BOM `.reg` 4-file offline USB kits and supports **Win 10/11 ⇄ Win 7/8 bidirectional JSON data bridging**.
-- **GitHub Auto-Update Detection & Portable Self-Replace (`v1.1.0`)**:
+- **GitHub Auto-Update Detection & Portable Self-Replace (`v1.1.1`)**:
   - Checks GitHub Releases (REST API + Atom/`expanded_assets` dual fallback) and displays an update confirmation modal.
   - Detects the running portable edition (`Standard`, `Lite`, or `Win7`), verifies official GitHub download URLs and Windows PE (`MZ`) headers, and **terminates/removes the old portable EXE, replaces it with the new EXE, and relaunches automatically** while preserving `.portable.json` and `locations/`.
 
@@ -32,16 +32,16 @@ npm run dev                  # Vite web dev server (http://localhost:3000)
 npm run lint                 # TypeScript type-check (tsc --noEmit)
 npm run build                # Production bundle (dist/, Chromium 106 compatible)
 npm run verify               # 10-suite integrity, security, updater & SemVer verifier
-npm run electron:build       # Standard portable & NSIS EXE (AhBiShare_OneClick_v1.1.0.exe)
-npm run electron:build:lite  # Size-reduced Lite portable EXE (AhBiShare_OneClick-Lite_v1.1.0.exe)
-npm run electron:build:win7  # Windows 7 SP1~8.1 portable EXE (AhBiShare_OneClick_Win7_v1.1.0.exe)
+npm run electron:build       # Standard portable & NSIS EXE (AhBiShare_OneClick_v1.1.1.exe)
+npm run electron:build:lite  # Size-reduced Lite portable EXE (AhBiShare_OneClick-Lite_v1.1.1.exe)
+npm run electron:build:win7  # Windows 7 SP1~8.1 portable EXE (AhBiShare_OneClick_Win7_v1.1.1.exe)
 npm run electron:build:all   # Build Standard + Lite EXEs and compare file sizes
 npm run version:bump -- minor --summary "Summary" --note "Detail"  # SemVer sync + patch notes
 ```
 
-On Windows, running root `build.bat` verifies dependencies, executes lint and release verification, builds Standard, Lite, and Win 7 portable EXEs plus the Inno Setup installer (`AhBiShare_OneClick-Setup_v1.1.0.exe`) with metadata-synced version suffixes, and opens the `release\` output folder.
+On Windows, running root `build.bat` verifies dependencies, executes lint and release verification, builds Standard, Lite, and Win 7 portable EXEs plus the Inno Setup installer (`AhBiShare_OneClick-Setup_v1.1.1.exe`) with metadata-synced version suffixes, and opens the `release\` output folder.
 
-### Lite Edition (`AhBiShare_OneClick-Lite_v1.1.0.exe`) Size Optimization (Win 7–11 Standalone)
+### Lite Edition (`AhBiShare_OneClick-Lite_v1.1.1.exe`) Size Optimization (Win 7–11 Standalone)
 - Excludes redundant `node_modules` already bundled by Vite from `app.asar`.
 - Retains `ko` and `en-US` locales while pruning unused Chromium locale `.pak` files and large license HTML assets.
 - Removes non-essential WebGPU DXC (`dxcompiler.dll`, `dxil.dll`) and Vulkan software rasterizer (`vk_swiftshader.dll`, `vulkan-1.dll`) binaries.

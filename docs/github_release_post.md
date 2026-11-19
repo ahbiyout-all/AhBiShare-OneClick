@@ -1,4 +1,4 @@
-# 🚀 AhBiShare OneClick v1.1.0 — GitHub 릴리즈 & 저장소 소개 문서
+# 🚀 AhBiShare OneClick v1.1.1 — GitHub 릴리즈 & 저장소 소개 문서
 
 > **Windows 7 SP1 ~ Windows 11 26H2** 환경에서 클릭 한 번으로 공유폴더 개설, 네트워크 드라이브 연결, 사용장소별 프로필(`.location.json`) 일괄 적용, 구형 OS(SMB) 호환 브릿지 구성을 지원하는 **독립형 오픈소스 유틸리티**입니다.
 
@@ -8,10 +8,10 @@
 
 | 파일명 | 권장 대상 | 특징 |
 | :--- | :--- | :--- |
-| **`AhBiShare_OneClick_v1.1.0.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
-| **`AhBiShare_OneClick-Lite_v1.1.0.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블 버전 |
-| **`AhBiShare_OneClick_Win7_v1.1.0.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
-| **`AhBiShare_OneClick-Setup_v1.1.0.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (시작 메뉴·바탕 화면·방화벽 자동 등록) |
+| **`AhBiShare_OneClick_v1.1.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
+| **`AhBiShare_OneClick-Lite_v1.1.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블 버전 |
+| **`AhBiShare_OneClick_Win7_v1.1.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
+| **`AhBiShare_OneClick-Setup_v1.1.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (시작 메뉴·바탕 화면·방화벽 자동 등록) |
 
 👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.1.0`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
 

@@ -36,7 +36,7 @@ for (const reqFile of ['dist/**/*', 'main.js', 'preload.js', 'portableStore.js',
 }
 assert.strictEqual(rootPkg.name, 'ahbishare-oneclick');
 assert(/^\d+\.\d+\.\d+$/.test(rootPkg.version), `package.json version must strictly follow SemVer MAJOR.MINOR.PATCH (got "${rootPkg.version}")`);
-assert.strictEqual(rootPkg.version, '1.1.0');
+assert.strictEqual(rootPkg.version, '1.1.1');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
 const srcVersionTs = fs.readFileSync(path.join(rootDir, 'src', 'version.ts'), 'utf8');
 assert(
@@ -357,22 +357,41 @@ assert(
   psEngineSrc.includes('try { Set-SmbServerConfiguration -RejectUnencryptedAccess'),
   'powershellEngine.ts missing isolated ParameterBinding try/catch for -RejectUnencryptedAccess'
 );
-pass('Windows 7 SP1 ~ 11 26H2 PowerShell 2.0/5.1 fallbacks, network drive creation, GPO/UAC, and OS patch safeguards verified');
+for (const win25Marker of [
+  'Set-AhBiGuestNetworkLogonPolicy',
+  'SeDenyNetworkLogonRight',
+  'guestNetworkLogonDenied',
+  "'/user:Anonymous'",
+  'cmdkey.exe "/delete:$p_host"',
+]) {
+  assert(psEngineSrc.includes(win25Marker), `powershellEngine.ts missing Win 11 24H2/25H2 safeguard: ${win25Marker}`);
+}
+assert(
+  psEngineSrc.indexOf('\\\\b1385\\\\b') < psEngineSrc.indexOf('\\\\b1223\\\\b') &&
+    psEngineSrc.indexOf('\\\\b1223\\\\b') < psEngineSrc.indexOf('게스트|guest'),
+  'powershellEngine.ts must diagnose Error 1385 & 1223 before generic guest pattern'
+);
+pass('Windows 7 SP1 ~ 11 26H2 PowerShell 2.0/5.1 fallbacks, network drive creation, GPO/UAC, SeDenyNetworkLogonRight & OS patch safeguards verified');
 
 // 5. Verify NetworkMatrixPanel host-client mismatch detection & 1-click batch auto-align wiring
 const netEvoSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'networkEvolution.ts'), 'utf8');
 const bridgeSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'shareBridge.ts'), 'utf8');
 const matrixPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
 
-for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'HOST_POLICY_REFERENCE_TARGETS', 'diff_ntlm', 'diff_uac_token', 'Win 7${ver']) {
-  assert(netEvoSrc.includes(marker), `networkEvolution.ts missing auto-align / OS label symbol: ${marker}`);
+for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'HOST_POLICY_REFERENCE_TARGETS', 'diff_ntlm', 'diff_uac_token', 'diff_guest_deny', 'Error 1385', 'Error 1223', 'Win 7${ver']) {
+  assert(netEvoSrc.includes(marker), `networkEvolution.ts missing auto-align / diagnostic / OS label symbol: ${marker}`);
 }
+assert(
+  netEvoSrc.indexOf("'Error 1385'") < netEvoSrc.indexOf("'Error 1223'") &&
+    netEvoSrc.indexOf("'Error 1223'") < netEvoSrc.indexOf("'0x80070035 / 1272'"),
+  'networkEvolution.ts classifyFailureDiagnostics must prioritize Error 1385 and Error 1223 before generic Guest error'
+);
 assert(bridgeSrc.includes('autoAlignHostClientPolicies('), 'shareBridge.ts missing autoAlignHostClientPolicies method');
 assert(bridgeSrc.includes('Get-Command Remove-SmbMapping'), 'shareBridge.ts missing Win 7 Remove-SmbMapping guard in unmountDrive');
 for (const uiId of ['matrix-auto-align-banner', 'btn-auto-align-top', 'btn-sync-cross-pc-policy', 'btn-copy-host-guide']) {
   assert(matrixPanelSrc.includes(uiId), `NetworkMatrixPanel.tsx missing auto-align UI element: ${uiId}`);
 }
-pass('NetworkMatrixPanel host-client mismatch detection, Win 7/8 labels, unmountDrive guard & 1-click auto-align verified');
+pass('NetworkMatrixPanel host-client mismatch detection, Error 1385/1223 priority diagnostics, Win 7/8 labels & 1-click auto-align verified');
 
 // 6. Verify Legacy OS (Win 7/8/8.1 <-> Win 10/11) tab, .bat/.reg generator, and 2-step SMB1 guardrails
 const topBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TopBar.tsx'), 'utf8');
@@ -571,8 +590,10 @@ assert(
     mainJsSrc.includes('return { ok: true, release: null };') &&
     mainJsSrc.includes('resolvedBasePrefix') &&
     mainJsSrc.includes('res.complete') &&
-    mainJsSrc.includes('cleanupPromise'),
-  'main.js must guard PSDefaultParameterValues, handle empty Atom feed, support drive-root save-legacy-scripts, and guard stream completeness/cancel cleanup'
+    mainJsSrc.includes('cleanupPromise') &&
+    mainJsSrc.includes('hasRealUtf16Interleaving') &&
+    mainJsSrc.includes("stdio: ['ignore', 'pipe', 'pipe']"),
+  'main.js must guard PSDefaultParameterValues, decode UTF-8 with stray NULs without CJK mojibake, ignore stdin on PowerShell spawn, handle empty Atom feed, support drive-root save-legacy-scripts, and guard stream completeness/cancel cleanup'
 );
 
 assert(

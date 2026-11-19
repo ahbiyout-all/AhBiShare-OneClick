@@ -1,5 +1,15 @@
 # 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)
 
+## 📅 v1.1.1 (2026-11-19) — [PATCH] Win 11 25H2 호스트 <- 24H2 클라이언트 공유 오류 1385·1223 및 콘솔 출력 깨짐(Mojibake) 수정
+- **변경 구분**: `PATCH` (버그 수정 · 보안 및 호환성 패치 (PATCH))
+- **개발자 · 저작권**: AhBiYout · (주)청운정보시스템 (cisnet.co.kr)
+- **배포 파일**: `AhBiShare_OneClick_v1.1.1.exe`, `AhBiShare_OneClick-Lite_v1.1.1.exe`, `AhBiShare_OneClick_Win7_v1.1.1.exe`, `AhBiShare_OneClick-Setup_v1.1.1.exe`
+
+### 주요 변경 및 특이점 기록
+1. 호스트 무비밀번호 공유 개설(h_auth) 및 안전 호환 패치 시 로컬 보안 정책 SeDenyNetworkLogonRight의 Guest/Guests SID(*S-1-5-32-546, *-501) 네트워크 로그온 차단을 secedit로 자동 해제하여 시스템 오류 1385 해결
+2. 클라이언트 net.exe 실행 시 stdio stdin을 ignore로 격리해 1223 대화형 암호 프롬프트 중단 방지 및 /user:Anonymous·cmdkey 캐시 정리 폴백 보강
+3. Electron main.js decodeWindowsBuffer의 UTF-16LE 판별 오작동(UTF-8 내 단일 NULL 바이트 포함 시 蓫뢊... 한자 깨짐) 수정 및 실패 진단기 Error 1385·1223 우선 분류 추가
+
 ## 📅 v1.1.0 (2026-11-18) — [MINOR] 사용장소 프로필 & 포터블 원클릭 자가 교체 업데이트
 - **변경 구분**: `MINOR` (하위 호환 신규 기능 추가 및 심층 안정화)
 - **개발자 · 저작권**: AhBiYout (`Copyright © 1998-2026 AhBiYout. All rights reserved.`)

@@ -352,6 +352,10 @@ export function computeCompatibilityScoreAndIssues(
     score -= 10;
     issues.push('비인증 게스트 로그온(AllowInsecureGuestAuth)이 차단되어 간편 무비밀번호 공유 연결 시 0x80070035 오류가 발생할 수 있습니다.');
   }
+  if (status.guestNetworkLogonDenied) {
+    score -= 10;
+    issues.push('로컬 보안 정책(SeDenyNetworkLogonRight)이 Guest 네트워크 로그온을 거부 중이어서 타 PC 무비밀번호 접속 시 시스템 오류 1385가 발생할 수 있습니다.');
+  }
   if (status.lmCompatibilityLevel !== null && status.lmCompatibilityLevel < 3) {
     score -= 10;
     issues.push(`NTLM 호환성 수준(${status.lmCompatibilityLevel})이 낮아 Win 11 24H2+ 인증 협상에서 거부될 수 있습니다.`);
@@ -486,6 +490,24 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
   const raw = (errorText || '').trim();
   if (!raw) return null;
 
+  if (/\b1385\b|로그온 유형|logon type/i.test(raw)) {
+    return {
+      code: 'Error 1385',
+      title: '호스트 PC 게스트 네트워크 로그온 차단 (SeDenyNetworkLogonRight)',
+      detail: '호스트(24H2/25H2 등)의 로컬 보안 정책 "네트워크에서 이 컴퓨터에 액세스 거부"에 Guest/Guests가 남아 있어 무비밀번호 접속이 차단되었습니다. 호스트 PC에서 최신 AhBiShare로 공유를 다시 생성하거나 [안전 호환 패치] 실행, 또는 [보안 계정 모드]로 연결하세요.',
+      needsOsPatchHint: true,
+      actionLabel: '매트릭스 호환 패치로 이동',
+    };
+  }
+  if (/\b1223\b|사용자 이름 입력|작업을 취소|canceled by the user/i.test(raw)) {
+    return {
+      code: 'Error 1223',
+      title: '호스트 자격 증명 요구 또는 익명 게스트 접근 거부',
+      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 최신 AhBiShare로 무비밀번호 공유를 재개설하거나 클라이언트에서 [보안 계정 모드]로 연결하세요.',
+      needsOsPatchHint: false,
+      actionLabel: 'OS 매트릭스 보기',
+    };
+  }
   if (/\b1272\b|\b384\b|0x80070035|게스트|guest/i.test(raw)) {
     return {
       code: '0x80070035 / 1272',
@@ -625,6 +647,7 @@ export function toHostPolicySnapshot(hostName: string, status: OsNetworkPolicySt
     pointAndPrintRelaxed: status.pointAndPrintRelaxed,
     lmCompatibilityLevel: status.lmCompatibilityLevel,
     localAccountTokenFilterEnabled: Boolean(status.localAccountTokenFilterEnabled),
+    guestNetworkLogonDenied: Boolean(status.guestNetworkLogonDenied),
     capturedAt: new Date().toISOString(),
   };
 }
@@ -717,6 +740,20 @@ export function computeHostClientPolicyDiff(
     recommendedPatch: clientBlocksGuest ? 'safe_compat' : undefined,
     recommendedPatchLabel: clientBlocksGuest ? getPolicyPatchLabel('safe_compat') : undefined,
   });
+
+  if (hostSnap.guestNetworkLogonDenied) {
+    diffs.push({
+      id: 'diff_guest_deny',
+      label: '호스트 Guest 네트워크 로그온 정책',
+      hostValue: '거부됨 (SeDenyNetworkLogonRight · 오류 1385 위험)',
+      clientValue: clientPolicy.guestNetworkLogonDenied ? '로컬도 거부됨' : '차단 해제됨',
+      status: 'warning',
+      actionTarget: 'host',
+      impact: '호스트 PC의 로컬 보안 정책에 Guest 네트워크 로그온 거부가 설정되어 무비밀번호 접속 시 오류 1385가 발생합니다. 호스트 PC에서 안전 호환 패치 또는 공유 재개설이 필요합니다.',
+      recommendedPatch: clientPolicy.guestNetworkLogonDenied ? 'safe_compat' : undefined,
+      recommendedPatchLabel: clientPolicy.guestNetworkLogonDenied ? getPolicyPatchLabel('safe_compat') : undefined,
+    });
+  }
 
   const clientLowNtlm = clientPolicy.lmCompatibilityLevel !== null && clientPolicy.lmCompatibilityLevel < 3;
   const hostNtlmLabel =

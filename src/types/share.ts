@@ -158,6 +158,7 @@ export interface OsNetworkPolicyStatus {
   smbClientSigningRequired: boolean;
   allowInsecureGuestAuth: boolean;
   enableInsecureGuestLogons: boolean;
+  guestNetworkLogonDenied?: boolean;
   lmCompatibilityLevel: number | null;
   ntlmRestrictOutbound: number | null;
   netbiosEnabled: boolean;
@@ -242,6 +243,7 @@ export interface HostPolicySnapshot {
   pointAndPrintRelaxed: boolean;
   lmCompatibilityLevel?: number | null;
   localAccountTokenFilterEnabled?: boolean;
+  guestNetworkLogonDenied?: boolean;
   capturedAt: string;
 }
 
