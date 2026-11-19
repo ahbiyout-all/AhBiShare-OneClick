@@ -22,9 +22,9 @@ const {
 } = require('./portableUpdater');
 const APP_PKG_VERSION = (() => {
   try {
-    return require('./package.json').version || '1.1.0';
+    return require('./package.json').version || '1.2.1';
   } catch {
-    return '1.1.0';
+    return '1.2.1';
   }
 })();
 
@@ -110,21 +110,26 @@ function decodeWindowsBuffer(buf) {
       else evenZeros++;
     }
   }
+  const cleaned = oddZeros + evenZeros > 0 ? Buffer.from(buf.filter((b) => b !== 0x00)) : buf;
+  let strictUtf8 = null;
+  try {
+    strictUtf8 = new TextDecoder('utf-8', { fatal: true }).decode(cleaned).replace(/^\uFEFF/, '');
+  } catch {
+    strictUtf8 = null;
+  }
   const hasRealUtf16Interleaving =
-    oddZeros >= Math.max(4, Math.floor(buf.length * 0.2)) && oddZeros >= evenZeros * 2;
+    oddZeros >= Math.max(4, Math.floor(buf.length * 0.2)) &&
+    oddZeros >= evenZeros * 2 &&
+    (oddZeros >= Math.floor(buf.length * 0.35) || strictUtf8 === null);
   if (hasRealUtf16Interleaving) {
     return buf.toString('utf16le').replace(/^\uFEFF/, '').replace(/\u0000/g, '');
   }
 
-  const cleaned = oddZeros + evenZeros > 0 ? Buffer.from(buf.filter((b) => b !== 0x00)) : buf;
+  if (strictUtf8 !== null) return strictUtf8;
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(cleaned).replace(/^\uFEFF/, '');
+    return new TextDecoder('euc-kr').decode(cleaned).replace(/^\uFEFF/, '');
   } catch {
-    try {
-      return new TextDecoder('euc-kr').decode(cleaned).replace(/^\uFEFF/, '');
-    } catch {
-      return cleaned.toString('utf8').replace(/^\uFEFF/, '');
-    }
+    return cleaned.toString('utf8').replace(/^\uFEFF/, '');
   }
 }
 
@@ -797,37 +802,79 @@ ipcMain.handle('import-location-profile-file', async (_event, payload) => {
 
 function fetchTextHttps(urlString, headers = {}, redirectsLeft = 3) {
   return new Promise((resolve, reject) => {
-    const req = https.get(
-      urlString,
-      {
-        headers: {
-          'User-Agent': `AhBiShare-OneClick/${app.getVersion() || APP_PKG_VERSION}`,
-          ...headers,
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(String(urlString || '').trim());
+    } catch {
+      reject(new Error('Invalid update check URL'));
+      return;
+    }
+    if (parsedUrl.protocol !== 'https:') {
+      reject(new Error('Only HTTPS URLs are allowed for update checks'));
+      return;
+    }
+
+    let settled = false;
+    const failOnce = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    try {
+      const req = https.get(
+        parsedUrl.toString(),
+        {
+          headers: {
+            'User-Agent': `AhBiShare-OneClick/${app.getVersion() || APP_PKG_VERSION}`,
+            ...headers,
+          },
+          timeout: 8000,
         },
-        timeout: 8000,
-      },
-      (res) => {
-        const status = res.statusCode || 0;
-        if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
-          res.resume();
-          const nextUrl = new URL(res.headers.location, urlString).toString();
-          fetchTextHttps(nextUrl, headers, redirectsLeft - 1).then(resolve, reject);
-          return;
-        }
-        const chunks = [];
-        res.on('data', (chunk) => chunks.push(chunk));
-        res.on('end', () => {
-          resolve({
-            status,
-            body: Buffer.concat(chunks).toString('utf8'),
+        (res) => {
+          const status = res.statusCode || 0;
+          if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
+            res.resume();
+            if (redirectsLeft <= 0) {
+              failOnce(new Error('Too many redirects during update check'));
+              return;
+            }
+            let nextUrl = '';
+            try {
+              const resolvedNext = new URL(res.headers.location, parsedUrl.toString());
+              if (resolvedNext.protocol !== 'https:') {
+                failOnce(new Error('Redirected to non-HTTPS URL during update check'));
+                return;
+              }
+              nextUrl = resolvedNext.toString();
+            } catch {
+              failOnce(new Error('Invalid redirect URL during update check'));
+              return;
+            }
+            settled = true;
+            fetchTextHttps(nextUrl, headers, redirectsLeft - 1).then(resolve, reject);
+            return;
+          }
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('error', (err) => failOnce(err));
+          res.on('end', () => {
+            if (settled) return;
+            settled = true;
+            resolve({
+              status,
+              body: Buffer.concat(chunks).toString('utf8'),
+            });
           });
-        });
-      }
-    );
-    req.on('timeout', () => {
-      req.destroy(new Error('GitHub update check timed out'));
-    });
-    req.on('error', reject);
+        }
+      );
+      req.on('timeout', () => {
+        req.destroy(new Error('GitHub update check timed out'));
+      });
+      req.on('error', (err) => failOnce(err));
+    } catch (err) {
+      failOnce(err);
+    }
   });
 }
 
@@ -946,6 +993,7 @@ ipcMain.handle('open-external-url', async (_event, { url }) => {
 });
 
 let activeUpdateDownload = null;
+let isPortableReplacementQueued = false;
 
 function emitUpdateProgress(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -994,6 +1042,7 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
             reject(new Error('잘못된 리다이렉트 URL입니다.'));
             return;
           }
+          settled = true;
           downloadFileHttpsWithProgress(nextUrl, destFilePath, expectedSize, onProgress, stateRef, redirectsLeft - 1).then(
             resolve,
             reject
@@ -1141,8 +1190,8 @@ ipcMain.handle('cancel-portable-update', async () => {
 });
 
 ipcMain.handle('install-portable-update', async (_event, payload) => {
-  if (activeUpdateDownload) {
-    return { success: false, error: '이미 업데이트 다운로드가 진행 중입니다.' };
+  if (activeUpdateDownload || isPortableReplacementQueued) {
+    return { success: false, error: '이미 업데이트 다운로드 또는 교체가 진행 중입니다.' };
   }
 
   const osInfo = getWindowsOsDetails();
@@ -1217,7 +1266,7 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
           percent,
           downloadedBytes,
           totalBytes,
-          message: `${safeAssetName} 내려받는 중... (${percent}%)`,
+          message: totalBytes > 0 ? `${safeAssetName} 내려받는 중... (${percent}%)` : `${safeAssetName} 내려받는 중...`,
         });
       },
       downloadState
@@ -1264,6 +1313,7 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       message: `기존 포터블(${runtime.currentExeName}) 종료·제거 후 ${safeAssetName} 교체·재실행 중...`,
     });
 
+    let exitTimer = null;
     const updaterProc = spawn(
       getPowerShellExe(),
       ['-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', psScriptPath],
@@ -1273,9 +1323,39 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
         windowsHide: true,
       }
     );
+    if (!updaterProc || !updaterProc.pid) {
+      cleanupStaging();
+      const spawnErrMsg = '포터블 교체 PowerShell 업데이터 프로세스를 시작하지 못했습니다.';
+      emitUpdateProgress({
+        phase: 'error',
+        percent: 0,
+        downloadedBytes: dlRes.downloadedBytes,
+        totalBytes: dlRes.downloadedBytes,
+        message: spawnErrMsg,
+      });
+      return { success: false, error: spawnErrMsg };
+    }
+
+    isPortableReplacementQueued = true;
+    updaterProc.once('error', (spawnErr) => {
+      if (exitTimer) {
+        clearTimeout(exitTimer);
+        exitTimer = null;
+      }
+      isPortableReplacementQueued = false;
+      cleanupStaging();
+      emitUpdateProgress({
+        phase: 'error',
+        percent: 0,
+        downloadedBytes: dlRes.downloadedBytes,
+        totalBytes: dlRes.downloadedBytes,
+        message: `포터블 교체 백그라운드 실행 오류: ${spawnErr && spawnErr.message ? spawnErr.message : '알 수 없는 오류'}`,
+      });
+    });
     updaterProc.unref();
 
-    setTimeout(() => {
+    exitTimer = setTimeout(() => {
+      exitTimer = null;
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.destroy();

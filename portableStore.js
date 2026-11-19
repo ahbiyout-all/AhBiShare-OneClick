@@ -170,6 +170,9 @@ function sanitizeHostPolicySnapshot(snap) {
   if (typeof snap.localAccountTokenFilterEnabled === 'boolean') {
     out.localAccountTokenFilterEnabled = snap.localAccountTokenFilterEnabled;
   }
+  if (typeof snap.guestNetworkLogonDenied === 'boolean') {
+    out.guestNetworkLogonDenied = snap.guestNetworkLogonDenied;
+  }
   return out;
 }
 
@@ -721,10 +724,40 @@ function createPortableStore(options = {}) {
     };
   };
 
+  const findLocationFileByProfileId = (directory, profileId) => {
+    const { locDir, filePath: exactPath } = resolveSafeLocationFilePath(directory, profileId, profileId);
+    if (fs.existsSync(exactPath)) {
+      return exactPath;
+    }
+    const targetRaw = String(profileId || '').trim();
+    const targetSanitized = sanitizeLocationId(targetRaw, '');
+    if (fs.existsSync(locDir)) {
+      try {
+        for (const entry of fs.readdirSync(locDir)) {
+          if (!entry.toLowerCase().endsWith(LOCATION_FILE_EXT)) continue;
+          const candidatePath = path.resolve(locDir, entry);
+          if (!candidatePath.startsWith(locDir + path.sep)) continue;
+          try {
+            const raw = fs.readFileSync(candidatePath, 'utf8').replace(/^\uFEFF/, '');
+            const parsed = JSON.parse(raw);
+            const hydrated = hydrateLocationProfile(parsed);
+            if (
+              hydrated.profileId === targetRaw ||
+              (targetSanitized && sanitizeLocationId(hydrated.profileId, '') === targetSanitized)
+            ) {
+              return candidatePath;
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    return '';
+  };
+
   const loadLocationProfile = (profileId) => {
     const loc = getLocation();
-    const { filePath } = resolveSafeLocationFilePath(loc.directory, profileId, profileId);
-    if (!fs.existsSync(filePath)) {
+    const filePath = findLocationFileByProfileId(loc.directory, profileId);
+    if (!filePath || !fs.existsSync(filePath)) {
       return { success: false, error: '해당 사용장소 프로필 파일을 찾을 수 없습니다.' };
     }
     try {
@@ -742,8 +775,8 @@ function createPortableStore(options = {}) {
 
   const deleteLocationProfile = (profileId) => {
     const loc = getLocation();
-    const { filePath } = resolveSafeLocationFilePath(loc.directory, profileId, profileId);
-    if (!fs.existsSync(filePath)) {
+    const filePath = findLocationFileByProfileId(loc.directory, profileId);
+    if (!filePath || !fs.existsSync(filePath)) {
       return { success: false, error: '삭제할 사용장소 파일이 존재하지 않습니다.' };
     }
     try {

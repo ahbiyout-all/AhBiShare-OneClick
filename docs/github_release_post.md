@@ -1,25 +1,28 @@
-# 🚀 AhBiShare OneClick v1.1.1 — GitHub 릴리즈 & 저장소 소개 문서
+# 🚀 AhBiShare OneClick v1.2.1 — GitHub 릴리즈 & 저장소 소개 문서
 
 > **Windows 7 SP1 ~ Windows 11 26H2** 환경에서 클릭 한 번으로 공유폴더 개설, 네트워크 드라이브 연결, 사용장소별 프로필(`.location.json`) 일괄 적용, 구형 OS(SMB) 호환 브릿지 구성을 지원하는 **독립형 오픈소스 유틸리티**입니다.
 
 ---
 
-## 📦 배포 파일 안내 (`v1.1.0` · GitHub Releases)
+## 📦 배포 파일 안내 (`v1.1.5` · GitHub Releases)
 
 | 파일명 | 권장 대상 | 특징 |
 | :--- | :--- | :--- |
-| **`AhBiShare_OneClick_v1.1.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
-| **`AhBiShare_OneClick-Lite_v1.1.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블 버전 |
-| **`AhBiShare_OneClick_Win7_v1.1.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
-| **`AhBiShare_OneClick-Setup_v1.1.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (시작 메뉴·바탕 화면·방화벽 자동 등록) |
+| **`AhBiShare_OneClick_v1.2.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
+| **`AhBiShare_OneClick-Lite_v1.2.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블 버전 |
+| **`AhBiShare_OneClick_Win7_v1.2.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
+| **`AhBiShare_OneClick-Setup_v1.2.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (시작 메뉴·바탕 화면·방화벽 자동 등록) |
 
-👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.1.0`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
+👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.1.5`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
 
 ---
 
-## ✨ v1.1.0 주요 변경 내역 (Semantic Versioning: `MINOR`)
+## ✨ v1.2.x 주요 변경 내역 (최신 `v1.2.0` · Semantic Versioning: `MINOR` + `PATCH`)
 
 ### 🟢 신규 기능 (`MINOR`)
+- **실시간 작업 진행 모션창 (`WorkProgressModal`) — 주요 작업 11종 전면 적용 (`v1.2.0`)**:
+  - 공유 개설·해제, 네트워크 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS(Win 7/8) 통합 개설·접속, 사용장소 일괄 적용, 호스트·클라이언트·만료 보안 원복까지 모든 주요 작업 시 **듀얼 링 SVG 회전 모션 + 실시간 단계 진행 타임라인 + 경과 시간 표시창**을 제공합니다.
+  - 실행 중에는 닫기·ESC·배경 클릭·키보드(`Enter`/`Space`/`Tab`) 재실행을 차단하는 중앙 잠금 및 본문 스크롤 잠금을 적용하며, 작업 성공 시 **1.5초 카운트다운 자동 닫힘**, 오류 발생 시 원인 안내와 함께 수동 확인 시까지 창을 유지합니다.
 - **사용장소별 개별 프로필(`.location.json`) & 1클릭 일괄 적용**:
   - 사무실·집·현장 등 사용장소별 호스트 공유 및 클라이언트 드라이브 타깃을 개별 AES-256-GCM 암호화 파일(`locations/*.location.json`)로 저장하고 목록 전환·JSON 내보내기/불러오기·**원클릭 일괄 적용**을 지원합니다.
 - **GitHub 자동 업데이트 감지 + 기존 포터블 종료·제거·자동 교체(Self-Replace)**:
@@ -27,11 +30,32 @@
   - 실행 중인 포터블 에디션(`Standard` / `Lite` / `Win7`)을 파일명(`basename`)과 앱 식별자로 정확히 판별해 동일 에디션의 최신 `.exe`를 내려받고, 공식 GitHub URL 허용 목록 및 Windows PE 실행 헤더(`MZ`) 무결성 검증을 거친 뒤 **기존 포터블 프로세스를 종료·삭제하고 새 파일로 교체·재실행**합니다.
   - 기존 공유 데이터(`.portable.json`) 및 사용장소 프로필(`locations/`)은 안전하게 보존됩니다.
 
-### 🔧 심층 점검(Deep Audit) · 호환성 · 저장소 정비 (`PATCH` 포함)
-- **Windows 7 화면 및 PowerShell 2.0 호환성**:
+### 🔧 24H2/25H2 공유 오류 해결 & 심층 점검(Deep Audit) (`v1.1.1` ~ `v1.2.0`)
+- **6차 자아성찰 심층 점검 — 진행 모션창 포커스·모션 접근성 & 만료 원복·장소 일괄 적용 오류 수정 (`v1.2.0`)**:
+  - `WorkProgressModal.tsx` · `index.css`: 실행 중 배경 버튼 키보드 재호출(`Enter`/`Space`/`Tab`) 차단 포커스 트랩·이전 포커스 복원·본문 스크롤 잠금을 구현하고, `prefers-reduced-motion: reduce` 환경에 `animation-iteration-count: 1 !important`를 추가해 무한 회전 깜빡임(Strobing)을 제거했습니다.
+  - `App.tsx` (`handleExpirySecurityRollback` · `handleApplyOsPatch`): 만료 공유 보안 원복 시 `rollbackPolicies`·`strict_26h2_default` 양측 성공 여부를 검증해 실패 시 만료 알림 유지·오류 단계 추적(`failProgressJob`)을 적용하고, 정책 적용 실패 토스트가 완료 문구를 표시하던 버그를 수정했습니다.
+  - `shareBridge.ts` (`applyLocationProfileBatch`): 누락된 공유 항목을 건너뛸 때 진행률 인덱스(`호스트 공유폴더(i/N)`)가 `App.tsx` `validShares` 목록과 어긋나던 인덱스 불일치 버그를 수정했습니다.
+- **5차 자아성찰 심층 점검 — 보안 정책 따옴표 보존 · Null 세션 · Live 상태 동기화 정확도 개선 (`v1.1.5`)**:
+  - `powershellEngine.ts` · `legacyScriptEngine.ts`: `secedit` UTF-16LE INF 파일 읽기 시 `[System.Text.Encoding]::Unicode`를 명시적으로 지정하고, `SeDenyNetworkLogonRight`에서 비게스트(공백 포함 그룹 등) 항목의 기존 따옴표(`$rawTok`/`$rawTk`)가 손실되지 않도록 보존했습니다.
+  - `powershellEngine.ts` (`c_mount`): 보안 계정 모드에서 `/` 또는 `*`로 시작하는 암호가 `net.exe` CLI 옵션/프롬프트와 충돌하지 않도록 Win32 `WNetAddConnection2` 경로로 직행하게 수정하고, Guest 모드에 명시적 Win32 SMB **Null 세션**(빈 계정/빈 암호 `Invoke-WNetMap '' ''`) 폴백을 추가했습니다.
+  - `shareBridge.ts` (`syncLiveState`): 외부에서 공유 로컬 경로(`folderPath`)가 변경되었거나 드라이브 문자가 다른 UNC 경로로 재매핑된 경우 기존 저장 메타데이터를 재사용하지 않고 최신 Live 상태로 정확히 갱신합니다.
+- **4차 심층 점검 — 무비밀번호(Guest) 마운트 오류 86·1223 근본 해결 (`v1.1.4`)**:
+  - `powershellEngine.ts` (`c_mount`): PowerShell 배열 인자 `'""'` 전달 시 네이티브 `net.exe`에 리터럴 문자열 `""`가 암호로 전달되어 `Guest`/`Anonymous` 모두 **시스템 오류 86(지정된 네트워크 암호가 맞지 않습니다)**을 일으키던 결함을 Win32 `WNetAddConnection2`(`mpr.dll`) 및 `ProcessStartInfo` 원시 `Arguments`(`""`, `Guest`/`Host\Guest`/`Anonymous` 우선) 호출로 근본 해결했습니다.
+  - `powershellEngine.ts` (`h_auth` / `h_share` / `safe_compat` / `legacy_bridge_compat`): 호스트 `*-501` `Guest` 계정 빈 암호(`/passwordreq:no`) 명시 초기화·`S-1-5-7`(`ANONYMOUS LOGON`) 공유 권한 추가, 안전/구형 호환 패치 내 `LimitBlankPasswordUse=0`·LSA 익명 정책 정렬 및 `secedit` UTF-16LE INF 읽기(`[System.IO.File]::ReadAllLines`)를 보강했습니다.
+  - `legacyScriptEngine.ts` · `networkEvolution.ts`: 오프라인 USB `.bat`/`.reg` 키트에도 `LimitBlankPasswordUse=0/1` 대칭 및 `ReadAllLines($inf)`를 적용하고, 시스템 오류 86(빈 암호 제한/Guest 암호 불일치) 실패 진단 가이드를 보강했습니다.
+- **3차 자아성찰 심층 점검 안정화 (`v1.1.3`)**:
+  - `portableUpdater.js`: 포터블 자동 교체 전 기존 EXE를 스테이징 백업(`old_portable_backup.exe`)하고, 대상 경로 복사 직후 PowerShell 2.0 호환 PE(`MZ`) 헤더 검증(`Test-ValidPeExe`) 및 실패 시 자동 백업 복원 롤백을 추가했습니다.
+  - `main.js` · `bump_version.js`: 업데이터 PowerShell `spawn` PID 미생성/오류(`updaterProc.once('error')`) 시 `exitTimer`를 취소하고 에러를 안내하여 앱 무응답 강제 종료를 방지했으며, `APP_PKG_VERSION` 폴백 버전도 SemVer 스크립트로 자동 동기화합니다.
+  - `portableStore.js`: USB 간 수동 복사·이름 변경으로 파일명과 내부 `profileId`가 달라진 `.location.json` 프로필도 조회·삭제할 수 있도록 `findLocationFileByProfileId` 폴백 탐색을 구현했습니다.
+  - `shareBridge.ts` · `types/share.ts`: 클라이언트 마운트 시 `MountedDrive.username`과 비밀번호 런타임 캐시(`setCachedPassword`)를 함께 보존하고, Electron 사용장소 로드·가져오기 직후 `cacheLocationProfileCredentials`로 호스트·타깃 자격증명을 일괄 복원합니다.
+- **Win 11 25H2 ↔ 24H2 시스템 오류 1385·1223 및 콘솔 한자 깨짐 수정 (`v1.1.1`)**:
+  - 로컬 보안 정책 `SeDenyNetworkLogonRight`의 Guest/Guests(`*S-1-5-32-546`, `*-501`) 네트워크 로그온 차단을 `secedit`로 자동 해제하고, 클라이언트 `net.exe` stdin 격리 및 `decodeWindowsBuffer` UTF-16LE 오판(UTF-8 내 NULL 바이트)을 수정했습니다.
+- **2차 자아성찰 심층 점검 안정화 (`v1.1.2`)**:
+  - `fetchTextHttps` URL·HTTPS 프로토콜·리다이렉트 루프 검증 및 포터블 교체 이중 호출 가드(`isPortableReplacementQueued`)를 추가했습니다.
+  - 사용장소 일괄 적용 시 `ABSHARE://` 코드·런타임 캐시에서 암호를 복원하고 계정 모드 암호 누락 시 무음 기본값 대체를 차단했습니다.
+  - 오프라인 USB `.bat` 키트에 `UserRights.inf` 백업/복원 및 `SeDenyNetworkLogonRight` 해제를 반영하고, 구형 OS·장소 일괄 적용 직후 OS 정책 재동기화 및 업데이트 진행창 KB/미상 용량 표시·모달 입력 유지·호스트 공유명 커스텀 플래그 오류를 수정했습니다.
+- **Windows 7 화면 및 PowerShell 2.0 호환성 (`v1.1.0`)**:
   - Tailwind CSS v4 `oklch()` 색상을 `chrome106`/`chrome100` 타깃으로 컴파일 변환해 Win 7(Electron 21) 검은 화면 문제를 해결하고, PowerShell 2.0 `$PSDefaultParameterValues`·`[Console]` 핸들 예외·`$null` NetBT 루프를 가드했습니다.
-- **네트워크 · 업데이터 스트림 · UI 안정화**:
-  - HTTP 청크 다운로드 스트림 완료(`res.complete`) 검증 및 `cleanupPromise` 취소 동기화, USB 루트 드라이브(`E:\`) 저장 경로 접두사 수정, 모달 위 토스트 표시(`z-[60]`), 클라이언트 드라이브 문자 덮어쓰기 방지, Atom XML/HTML 디코딩 순서 및 SemVer 2.0 pre-release 비교 보완을 완료했습니다.
 - **GitHub 저장소 Core Tree 정비 & 무결성 검증 체계**:
   - `.gitignore` 전면 개편을 통해 로컬 전용 스크립트(`push_github*.bat`, `build_release.bat`), 플랫폼 메타/첨부 이미지(`.aistudio/`, `metadata.json`, `/public/assets/aistudio/`), 업데이터 임시 파일(`_ahbishare_update/`, `*.part`, `*apply_portable_update.ps1`), 런타임 프로필·생성 키트(`*.portable.json`, `*.location.json`, `locations/`, `AhBiShare_*.bat`/`.reg`)를 업로드 대상에서 엄격히 분리했습니다.
   - CI 및 로컬 빌드 전 `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (10대 포터블·암호화·업데이터·SemVer 무결성 스위트) 통과를 의무화했습니다.
@@ -59,8 +83,14 @@ npm run version:bump -- patch --summary "패치 요약" --note "세부 기록"
 ---
 
 ## 📜 릴리즈 이력 요약
-- **`v1.1.0` (2026-11-18)**: 사용장소 프로필(`.location.json`)·1클릭 일괄 적용, GitHub 포터블 자동 교체(Self-Replace), Win 7 UI/PS 2.0 호환성 개선, GitHub Core Tree(`.gitignore`) 정비 및 심층 점검 버그 수정
-- **`v1.0.0` (2026-11-16)**: AhBiShare OneClick 정식 출범, 구형 OS 공유(Win 7/8 ⇄ Win 10/11) 2단계 브릿지·오프라인 키트, Lite/Win7/Setup 배포 체계 확립
+- **`v1.2.0` (2026-11-19 · `MINOR`)**: 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·실시간 단계 목록·경과 시간·1.5초 자동 닫힘/오류 유지·포커스/스크롤 잠금) 주요 작업 11종 도입 및 6차 자아성찰 심층 점검(`handleExpirySecurityRollback`·`handleApplyOsPatch` 오류 검증, `applyLocationProfileBatch` `validShares` 인덱스 정렬, `prefers-reduced-motion` 개선)
+- **`v1.1.5` (2026-11-19 · `PATCH`)**: 5차 자아성찰 심층 점검 — `secedit` INF `[System.Text.Encoding]::Unicode` 명시 & `SeDenyNetworkLogonRight` 비게스트 따옴표 보존, `c_mount` `/`·`*` 암호 `net.exe` 충돌 회피 및 Guest Win32 Null 세션(`''`/`''`) 폴백 추가, `syncLiveState` 공유 `folderPath`·드라이브 UNC 변경 감지 강화
+- **`v1.1.4` (2026-11-19 · `PATCH`)**: 4차 심층 점검 — 무비밀번호(Guest) 마운트 `Guest: 시스템 오류 86`·`1223` 근본 해결 (`WNetAddConnection2` · `ProcessStartInfo` 원시 빈 암호 전달, 호스트 `*-501` 빈 암호(`/passwordreq:no`)·`S-1-5-7` 공유 권한, `LimitBlankPasswordUse=0` 정렬, `secedit` UTF-16LE INF `ReadAllLines` 보강)
+- **`v1.1.3` (2026-11-19 · `PATCH`)**: 3차 자아성찰 심층 점검 — 포터블 교체 전 기존 EXE 백업·복사 후 PE(`MZ`) 검증 및 실패 시 자동 롤백, 업데이터 `spawn` 오류 시 `exitTimer` 취소 가드, 이름 변경 `.location.json` 폴백 조회·삭제, 클라이언트/사용장소 자격증명 캐시 복원 보강
+- **`v1.1.2` (2026-11-19 · `PATCH`)**: 2차 자아성찰 심층 점검 — HTTPS 리다이렉트·이중 교체 가드, 장소 일괄 적용 암호 복원/차단, 정책 적용 후 OS 상태 재동기화, 오프라인 USB `.bat` 1385 방어, 모달·업데이터 UI 버그 수정
+- **`v1.1.1` (2026-11-19 · `PATCH`)**: Win 11 25H2 ↔ 24H2 공유 오류 1385(`SeDenyNetworkLogonRight`)·1223(`stdin` 격리)·UTF-16LE 콘솔 깨짐·USB 정책 스냅샷 동기화 수정
+- **`v1.1.0` (2026-11-18 · `MINOR`)**: 사용장소 프로필(`.location.json`)·1클릭 일괄 적용, GitHub 포터블 자동 교체(Self-Replace), Win 7 UI/PS 2.0 호환성 개선, GitHub Core Tree(`.gitignore`) 정비 및 1차 심층 점검 버그 수정
+- **`v1.0.0` (2026-11-16 · `MAJOR`)**: AhBiShare OneClick 정식 출범, 구형 OS 공유(Win 7/8 ⇄ Win 10/11) 2단계 브릿지·오프라인 키트, Lite/Win7/Setup 배포 체계 확립
 
 ---
 

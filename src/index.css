@@ -22,9 +22,39 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+@keyframes ahbi-ring-cw {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ahbi-ring-ccw {
+  0% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.ahbi-motion-ring-cw {
+  transform-origin: center;
+  animation: ahbi-ring-cw 1.6s linear infinite;
+}
+
+.ahbi-motion-ring-ccw {
+  transform-origin: center;
+  animation: ahbi-ring-ccw 2.4s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
+

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Save,
@@ -85,14 +85,20 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     setSaveError(null);
-    if (initialTab === 'save' && activeProfile) {
+    if (activeProfile && (initialTab === 'save' || initialTab === 'manage')) {
       setLocationName(activeProfile.locationName);
       setDescription(activeProfile.description || '');
-    } else if (initialTab === 'save') {
+    } else {
       setLocationName('');
       setDescription('');
     }
@@ -198,9 +204,10 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
             </button>
             <button
               type="button"
+              disabled={isSaving || isBatchApplying}
               onClick={onClose}
               aria-label="사용장소 관리 창 닫기"
-              className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <X className="w-4 h-4" />
             </button>

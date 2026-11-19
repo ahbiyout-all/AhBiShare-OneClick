@@ -189,6 +189,7 @@ let webSimPolicyBase: Omit<OsNetworkPolicyStatus, 'compatibilityScore' | 'detect
   smbClientSigningRequired: true,
   allowInsecureGuestAuth: false,
   enableInsecureGuestLogons: false,
+  guestNetworkLogonDenied: true,
   lmCompatibilityLevel: 3,
   ntlmRestrictOutbound: 0,
   netbiosEnabled: true,
@@ -951,11 +952,13 @@ export const shareBridge = {
         const expectedUnc = `\\\\${netInfo.primaryIp}\\${live.shareName}`;
         if (prev) {
           const cachedPass = prev.restoredPassword || getCachedPassword(netInfo.hostname, live.shareName);
-          if (prev.uncPath === expectedUnc && prev.sourceIp === netInfo.primaryIp) {
+          const nextFolderPath = live.folderPath || prev.folderPath;
+          if (prev.uncPath === expectedUnc && prev.sourceIp === netInfo.primaryIp && prev.folderPath === nextFolderPath) {
             return prev;
           }
           return {
             ...prev,
+            folderPath: nextFolderPath,
             uncPath: expectedUnc,
             sourceHostName: netInfo.hostname,
             sourceIp: netInfo.primaryIp,
@@ -996,11 +999,12 @@ export const shareBridge = {
 
       const liveMappingsList = Array.isArray(parsed.mappings) ? parsed.mappings : [];
       const savedByDrive = new Map(savedMounts.map((m) => [m.driveLetter.toUpperCase(), m]));
+      const normalizeUnc = (u: string) => u.trim().replace(/[\\/]+$/, '').toLowerCase();
       const mergedMounts: MountedDrive[] = liveMappingsList.map((live) => {
         const dl = live.driveLetter.toUpperCase();
         const prev = savedByDrive.get(dl);
         const liveStatus: 'connected' | 'disconnected' = live.status === 'OK' ? 'connected' : 'disconnected';
-        if (prev) {
+        if (prev && normalizeUnc(prev.uncPath) === normalizeUnc(live.uncPath)) {
           return prev.status === liveStatus ? prev : { ...prev, status: liveStatus };
         }
         const uncParts = live.uncPath.replace(/^\\\\/, '').split('\\');
@@ -1240,12 +1244,19 @@ export const shareBridge = {
     }
 
     const normalizedDrive = (config.driveLetter || 'Z:').replace(/:?$/, ':').toUpperCase();
+    const trimmedHost = config.targetHost.trim();
+    const trimmedShare = config.shareName.trim();
+    const trimmedUser = config.authMode === 'account' ? config.username.trim() : '';
+    if (config.authMode === 'account' && config.password) {
+      setCachedPassword(trimmedHost, trimmedShare, config.password);
+    }
     const mount: MountedDrive = {
       driveLetter: normalizedDrive,
-      uncPath: `\\\\${config.targetHost.trim()}\\${config.shareName.trim()}`,
-      targetHost: config.targetHost.trim(),
-      shareName: config.shareName.trim(),
+      uncPath: `\\\\${trimmedHost}\\${trimmedShare}`,
+      targetHost: trimmedHost,
+      shareName: trimmedShare,
       authMode: config.authMode,
+      ...(trimmedUser ? { username: trimmedUser } : {}),
       mountedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
       status: 'connected',
     };
@@ -1447,6 +1458,7 @@ export const shareBridge = {
             smbClientSigningRequired: Boolean(parsed.smbClientSigningRequired),
             allowInsecureGuestAuth: Boolean(parsed.allowInsecureGuestAuth),
             enableInsecureGuestLogons: Boolean(parsed.enableInsecureGuestLogons),
+            guestNetworkLogonDenied: Boolean(parsed.guestNetworkLogonDenied),
             lmCompatibilityLevel: parsed.lmCompatibilityLevel ?? null,
             ntlmRestrictOutbound: parsed.ntlmRestrictOutbound ?? null,
             netbiosEnabled: Boolean(parsed.netbiosEnabled),
@@ -1499,6 +1511,7 @@ export const shareBridge = {
           smbClientSigningRequired: current.smbClientSigningRequired,
           allowInsecureGuestAuth: current.allowInsecureGuestAuth,
           enableInsecureGuestLogons: current.enableInsecureGuestLogons,
+          guestNetworkLogonDenied: Boolean(current.guestNetworkLogonDenied),
           localAccountTokenFilterEnabled: Boolean(current.localAccountTokenFilterEnabled),
           smbEncryptData: current.smbEncryptData,
           smbRejectUnencryptedAccess: Boolean(current.smbRejectUnencryptedAccess),
@@ -1608,6 +1621,7 @@ export const shareBridge = {
         smbClientSigningRequired: false,
         allowInsecureGuestAuth: true,
         enableInsecureGuestLogons: true,
+        guestNetworkLogonDenied: false,
         lmCompatibilityLevel: 3,
         netbiosEnabled: true,
         lanmanServerRunning: true,
@@ -1688,6 +1702,7 @@ export const shareBridge = {
         smbClientSigningRequired: false,
         allowInsecureGuestAuth: true,
         enableInsecureGuestLogons: true,
+        guestNetworkLogonDenied: false,
         lmCompatibilityLevel: 3,
         netbiosEnabled: true,
         lanmanServerRunning: true,
@@ -1729,6 +1744,9 @@ export const shareBridge = {
         enableInsecureGuestLogons: rollbackSnapshot
           ? Boolean(rollbackSnapshot.enableInsecureGuestLogons ?? rollbackSnapshot.allowInsecureGuestAuth)
           : false,
+        guestNetworkLogonDenied: rollbackSnapshot
+          ? Boolean(rollbackSnapshot.guestNetworkLogonDenied ?? !rollbackSnapshot.allowInsecureGuestAuth)
+          : true,
         localAccountTokenFilterEnabled: rollbackSnapshot
           ? Boolean(rollbackSnapshot.localAccountTokenFilterEnabled)
           : false,
@@ -1755,6 +1773,7 @@ export const shareBridge = {
         smbClientSigningRequired: true,
         allowInsecureGuestAuth: false,
         enableInsecureGuestLogons: false,
+        guestNetworkLogonDenied: true,
         localAccountTokenFilterEnabled: false,
       };
       appliedActions = [
@@ -1819,7 +1838,8 @@ export const shareBridge = {
 
   async autoAlignHostClientPolicies(
     modes: PolicyPatchMode[],
-    netInfo?: LocalNetworkInfo
+    netInfo?: LocalNetworkInfo,
+    onProgress?: (steps: PipelineStep[]) => void
   ): Promise<AutoAlignBatchResult> {
     const uniqueModes: PolicyPatchMode[] = [];
     for (const m of modes) {
@@ -1841,15 +1861,28 @@ export const shareBridge = {
       };
     }
 
+    const alignSteps: PipelineStep[] = uniqueModes.map((m, idx) => ({
+      id: `align-${idx}-${m}`,
+      title: `${getPolicyPatchLabel(m)} 적용`,
+      detail: '호스트·클라이언트 정책 정렬 및 SMB 서비스 새로고침',
+      status: 'idle',
+    }));
+    onProgress?.([...alignSteps]);
+
     const appliedModes: PolicyPatchMode[] = [];
     const failedModes: PolicyPatchMode[] = [];
     const actionSet = new Set<string>();
     const judgments: RebootJudgment[] = [];
     let latestPolicy: OsNetworkPolicyStatus | null = null;
 
-    for (const mode of uniqueModes) {
+    for (let i = 0; i < uniqueModes.length; i++) {
+      const mode = uniqueModes[i];
+      alignSteps[i].status = 'running';
+      onProgress?.([...alignSteps]);
+      const t0 = performance.now();
       try {
         const res = await this.applyOsCompatibilityPatch(mode, netInfo);
+        alignSteps[i].durationMs = Math.round(performance.now() - t0);
         latestPolicy = res.updatedPolicy;
         judgments.push(res.rebootJudgment);
         for (const act of res.appliedActions) {
@@ -1857,14 +1890,22 @@ export const shareBridge = {
         }
         if (res.success) {
           appliedModes.push(mode);
+          alignSteps[i].status = 'success';
+          alignSteps[i].detail = res.rebootJudgment.title;
         } else {
           failedModes.push(mode);
+          alignSteps[i].status = 'error';
+          alignSteps[i].error = res.summary || `${getPolicyPatchLabel(mode)} 적용 실패`;
         }
       } catch (err) {
+        alignSteps[i].durationMs = Math.round(performance.now() - t0);
         failedModes.push(mode);
         const reason = err instanceof Error ? err.message : '알 수 없는 오류';
+        alignSteps[i].status = 'error';
+        alignSteps[i].error = reason;
         actionSet.add(`${getPolicyPatchLabel(mode)} 적용 오류: ${reason}`);
       }
+      onProgress?.([...alignSteps]);
     }
 
     if (!latestPolicy) {
@@ -2268,15 +2309,23 @@ export const shareBridge = {
           params.clientConfig &&
           params.clientConfig.targetHost.trim().toLowerCase() === m.targetHost.trim().toLowerCase() &&
           params.clientConfig.shareName.trim().toLowerCase() === m.shareName.trim().toLowerCase();
+        const resolvedClientUsername =
+          formMatch && params.clientConfig?.username?.trim()
+            ? params.clientConfig.username.trim()
+            : m.username || '';
+        const cachedClientPwd =
+          m.authMode === 'account'
+            ? (formMatch && params.clientConfig?.authMode === 'account' && params.clientConfig.password
+                ? params.clientConfig.password
+                : getCachedPassword(m.targetHost, m.shareName) || '')
+            : '';
         clientMap.set(dl, {
           targetHost: m.targetHost,
           shareName: m.shareName,
           driveLetter: dl,
           authMode: m.authMode,
-          ...(formMatch && params.clientConfig?.username ? { username: params.clientConfig.username } : {}),
-          ...(formMatch && params.clientConfig?.authMode === 'account' && params.clientConfig.password
-            ? { password: params.clientConfig.password }
-            : {}),
+          ...(resolvedClientUsername ? { username: resolvedClientUsername } : {}),
+          ...(cachedClientPwd ? { password: cachedClientPwd } : {}),
           persistent: formMatch ? params.clientConfig?.persistent !== false : true,
         });
       }
@@ -2352,6 +2401,26 @@ export const shareBridge = {
     };
   },
 
+  cacheLocationProfileCredentials(profile: LocationProfileFile): void {
+    if (profile.hostPreset?.authMode === 'account' && profile.hostPreset.password) {
+      runtimeLocationHostPasswordCache.set(profile.profileId, profile.hostPreset.password);
+    }
+    for (const sh of profile.savedShares || []) {
+      if (sh.password) {
+        setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
+      }
+    }
+    for (const ct of profile.clientTargets || []) {
+      if (ct.authMode === 'account' && ct.password) {
+        runtimeLocationTargetPasswordCache.set(
+          `${profile.profileId}::${ct.driveLetter.toUpperCase()}`,
+          ct.password
+        );
+        setCachedPassword(ct.targetHost, ct.shareName, ct.password);
+      }
+    }
+  },
+
   async saveLocationProfile(profile: LocationProfileFile): Promise<{
     success: boolean;
     profile?: LocationProfileFile;
@@ -2360,22 +2429,7 @@ export const shareBridge = {
     error?: string;
   }> {
     // Keep runtime secrets in memory cache and sanitize any browser localStorage copy
-    if (profile.hostPreset?.authMode === 'account' && profile.hostPreset.password) {
-      runtimeLocationHostPasswordCache.set(profile.profileId, profile.hostPreset.password);
-    }
-    for (const sh of profile.savedShares) {
-      if (sh.password) {
-        setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
-      }
-    }
-    for (const ct of profile.clientTargets) {
-      if (ct.authMode === 'account' && ct.password) {
-        runtimeLocationTargetPasswordCache.set(
-          `${profile.profileId}::${ct.driveLetter.toUpperCase()}`,
-          ct.password
-        );
-      }
-    }
+    this.cacheLocationProfileCredentials(profile);
 
     if (window.ahbiShareElectron?.saveLocationProfile) {
       return await window.ahbiShareElectron.saveLocationProfile(profile);
@@ -2425,11 +2479,7 @@ export const shareBridge = {
     if (window.ahbiShareElectron?.loadLocationProfile) {
       const res = await window.ahbiShareElectron.loadLocationProfile(profileId);
       if (res.success && res.profile) {
-        for (const sh of res.profile.savedShares) {
-          if (sh.password) {
-            setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
-          }
-        }
+        this.cacheLocationProfileCredentials(res.profile);
       }
       return res;
     }
@@ -2545,11 +2595,7 @@ export const shareBridge = {
     if (window.ahbiShareElectron?.importLocationProfileFile) {
       const res = await window.ahbiShareElectron.importLocationProfileFile({ saveToCatalog });
       if (res.success && res.profile) {
-        for (const sh of res.profile.savedShares) {
-          if (sh.password) {
-            setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
-          }
-        }
+        this.cacheLocationProfileCredentials(res.profile);
       }
       return res;
     }
@@ -2626,18 +2672,35 @@ export const shareBridge = {
     let appliedMounts = 0;
     let failedMounts = 0;
 
-    // 1. Apply saved host shares if present (and fallback to hostPreset if savedShares is empty? Only apply explicit savedShares!)
-    for (let i = 0; i < profile.savedShares.length; i++) {
-      const sh = profile.savedShares[i];
-      if (!sh.folderPath || !sh.shareName) continue;
-      callbacks?.onProgressText?.(`호스트 공유폴더(${i + 1}/${profile.savedShares.length}): ${sh.shareName}`);
+    // 1. Apply saved host shares if present (keep indexing synchronized with App.tsx validShares)
+    const validShares = profile.savedShares.filter((s) => Boolean(s.folderPath && s.shareName));
+    for (let i = 0; i < validShares.length; i++) {
+      const sh = validShares[i];
+      callbacks?.onProgressText?.(`호스트 공유폴더(${i + 1}/${validShares.length}): ${sh.shareName}`);
+      const decodedCodePwd = sh.connectionCode ? decodeConnectionCode(sh.connectionCode)?.password || '' : '';
+      const resolvedSharePwd =
+        sh.password ||
+        decodedCodePwd ||
+        getCachedPassword(sh.sourceHostName || netInfo.hostname, sh.shareName) ||
+        getCachedPassword(netInfo.hostname, sh.shareName) ||
+        '';
+      if (sh.authMode === 'account' && !resolvedSharePwd) {
+        failedShares++;
+        details.push({
+          kind: 'share',
+          label: `${sh.shareName} (${sh.folderPath})`,
+          success: false,
+          message: '보안 계정 모드의 공유 암호를 복원할 수 없습니다. 암호를 입력해 재개설하거나 장소 프로필을 다시 저장하세요.',
+        });
+        continue;
+      }
       const hostCfg: HostConfig = {
         folderPath: sh.folderPath,
         shareName: sh.shareName,
         authMode: sh.authMode,
         permission: sh.permission,
         username: sh.username || 'AhBiShare',
-        password: sh.password || getCachedPassword(sh.sourceHostName || netInfo.hostname, sh.shareName) || '',
+        password: resolvedSharePwd,
         ttlMinutes: sh.ttlMinutes,
         autoRevokeOnExpiry: sh.autoRevokeOnExpiry,
       };
@@ -2653,11 +2716,12 @@ export const shareBridge = {
           });
         } else {
           failedShares++;
+          const failedErr = res.steps.find((s) => s.status === 'error' && s.error)?.error;
           details.push({
             kind: 'share',
             label: `${sh.shareName} (${sh.folderPath})`,
             success: false,
-            message: '공유폴더 개설 중 오류가 발생했습니다.',
+            message: failedErr || '공유폴더 개설 중 오류가 발생했습니다.',
           });
         }
       } catch (err) {
@@ -2675,16 +2739,28 @@ export const shareBridge = {
     for (let i = 0; i < profile.clientTargets.length; i++) {
       const ct = profile.clientTargets[i];
       callbacks?.onProgressText?.(`네트워크 드라이브(${i + 1}/${profile.clientTargets.length}): ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`);
+      const resolvedClientPwd =
+        ct.password ||
+        runtimeLocationTargetPasswordCache.get(`${profile.profileId}::${ct.driveLetter.toUpperCase()}`) ||
+        getCachedPassword(ct.targetHost, ct.shareName) ||
+        '';
+      if (ct.authMode === 'account' && !resolvedClientPwd) {
+        failedMounts++;
+        details.push({
+          kind: 'mount',
+          label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
+          success: false,
+          message: '보안 계정 모드의 접속 암호가 비어 있습니다. 암호가 저장된 PC에서 실행하거나 연결 폼에 암호를 입력하세요.',
+        });
+        continue;
+      }
       const clientCfg: ClientTargetConfig = {
         targetHost: ct.targetHost,
         shareName: ct.shareName,
         driveLetter: ct.driveLetter,
         authMode: ct.authMode,
         username: ct.username || '',
-        password:
-          ct.password ||
-          runtimeLocationTargetPasswordCache.get(`${profile.profileId}::${ct.driveLetter.toUpperCase()}`) ||
-          '',
+        password: resolvedClientPwd,
         persistent: ct.persistent,
       };
       try {
@@ -2703,11 +2779,12 @@ export const shareBridge = {
           });
         } else {
           failedMounts++;
+          const failedErr = res.steps.find((s) => s.status === 'error' && s.error)?.error;
           details.push({
             kind: 'mount',
             label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
             success: false,
-            message: '네트워크 드라이브 연결 실패 (대상 PC 전원·LAN·계정 확인 필요)',
+            message: failedErr || '네트워크 드라이브 연결 실패 (대상 PC 전원·LAN·계정 확인 필요)',
           });
         }
       } catch (err) {

@@ -79,6 +79,7 @@ export interface MountedDrive {
   targetHost: string;
   shareName: string;
   authMode: AuthMode;
+  username?: string;
   mountedAt: string;
   status: 'connected' | 'disconnected';
 }
@@ -187,6 +188,7 @@ export interface LegacyRollbackSnapshot {
   smbClientSigningRequired: boolean;
   allowInsecureGuestAuth: boolean;
   enableInsecureGuestLogons?: boolean;
+  guestNetworkLogonDenied?: boolean;
   localAccountTokenFilterEnabled?: boolean;
   smbEncryptData: boolean;
   smbRejectUnencryptedAccess: boolean;

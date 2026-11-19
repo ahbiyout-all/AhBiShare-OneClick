@@ -134,13 +134,28 @@ function runBump({ level, summary, notes, dryRun = false, targetRoot = rootDir }
     updatedFiles.push('public/config.json');
   }
 
-  // 3. src/version.ts
+  // 3. src/version.ts & main.js fallback
   const versionTsPath = path.join(targetRoot, 'src', 'version.ts');
   if (fs.existsSync(versionTsPath)) {
     if (!dryRun) {
       fs.writeFileSync(versionTsPath, `export const APP_VERSION = '${nextVersion}';\n`, 'utf8');
     }
     updatedFiles.push('src/version.ts');
+  }
+  const mainJsPath = path.join(targetRoot, 'main.js');
+  if (fs.existsSync(mainJsPath)) {
+    const mainJsSrc = fs.readFileSync(mainJsPath, 'utf8');
+    const curEscMain = currentVersion.replace(/\./g, '\\.');
+    const nextMainJs = mainJsSrc.replace(
+      new RegExp(`(require\\('\\./package\\.json'\\)\\.version \\|\\| )'${curEscMain}'([\\s\\S]{0,60}?return )'${curEscMain}'`),
+      `$1'${nextVersion}'$2'${nextVersion}'`
+    );
+    if (nextMainJs !== mainJsSrc) {
+      if (!dryRun) {
+        fs.writeFileSync(mainJsPath, nextMainJs, 'utf8');
+      }
+      updatedFiles.push('main.js');
+    }
   }
 
   // 4. installer/setup.iss

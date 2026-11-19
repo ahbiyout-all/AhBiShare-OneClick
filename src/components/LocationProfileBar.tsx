@@ -187,8 +187,9 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
             {lastBatchResult.details.length > 0 && (
               <div className="tabular-data text-slate-600 dark:text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
                 {lastBatchResult.details.map((d, idx) => (
-                  <span key={`${d.kind}-${d.label}-${idx}`}>
+                  <span key={`${d.kind}-${d.label}-${idx}`} title={d.message}>
                     {d.success ? '성공' : '실패'}: {d.label}
+                    {!d.success && d.message ? ` — ${d.message}` : ''}
                   </span>
                 ))}
               </div>

@@ -490,52 +490,23 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
   const raw = (errorText || '').trim();
   if (!raw) return null;
 
-  if (/\b1385\b|로그온 유형|logon type/i.test(raw)) {
+  // Strip dotted IPv4 addresses (e.g., 192.168.0.5) and internal c_mount attempt labels
+  // (e.g., WNet-Guest:, HostGuest:, Guest:) so octets like .5/.86/.53 or attempt prefixes
+  // never hijack specific Win32/SMB error codes.
+  const sanitized = raw
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, ' ')
+    .replace(/(?:^|\|\s*)(?:WNet-Guest|HostGuestNet|HostGuest|WNet-Null|WNetBare|WNet|Guest|Anonymous|Default|New-SmbMapping):/gi, ' ');
+
+  if (/(?<![.\d])85(?![.\d])|이미 사용|already in use|already assigned/i.test(sanitized)) {
     return {
-      code: 'Error 1385',
-      title: '호스트 PC 게스트 네트워크 로그온 차단 (SeDenyNetworkLogonRight)',
-      detail: '호스트(24H2/25H2 등)의 로컬 보안 정책 "네트워크에서 이 컴퓨터에 액세스 거부"에 Guest/Guests가 남아 있어 무비밀번호 접속이 차단되었습니다. 호스트 PC에서 최신 AhBiShare로 공유를 다시 생성하거나 [안전 호환 패치] 실행, 또는 [보안 계정 모드]로 연결하세요.',
-      needsOsPatchHint: true,
-      actionLabel: '매트릭스 호환 패치로 이동',
-    };
-  }
-  if (/\b1223\b|사용자 이름 입력|작업을 취소|canceled by the user/i.test(raw)) {
-    return {
-      code: 'Error 1223',
-      title: '호스트 자격 증명 요구 또는 익명 게스트 접근 거부',
-      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 최신 AhBiShare로 무비밀번호 공유를 재개설하거나 클라이언트에서 [보안 계정 모드]로 연결하세요.',
+      code: 'Error 85',
+      title: '선택한 드라이브 문자가 이미 할당됨',
+      detail: '별도 OS 패치는 불필요합니다. 드라이브 문자를 Y:, X: 등 다른 문자로 변경해 다시 연결하세요.',
       needsOsPatchHint: false,
       actionLabel: 'OS 매트릭스 보기',
     };
   }
-  if (/\b1272\b|\b384\b|0x80070035|게스트|guest/i.test(raw)) {
-    return {
-      code: '0x80070035 / 1272',
-      title: 'Win 11 24H2~26H2 비인증 게스트·SMB 서명 차단',
-      detail: '별도 Windows 업데이트는 필요 없으며, 호스트·클라이언트 양단에서 [안전 호환 패치] 또는 [보안 계정 모드] 전환으로 즉시 해결됩니다.',
-      needsOsPatchHint: true,
-      actionLabel: '매트릭스 호환 패치로 이동',
-    };
-  }
-  if (/\b1326\b|\b86\b|\b5\b|액세스|거부|로그온|암호/i.test(raw)) {
-    return {
-      code: 'Error 5 / 1326',
-      title: '계정 인증 실패 · UAC 원격 토큰 또는 MSA/PIN 캐시 불일치',
-      detail: '호스트가 MS 계정·PIN 로그인 전용이거나 로컬 관리자 원격 접속(오류 5)이 막힌 경우입니다. 전용 보안 계정 사용 또는 UAC 원격 토큰 필터 활성화를 확인하세요.',
-      needsOsPatchHint: true,
-      actionLabel: '매트릭스 UAC·PIN 진단 열기',
-    };
-  }
-  if (/\b53\b|\b67\b|네트워크 경로|timeout|445/i.test(raw)) {
-    return {
-      code: 'Error 53 / TCP 445',
-      title: '네트워크 경로 차단 또는 구형 SMBv1 장비 미지원',
-      detail: '호스트 방화벽·공용(Public) 프로필 차단, 또는 구형 NAS·복합기라면 OS 매트릭스의 [SMBv1 클라이언트 기능 설치]가 필요할 수 있습니다.',
-      needsOsPatchHint: true,
-      actionLabel: '매트릭스 별도 기능·SMBv1 확인',
-    };
-  }
-  if (/\b1219\b|다중 연결|multiple connections/i.test(raw)) {
+  if (/(?<![.\d])1219(?![.\d])|다중 연결|multiple connections/i.test(sanitized)) {
     return {
       code: 'Error 1219',
       title: '동일 서버에 다른 사용자 세션이 이미 열려 있음',
@@ -544,13 +515,49 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       actionLabel: 'OS 매트릭스 보기',
     };
   }
-  if (/\b85\b|이미 사용|already in use/i.test(raw)) {
+  if (/(?<![.\d])1385(?![.\d])|로그온 유형|logon type/i.test(sanitized)) {
     return {
-      code: 'Error 85',
-      title: '선택한 드라이브 문자가 이미 할당됨',
-      detail: '별도 OS 패치는 불필요합니다. 드라이브 문자를 Y:, X: 등 다른 문자로 변경해 다시 연결하세요.',
+      code: 'Error 1385',
+      title: '호스트 PC 게스트 네트워크 로그온 차단 (SeDenyNetworkLogonRight)',
+      detail: '호스트(24H2/25H2 등)의 로컬 보안 정책 "네트워크에서 이 컴퓨터에 액세스 거부"에 Guest/Guests가 남아 있어 무비밀번호 접속이 차단되었습니다. 호스트 PC에서 최신 AhBiShare로 공유를 다시 생성하거나 [안전 호환 패치] 실행, 또는 [보안 계정 모드]로 연결하세요.',
+      needsOsPatchHint: true,
+      actionLabel: '매트릭스 호환 패치로 이동',
+    };
+  }
+  if (/(?<![.\d])1223(?![.\d])|사용자 이름 입력|작업을 취소|canceled by the user/i.test(sanitized)) {
+    return {
+      code: 'Error 1223',
+      title: '호스트 자격 증명 요구 또는 익명 게스트 접근 거부',
+      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 최신 AhBiShare로 무비밀번호 공유를 재개설하거나 클라이언트에서 [보안 계정 모드]로 연결하세요.',
       needsOsPatchHint: false,
       actionLabel: 'OS 매트릭스 보기',
+    };
+  }
+  if (/(?<![.\d])1272(?![.\d])|(?<![.\d])384(?![.\d])|0x80070035|게스트|guest/i.test(sanitized)) {
+    return {
+      code: '0x80070035 / 1272',
+      title: 'Win 11 24H2~26H2 비인증 게스트·SMB 서명 차단',
+      detail: '별도 Windows 업데이트는 필요 없으며, 호스트·클라이언트 양단에서 [안전 호환 패치] 또는 [보안 계정 모드] 전환으로 즉시 해결됩니다.',
+      needsOsPatchHint: true,
+      actionLabel: '매트릭스 호환 패치로 이동',
+    };
+  }
+  if (/(?<![.\d])1326(?![.\d])|(?<![.\d])86(?![.\d])|(?<![.\d])5(?![.\d])|액세스|거부|로그온|암호|password is not correct/i.test(sanitized)) {
+    return {
+      code: 'Error 5 / 86 / 1326',
+      title: '계정 인증 실패 · 빈 암호 제한 또는 UAC/MSA 캐시 불일치',
+      detail: '호스트가 빈 암호 네트워크 로그온을 제한(LimitBlankPasswordUse)했거나 Guest 계정에 암호가 남아있는 경우, 또는 호스트가 MS 계정·PIN 로그인 전용/로컬 관리자 토큰 제한(오류 5)인 경우입니다. 호스트에서 최신 AhBiShare로 공유를 재개설하거나 [보안 계정 모드]로 연결하세요.',
+      needsOsPatchHint: true,
+      actionLabel: '매트릭스 UAC·PIN 진단 열기',
+    };
+  }
+  if (/(?<![.\d])53(?![.\d])|(?<![.\d])67(?![.\d])|네트워크 경로|연결 시간 초과|timeout|445/i.test(sanitized)) {
+    return {
+      code: 'Error 53 / TCP 445',
+      title: '네트워크 경로 차단 또는 구형 SMBv1 장비 미지원',
+      detail: '호스트 방화벽·공용(Public) 프로필 차단, 또는 구형 NAS·복합기라면 OS 매트릭스의 [SMBv1 클라이언트 기능 설치]가 필요할 수 있습니다.',
+      needsOsPatchHint: true,
+      actionLabel: '매트릭스 별도 기능·SMBv1 확인',
     };
   }
   return {

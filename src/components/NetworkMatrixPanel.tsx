@@ -340,12 +340,13 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                 <div className="text-slate-500 dark:text-slate-400">게스트 로그온</div>
                 <div
                   className={`mt-1 font-bold ${
-                    policyStatus.allowInsecureGuestAuth
+                    policyStatus.allowInsecureGuestAuth && !policyStatus.guestNetworkLogonDenied
                       ? 'text-emerald-600 dark:text-emerald-400'
                       : 'text-amber-600 dark:text-amber-400'
                   }`}
                 >
-                  {policyStatus.allowInsecureGuestAuth ? '허용 (호환)' : '차단됨 (기본)'}
+                  {policyStatus.allowInsecureGuestAuth ? '허용 (클라이언트)' : '차단됨 (기본)'}
+                  {policyStatus.guestNetworkLogonDenied ? ' · 정책거부(1385)' : ''}
                 </div>
               </div>
 

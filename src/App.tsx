@@ -29,7 +29,7 @@ import {
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
 import { generateSecureSharePassword } from '@/utils/connectionCode';
-import { formatEraShortLabel } from '@/services/networkEvolution';
+import { formatEraShortLabel, getPolicyPatchLabel } from '@/services/networkEvolution';
 import { TopBar } from '@/components/TopBar';
 import { HostPanel } from '@/components/HostPanel';
 import { ClientPanel } from '@/components/ClientPanel';
@@ -40,6 +40,7 @@ import { LocationProfileBar } from '@/components/LocationProfileBar';
 import { LocationManagerModal } from '@/components/LocationManagerModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
+import { WorkProgressModal, ProgressJobState } from './components/WorkProgressModal';
 import {
   checkForUpdates,
   clearSkippedUpdateTag,
@@ -55,6 +56,17 @@ interface ActivityEntry {
   summary: string;
   status: 'success' | 'error';
 }
+
+const INITIAL_PROGRESS_JOB: ProgressJobState = {
+  isOpen: false,
+  jobKey: '',
+  title: '',
+  subtitle: '',
+  status: 'running',
+  steps: [],
+  startedAtMs: 0,
+  finishedAtMs: null,
+};
 
 export const App: React.FC = () => {
   const initialQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
@@ -166,6 +178,10 @@ export const App: React.FC = () => {
   const autoPromptedTagRef = useRef<string | null>(null);
   const updateCheckInFlightRef = useRef(false);
 
+  const [progressJob, setProgressJob] = useState<ProgressJobState>(INITIAL_PROGRESS_JOB);
+  const progressLockRef = useRef(false);
+  const activeJobKeyRef = useRef('');
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin && event.origin !== window.location.origin && event.origin !== 'null') return;
@@ -203,6 +219,69 @@ export const App: React.FC = () => {
       },
       ...prev,
     ]);
+  }, []);
+
+  const startProgressJob = useCallback(
+    (title: string, subtitle?: string, initialSteps: PipelineStep[] = []): string | null => {
+      if (progressLockRef.current) return null;
+      const jobKey = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      progressLockRef.current = true;
+      activeJobKeyRef.current = jobKey;
+      setProgressJob({
+        isOpen: true,
+        jobKey,
+        title,
+        subtitle,
+        status: 'running',
+        steps: initialSteps,
+        startedAtMs: Date.now(),
+        finishedAtMs: null,
+      });
+      return jobKey;
+    },
+    []
+  );
+
+  const updateProgressSteps = useCallback((jobKey: string, steps: PipelineStep[]) => {
+    if (activeJobKeyRef.current !== jobKey) return;
+    setProgressJob((prev) => (prev.jobKey === jobKey ? { ...prev, steps } : prev));
+  }, []);
+
+  const completeProgressJob = useCallback((jobKey: string, summary: string, finalSteps?: PipelineStep[]) => {
+    if (activeJobKeyRef.current !== jobKey) return;
+    progressLockRef.current = false;
+    setProgressJob((prev) =>
+      prev.jobKey === jobKey
+        ? {
+            ...prev,
+            status: 'success',
+            finishedAtMs: Date.now(),
+            summary,
+            ...(finalSteps ? { steps: finalSteps } : {}),
+          }
+        : prev
+    );
+  }, []);
+
+  const failProgressJob = useCallback((jobKey: string, errorDetail: string, finalSteps?: PipelineStep[]) => {
+    if (activeJobKeyRef.current !== jobKey) return;
+    progressLockRef.current = false;
+    setProgressJob((prev) =>
+      prev.jobKey === jobKey
+        ? {
+            ...prev,
+            status: 'error',
+            finishedAtMs: Date.now(),
+            errorDetail,
+            ...(finalSteps ? { steps: finalSteps } : {}),
+          }
+        : prev
+    );
+  }, []);
+
+  const closeProgressModal = useCallback(() => {
+    if (progressLockRef.current) return;
+    setProgressJob((prev) => ({ ...prev, isOpen: false }));
   }, []);
 
   const runUpdateCheck = useCallback(
@@ -381,10 +460,42 @@ export const App: React.FC = () => {
 
   const handleApplyOsPatch = useCallback(
     async (mode: PolicyPatchMode) => {
+      const modeLabel = getPolicyPatchLabel(mode);
+      const initialSteps: PipelineStep[] = [
+        {
+          id: 'patch-prep',
+          title: '사전 보안 상태 스냅샷 및 호환 환경 확인',
+          detail: `${modeLabel} 적용 전 현재 SMB·LSA 상태를 점검합니다.`,
+          status: 'running',
+        },
+        {
+          id: 'patch-apply',
+          title: `${modeLabel} 정책 및 서비스 반영`,
+          detail: '레지스트리 정책 적용 및 관련 Windows 서비스 새로고침',
+          status: 'idle',
+        },
+        {
+          id: 'patch-verify',
+          title: 'OS 네트워크 정책 재검사 및 USB 스냅샷 동기화',
+          detail: '변경된 정책 점수와 재부팅 필요 여부를 최종 검증합니다.',
+          status: 'idle',
+        },
+      ];
+      const jobKey = startProgressJob('OS 네트워크·호환성 정책 적용', modeLabel, initialSteps);
+      if (!jobKey) return;
+
       setApplyingPatchMode(mode);
       setLastAutoAlignResult(null);
+      const t0 = performance.now();
       try {
+        updateProgressSteps(jobKey, [
+          { ...initialSteps[0], status: 'success', durationMs: 40 },
+          { ...initialSteps[1], status: 'running' },
+          initialSteps[2],
+        ]);
         const res = await shareBridge.applyOsCompatibilityPatch(mode, netInfo);
+        const applyDuration = Math.round(performance.now() - t0);
+
         setLastPatchResult(res);
         setPolicyStatus(res.updatedPolicy);
         setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
@@ -394,24 +505,75 @@ export const App: React.FC = () => {
           `${res.summary} · ${res.rebootJudgment.title}`,
           res.success ? 'success' : 'error'
         );
-        showToast(`${res.rebootJudgment.title}`);
+        showToast(res.success ? res.rebootJudgment.title : res.summary);
+
+        if (res.success) {
+          completeProgressJob(jobKey, `${res.summary} · ${res.rebootJudgment.title}`, [
+            { ...initialSteps[0], status: 'success', durationMs: 40 },
+            {
+              ...initialSteps[1],
+              status: 'success',
+              durationMs: applyDuration,
+              detail: res.appliedActions.slice(0, 2).join(' · ') || res.summary,
+            },
+            {
+              ...initialSteps[2],
+              status: 'success',
+              durationMs: 30,
+              detail: `${res.rebootJudgment.title} (호환 점수 ${res.updatedPolicy.compatibilityScore}점)`,
+            },
+          ]);
+        } else {
+          failProgressJob(jobKey, res.summary, [
+            { ...initialSteps[0], status: 'success', durationMs: 40 },
+            {
+              ...initialSteps[1],
+              status: 'error',
+              durationMs: applyDuration,
+              error: res.summary,
+            },
+            initialSteps[2],
+          ]);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : '알 수 없는 오류';
         appendLog('OS 정책 적용', `정책 적용 예외: ${msg}`, 'error');
         showToast(`정책 적용 실패: ${msg}`);
+        failProgressJob(jobKey, msg, [
+          { ...initialSteps[0], status: 'success' },
+          { ...initialSteps[1], status: 'error', error: msg },
+          initialSteps[2],
+        ]);
       } finally {
         setApplyingPatchMode(null);
       }
     },
-    [netInfo, appendLog, showToast, refreshPortableSnapshot]
+    [netInfo, appendLog, showToast, refreshPortableSnapshot, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
   );
 
   const handleSyncMatchedPolicies = useCallback(
     async (modes: PolicyPatchMode[]) => {
       if (modes.length === 0) return;
+      const modeNames = modes.map((m) => getPolicyPatchLabel(m)).join(' · ');
+      const jobKey = startProgressJob(
+        '호스트·클라이언트 정책 일괄 자동 정렬',
+        `${modes.length}종 정책 (${modeNames})`,
+        modes.map((m, idx) => ({
+          id: `align-${idx}-${m}`,
+          title: `${getPolicyPatchLabel(m)} 적용`,
+          detail: '호스트·클라이언트 정책 정렬 대기',
+          status: 'idle',
+        }))
+      );
+      if (!jobKey) return;
+
       setIsAutoAligning(true);
+      let latestSteps: PipelineStep[] = [];
       try {
-        const batch = await shareBridge.autoAlignHostClientPolicies(modes, netInfo);
+        const batch = await shareBridge.autoAlignHostClientPolicies(modes, netInfo, (steps) => {
+          latestSteps = steps;
+          updateProgressSteps(jobKey, steps);
+        });
         setLastAutoAlignResult(batch);
         setLastPatchResult({
           success: batch.success,
@@ -434,15 +596,21 @@ export const App: React.FC = () => {
             ? batch.summary
             : '일부 호환성 정책 자동 정렬에 실패했습니다. 아래 상세 내역을 확인하세요.'
         );
+        if (batch.success) {
+          completeProgressJob(jobKey, `${batch.summary} · ${batch.rebootJudgment.title}`, latestSteps);
+        } else {
+          failProgressJob(jobKey, batch.summary, latestSteps);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : '알 수 없는 오류';
         appendLog('자동 정렬', `정책 자동 정렬 예외: ${msg}`, 'error');
         showToast(`정책 자동 정렬 실패: ${msg}`);
+        failProgressJob(jobKey, msg, latestSteps);
       } finally {
         setIsAutoAligning(false);
       }
     },
-    [netInfo, appendLog, showToast, refreshPortableSnapshot]
+    [netInfo, appendLog, showToast, refreshPortableSnapshot, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
   );
 
   const handleTriggerReboot = useCallback(async () => {
@@ -480,15 +648,40 @@ export const App: React.FC = () => {
   };
 
   const handleCreateShare = async (config: HostConfig) => {
+    const shareLabel = config.shareName.trim() || 'AhBiShared';
+    const folderLabel = config.folderPath.trim() || 'C:\\AhBiShared';
+    const jobKey = startProgressJob(
+      '공유폴더 원클릭 개설',
+      `${folderLabel} → ${shareLabel} (${config.authMode === 'guest' ? '무비밀번호 Guest' : '보안 계정'})`,
+      [
+        {
+          id: 'host-prep',
+          title: '로컬 네트워크·권한 확인 및 파이프라인 준비',
+          detail: '현재 호스트 IP, 어댑터 및 관리자 권한 상태를 확인합니다.',
+          status: 'running',
+        },
+      ]
+    );
+    if (!jobKey) return;
+
     setIsHostExecuting(true);
+    let latestSteps: PipelineStep[] = [];
     try {
       const freshNet = await shareBridge.getLocalNetworkInfo();
       setNetInfo(freshNet);
-      const res = await shareBridge.runHostOneClick(config, freshNet, (steps) => setHostSteps(steps));
+      const res = await shareBridge.runHostOneClick(config, freshNet, (steps) => {
+        latestSteps = steps;
+        setHostSteps(steps);
+        updateProgressSteps(jobKey, steps);
+      });
       if (res.success && res.share) {
         const createdLower = res.share.shareName.toLowerCase();
         setExpiryAlerts((prev) => prev.filter((a) => a.shareName.toLowerCase() !== createdLower));
         setShares(shareBridge.getSavedShares());
+        try {
+          const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+          setPolicyStatus(pol);
+        } catch {}
         refreshPortableSnapshot(freshNet.hostname);
         const updatedPeers = await shareBridge.scanLanPeers(freshNet);
         setPeers(updatedPeers);
@@ -502,21 +695,53 @@ export const App: React.FC = () => {
             ? `'${res.share.shareName}' 개설 완료 (USB 읽기 전용으로 파일 동기화 건너뜀)`
             : `공유폴더 '${res.share.shareName}' 개설 및 USB 포터블 파일 저장이 완료되었습니다.`
         );
+        completeProgressJob(jobKey, `공유폴더 '${res.share.shareName}' 개설 완료 (${res.share.uncPath})`, res.steps);
       } else {
+        const failedStep = res.steps.find((s) => s.status === 'error');
         appendLog('메인 PC', `공유폴더(${config.shareName}) 구성 중 오류가 발생했습니다.`, 'error');
         showToast('공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.');
+        failProgressJob(
+          jobKey,
+          failedStep?.error || '공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.',
+          res.steps
+        );
       }
     } catch (err) {
-      appendLog('메인 PC', `공유폴더 구성 예외: ${err instanceof Error ? err.message : '알 수 없는 오류'}`, 'error');
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      appendLog('메인 PC', `공유폴더 구성 예외: ${msg}`, 'error');
       showToast('공유폴더 구성 중 예외가 발생했습니다.');
+      failProgressJob(jobKey, msg, latestSteps);
     } finally {
       setIsHostExecuting(false);
     }
   };
 
   const handleRemoveShare = async (shareName: string) => {
+    const step1: PipelineStep = {
+      id: 'rm-share',
+      title: `SMB 공유 '${shareName}' 해제 실행`,
+      detail: 'Windows 공유 목록에서 해당 공유 리소스를 제거합니다.',
+      status: 'running',
+    };
+    const step2: PipelineStep = {
+      id: 'rm-sync',
+      title: 'USB 포터블 기록 및 LAN 피어 목록 갱신',
+      detail: '활성 공유 목록과 포터블 설정 파일을 동기화합니다.',
+      status: 'idle',
+    };
+    const jobKey = startProgressJob('공유폴더 공유 해제', shareName, [step1, step2]);
+    if (!jobKey) return;
+
+    const t0 = performance.now();
     try {
       const updated = await shareBridge.removeHostShare(shareName, netInfo);
+      const rmDuration = Math.round(performance.now() - t0);
+      updateProgressSteps(jobKey, [
+        { ...step1, status: 'success', durationMs: rmDuration },
+        { ...step2, status: 'running' },
+      ]);
+
+      const t1 = performance.now();
       const removedLower = shareName.toLowerCase();
       setExpiryAlerts((prev) => prev.filter((a) => a.shareName.toLowerCase() !== removedLower));
       setShares(updated);
@@ -525,10 +750,18 @@ export const App: React.FC = () => {
       setPeers(updatedPeers);
       appendLog('메인 PC', `공유폴더 '${shareName}' 공유 해제 및 USB 포터블 기록 갱신`, 'success');
       showToast(`'${shareName}' 공유가 해제되었습니다.`);
+      completeProgressJob(jobKey, `'${shareName}' 공유폴더가 정상적으로 해제되었습니다.`, [
+        { ...step1, status: 'success', durationMs: rmDuration },
+        { ...step2, status: 'success', durationMs: Math.round(performance.now() - t1) },
+      ]);
     } catch (err) {
       const reason = err instanceof Error ? err.message : '알 수 없는 오류';
       appendLog('메인 PC', `공유폴더 '${shareName}' 해제 실패: ${reason}`, 'error');
       showToast(`'${shareName}' 공유 해제 실패: ${reason}`);
+      failProgressJob(jobKey, reason, [
+        { ...step1, status: 'error', durationMs: Math.round(performance.now() - t0), error: reason },
+        step2,
+      ]);
     }
   };
 
@@ -550,21 +783,61 @@ export const App: React.FC = () => {
   };
 
   const handleConnectClient = async (config: ClientTargetConfig) => {
+    const jobKey = startProgressJob(
+      '네트워크 드라이브 원클릭 연결',
+      `\\\\${config.targetHost.trim()}\\${config.shareName.trim()} → ${config.driveLetter}`,
+      [
+        {
+          id: 'cli-prep',
+          title: '클라이언트 네트워크·자격 증명 파이프라인 초기화',
+          detail: '대상 호스트 연결 단계 구성을 준비합니다.',
+          status: 'running',
+        },
+      ]
+    );
+    if (!jobKey) return;
+
     setIsClientConnecting(true);
+    let latestSteps: PipelineStep[] = [];
     try {
-      const res = await shareBridge.runClientOneClick(config, (steps) => setClientSteps(steps), netInfo.osEra);
+      const res = await shareBridge.runClientOneClick(
+        config,
+        (steps) => {
+          latestSteps = steps;
+          setClientSteps(steps);
+          updateProgressSteps(jobKey, steps);
+        },
+        netInfo.osEra
+      );
       if (res.success && res.mount) {
         setMounts(shareBridge.getSavedMounts());
+        try {
+          const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
+          setPolicyStatus(pol);
+        } catch {}
         refreshPortableSnapshot(netInfo.hostname);
         appendLog('클라이언트 PC', `${res.mount.uncPath} → ${res.mount.driveLetter} 연결 완료`, 'success');
         showToast(`${res.mount.driveLetter} 드라이브가 성공적으로 연결되었습니다.`);
+        completeProgressJob(
+          jobKey,
+          `${res.mount.uncPath} → ${res.mount.driveLetter} 드라이브 연결 완료`,
+          res.steps
+        );
       } else {
+        const failedStep = res.steps.find((s) => s.status === 'error');
         appendLog('클라이언트 PC', `\\\\${config.targetHost}\\${config.shareName} 연결 실패`, 'error');
         showToast('연결에 실패했습니다. 파이프라인 단계 오류를 확인하세요.');
+        failProgressJob(
+          jobKey,
+          failedStep?.error || '네트워크 드라이브 연결에 실패했습니다. 원인 안내를 확인하세요.',
+          res.steps
+        );
       }
     } catch (err) {
-      appendLog('클라이언트 PC', `연결 예외: ${err instanceof Error ? err.message : '알 수 없는 오류'}`, 'error');
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      appendLog('클라이언트 PC', `연결 예외: ${msg}`, 'error');
       showToast('연결 실행 중 예외가 발생했습니다.');
+      failProgressJob(jobKey, msg, latestSteps);
     } finally {
       setIsClientConnecting(false);
     }
@@ -573,15 +846,22 @@ export const App: React.FC = () => {
   const handleCreateLegacyHostShare = async (config: HostConfig, targetOs: LegacyTargetOs) => {
     const osTag = targetOs === 'win7' ? 'Win 7(SMB 2.1)' : 'Win 8/8.1(SMB 3.0)';
     const bridgeStepId = 'legacy-bridge-host';
+    const initialBridgeStep: PipelineStep = {
+      id: bridgeStepId,
+      title: `${osTag} 호환 브릿지 정책 정렬 및 사전 스냅샷 백업`,
+      detail: 'SMB 비암호화 접근 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장',
+      status: 'running',
+    };
+    const jobKey = startProgressJob(
+      `구형 OS 메인 공유 개설 (${osTag})`,
+      `${config.folderPath || 'C:\\AhBiShared'} → ${config.shareName || 'AhBiShared'}`,
+      [initialBridgeStep]
+    );
+    if (!jobKey) return;
+
     setIsHostExecuting(true);
-    setLegacyHostSteps([
-      {
-        id: bridgeStepId,
-        title: `${osTag} 호환 브릿지 정책 정렬 및 사전 스냅샷 백업`,
-        detail: 'SMB 비암호화 접근 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장',
-        status: 'running',
-      },
-    ]);
+    setLegacyHostSteps([initialBridgeStep]);
+    let latestSteps: PipelineStep[] = [initialBridgeStep];
 
     try {
       const freshNet = await shareBridge.getLocalNetworkInfo();
@@ -600,23 +880,32 @@ export const App: React.FC = () => {
       setLastPatchResult(bridgeRes);
       setPolicyStatus(bridgeRes.updatedPolicy);
       setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-      setLegacyHostSteps([bridgeStep]);
+      latestSteps = [bridgeStep];
+      setLegacyHostSteps(latestSteps);
+      updateProgressSteps(jobKey, latestSteps);
 
       if (!bridgeRes.success) {
         appendLog('구형 OS 메인', `브릿지 정책 적용 실패: ${bridgeRes.summary}`, 'error');
         showToast('구형 OS 호환 브릿지 적용에 실패했습니다.');
+        failProgressJob(jobKey, bridgeRes.summary, latestSteps);
         return;
       }
 
       const shareRes = await shareBridge.runHostOneClick(config, freshNet, (steps) => {
+        latestSteps = [bridgeStep, ...steps];
         setHostSteps(steps);
-        setLegacyHostSteps([bridgeStep, ...steps]);
+        setLegacyHostSteps(latestSteps);
+        updateProgressSteps(jobKey, latestSteps);
       });
 
       if (shareRes.success && shareRes.share) {
         const createdLower = shareRes.share.shareName.toLowerCase();
         setExpiryAlerts((prev) => prev.filter((a) => a.shareName.toLowerCase() !== createdLower));
         setShares(shareBridge.getSavedShares());
+        try {
+          const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+          setPolicyStatus(pol);
+        } catch {}
         refreshPortableSnapshot(freshNet.hostname);
         const updatedPeers = await shareBridge.scanLanPeers(freshNet);
         setPeers(updatedPeers);
@@ -634,17 +923,28 @@ export const App: React.FC = () => {
             ? `${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 개설 완료 (USB 읽기 전용으로 파일 동기화 건너뜀)`
             : `${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 개설을 완료했습니다.`
         );
+        completeProgressJob(
+          jobKey,
+          `${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 통합 개설 완료`,
+          [bridgeStep, ...shareRes.steps]
+        );
       } else {
+        const failedStep = shareRes.steps.find((s) => s.status === 'error');
         appendLog('구형 OS 메인', `공유폴더(${config.shareName}) 개설 중 오류 발생`, 'error');
         showToast('공유폴더 개설 단계에서 오류가 발생했습니다.');
+        failProgressJob(
+          jobKey,
+          failedStep?.error || '공유폴더 개설 단계에서 오류가 발생했습니다.',
+          [bridgeStep, ...shareRes.steps]
+        );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-      setLegacyHostSteps((prev) =>
-        prev.map((s) => (s.status === 'running' ? { ...s, status: 'error', error: msg } : s))
-      );
+      const errSteps = latestSteps.map((s) => (s.status === 'running' ? { ...s, status: 'error' as const, error: msg } : s));
+      setLegacyHostSteps(errSteps);
       appendLog('구형 OS 메인', `통합 개설 예외: ${msg}`, 'error');
       showToast(`구형 OS 메인 개설 실패: ${msg}`);
+      failProgressJob(jobKey, msg, errSteps);
     } finally {
       setIsHostExecuting(false);
     }
@@ -653,15 +953,22 @@ export const App: React.FC = () => {
   const handleConnectLegacyClient = async (config: ClientTargetConfig, targetOs: LegacyTargetOs) => {
     const osTag = targetOs === 'win7' ? 'Win 7(SMB 2.1)' : 'Win 8/8.1(SMB 3.0)';
     const bridgeStepId = 'legacy-bridge-client';
+    const initialBridgeStep: PipelineStep = {
+      id: bridgeStepId,
+      title: `${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`,
+      detail: '게스트 로그온 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장',
+      status: 'running',
+    };
+    const jobKey = startProgressJob(
+      `구형 OS 클라이언트 연결 (${osTag})`,
+      `\\\\${config.targetHost.trim()}\\${config.shareName.trim()} → ${config.driveLetter}`,
+      [initialBridgeStep]
+    );
+    if (!jobKey) return;
+
     setIsClientConnecting(true);
-    setLegacyClientSteps([
-      {
-        id: bridgeStepId,
-        title: `${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`,
-        detail: '게스트 로그온 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장',
-        status: 'running',
-      },
-    ]);
+    setLegacyClientSteps([initialBridgeStep]);
+    let latestSteps: PipelineStep[] = [initialBridgeStep];
 
     try {
       const freshNet = await shareBridge.getLocalNetworkInfo();
@@ -680,25 +987,34 @@ export const App: React.FC = () => {
       setLastPatchResult(bridgeRes);
       setPolicyStatus(bridgeRes.updatedPolicy);
       setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-      setLegacyClientSteps([bridgeStep]);
+      latestSteps = [bridgeStep];
+      setLegacyClientSteps(latestSteps);
+      updateProgressSteps(jobKey, latestSteps);
 
       if (!bridgeRes.success) {
         appendLog('구형 OS 클라이언트', `브릿지 정렬 실패: ${bridgeRes.summary}`, 'error');
         showToast('구형 OS 호환 브릿지 정렬에 실패했습니다.');
+        failProgressJob(jobKey, bridgeRes.summary, latestSteps);
         return;
       }
 
       const mountRes = await shareBridge.runClientOneClick(
         config,
         (steps) => {
+          latestSteps = [bridgeStep, ...steps];
           setClientSteps(steps);
-          setLegacyClientSteps([bridgeStep, ...steps]);
+          setLegacyClientSteps(latestSteps);
+          updateProgressSteps(jobKey, latestSteps);
         },
         freshNet.osEra
       );
 
       if (mountRes.success && mountRes.mount) {
         setMounts(shareBridge.getSavedMounts());
+        try {
+          const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+          setPolicyStatus(pol);
+        } catch {}
         refreshPortableSnapshot(freshNet.hostname);
         appendLog(
           '구형 OS 클라이언트',
@@ -706,32 +1022,68 @@ export const App: React.FC = () => {
           'success'
         );
         showToast(`${mountRes.mount.driveLetter} 드라이브가 구형 OS 호환 모드로 연결되었습니다.`);
+        completeProgressJob(
+          jobKey,
+          `${osTag} 호환 모드 ${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 연결 완료`,
+          [bridgeStep, ...mountRes.steps]
+        );
       } else {
+        const failedStep = mountRes.steps.find((s) => s.status === 'error');
         appendLog('구형 OS 클라이언트', `\\\\${config.targetHost}\\${config.shareName} 연결 실패`, 'error');
         showToast('클라이언트 연결에 실패했습니다. 파이프라인 처방 가이드를 확인하세요.');
+        failProgressJob(
+          jobKey,
+          failedStep?.error || '구형 OS 클라이언트 드라이브 연결에 실패했습니다.',
+          [bridgeStep, ...mountRes.steps]
+        );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-      setLegacyClientSteps((prev) =>
-        prev.map((s) => (s.status === 'running' ? { ...s, status: 'error', error: msg } : s))
-      );
+      const errSteps = latestSteps.map((s) => (s.status === 'running' ? { ...s, status: 'error' as const, error: msg } : s));
+      setLegacyClientSteps(errSteps);
       appendLog('구형 OS 클라이언트', `통합 연결 예외: ${msg}`, 'error');
       showToast(`구형 OS 클라이언트 연결 실패: ${msg}`);
+      failProgressJob(jobKey, msg, errSteps);
     } finally {
       setIsClientConnecting(false);
     }
   };
 
   const handleUnmount = async (driveLetter: string) => {
+    const step1: PipelineStep = {
+      id: 'unmount-drive',
+      title: `${driveLetter} 네트워크 드라이브 연결 해제`,
+      detail: 'SMB 매핑 및 해당 드라이브 세션을 안전하게 종료합니다.',
+      status: 'running',
+    };
+    const step2: PipelineStep = {
+      id: 'unmount-sync',
+      title: '연결 드라이브 목록 동기화',
+      detail: '현재 로컬 드라이브 상태와 저장 목록을 갱신합니다.',
+      status: 'idle',
+    };
+    const jobKey = startProgressJob('네트워크 드라이브 연결 해제', driveLetter, [step1, step2]);
+    if (!jobKey) return;
+
+    const t0 = performance.now();
     try {
       const updated = await shareBridge.unmountDrive(driveLetter);
+      const umDuration = Math.round(performance.now() - t0);
       setMounts(updated);
       appendLog('클라이언트 PC', `${driveLetter} 드라이브 연결 해제`, 'success');
       showToast(`${driveLetter} 드라이브 연결이 해제되었습니다.`);
+      completeProgressJob(jobKey, `${driveLetter} 드라이브 연결이 해제되었습니다.`, [
+        { ...step1, status: 'success', durationMs: umDuration },
+        { ...step2, status: 'success', durationMs: 20 },
+      ]);
     } catch (err) {
       const reason = err instanceof Error ? err.message : '알 수 없는 오류';
       appendLog('클라이언트 PC', `${driveLetter} 드라이브 해제 실패: ${reason}`, 'error');
       showToast(`${driveLetter} 드라이브 해제 실패: ${reason}`);
+      failProgressJob(jobKey, reason, [
+        { ...step1, status: 'error', durationMs: Math.round(performance.now() - t0), error: reason },
+        step2,
+      ]);
     }
   };
 
@@ -741,41 +1093,193 @@ export const App: React.FC = () => {
   };
 
   const handleRollback = async (scope: 'host' | 'client') => {
-    const res = await shareBridge.rollbackPolicies(scope, netInfo);
-    setShares(shareBridge.getSavedShares());
-    setMounts(shareBridge.getSavedMounts());
-    if (scope === 'host') {
-      setExpiryAlerts([]);
-      const updatedPeers = await shareBridge.scanLanPeers(netInfo);
-      setPeers(updatedPeers);
+    const isHost = scope === 'host';
+    const step1: PipelineStep = {
+      id: `rb-${scope}-exec`,
+      title: isHost ? '호스트 공유 정리 및 보안 기본값 원복' : '클라이언트 연결 해제 및 보안 기본값 원복',
+      detail: isHost
+        ? '공유 제거, LSA/Guest 제한 복구, SMB 서명 강제 및 방화벽 규칙 정리'
+        : '전체 네트워크 드라이브 해제, 비인증 게스트 차단 및 서명 강제 복원',
+      status: 'running',
+    };
+    const step2: PipelineStep = {
+      id: `rb-${scope}-sync`,
+      title: 'OS 네트워크 정책 재검사 및 USB 스냅샷 갱신',
+      detail: '원복된 보안 정책 상태와 공유·드라이브 목록을 재확인합니다.',
+      status: 'idle',
+    };
+    const jobKey = startProgressJob(
+      isHost ? '호스트 보안 원복' : '클라이언트 보안 원복',
+      isHost ? '공유 및 LSA/SMB 호스트 보안 기본값 복원' : '네트워크 연결 및 클라이언트 보안 기본값 복원',
+      [step1, step2]
+    );
+    if (!jobKey) {
+      return { success: false, message: '다른 작업이 진행 중입니다.' };
     }
+
+    const t0 = performance.now();
     try {
-      const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
-      setPolicyStatus(pol);
-    } catch {}
-    setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-    refreshPortableSnapshot(netInfo.hostname);
-    appendLog(scope === 'host' ? '메인 PC' : '클라이언트 PC', res.message, res.success ? 'success' : 'error');
-    return res;
+      const res = await shareBridge.rollbackPolicies(scope, netInfo);
+      const rbDuration = Math.round(performance.now() - t0);
+      updateProgressSteps(jobKey, [
+        {
+          ...step1,
+          status: res.success ? 'success' : 'error',
+          durationMs: rbDuration,
+          ...(res.success ? {} : { error: res.message }),
+        },
+        { ...step2, status: res.success ? 'running' : 'idle' },
+      ]);
+
+      const t1 = performance.now();
+      setShares(shareBridge.getSavedShares());
+      setMounts(shareBridge.getSavedMounts());
+      if (scope === 'host') {
+        setExpiryAlerts([]);
+        const updatedPeers = await shareBridge.scanLanPeers(netInfo);
+        setPeers(updatedPeers);
+      }
+      try {
+        const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
+        setPolicyStatus(pol);
+      } catch {}
+      setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+      refreshPortableSnapshot(netInfo.hostname);
+      appendLog(isHost ? '메인 PC' : '클라이언트 PC', res.message, res.success ? 'success' : 'error');
+
+      const syncDuration = Math.round(performance.now() - t1);
+      if (res.success) {
+        completeProgressJob(jobKey, res.message, [
+          { ...step1, status: 'success', durationMs: rbDuration },
+          { ...step2, status: 'success', durationMs: syncDuration },
+        ]);
+      } else {
+        failProgressJob(jobKey, res.message, [
+          { ...step1, status: 'error', durationMs: rbDuration, error: res.message },
+          step2,
+        ]);
+      }
+      return res;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '보안 원복 실행 중 예외가 발생했습니다.';
+      appendLog(isHost ? '메인 PC' : '클라이언트 PC', msg, 'error');
+      failProgressJob(jobKey, msg, [
+        { ...step1, status: 'error', durationMs: Math.round(performance.now() - t0), error: msg },
+        step2,
+      ]);
+      return { success: false, message: msg };
+    }
   };
 
   const handleExpirySecurityRollback = async () => {
-    for (const alert of expiryAlerts) {
-      if (!alert.autoRevoked) {
-        try {
-          await shareBridge.removeHostShare(alert.shareName, netInfo);
-        } catch {}
+    const s1: PipelineStep = {
+      id: 'exp-cleanup',
+      title: '만료된 임시 공유폴더 해제 정리',
+      detail: '남아 있는 만료 공유 리소스를 제거합니다.',
+      status: 'running',
+    };
+    const s2: PipelineStep = {
+      id: 'exp-rollback',
+      title: '호스트 보안 원복 및 Win 11 26H2 표준 보안 복구',
+      detail: 'SMB 서명 강제 및 Guest·LSA 제한 기본값으로 복원합니다.',
+      status: 'idle',
+    };
+    const s3: PipelineStep = {
+      id: 'exp-sync',
+      title: 'USB 포터블 기록 및 만료 알림 초기화',
+      detail: '갱신된 정책 상태를 저장합니다.',
+      status: 'idle',
+    };
+    const jobKey = startProgressJob('만료 공유 해제 & 보안 원복', `${expiryAlerts.length}건 만료 공유 정리`, [s1, s2, s3]);
+    if (!jobKey) return;
+
+    const t0 = performance.now();
+    let d1 = 0;
+    let d2 = 0;
+    let phase: 1 | 2 | 3 = 1;
+    try {
+      for (const alert of expiryAlerts) {
+        if (!alert.autoRevoked) {
+          try {
+            await shareBridge.removeHostShare(alert.shareName, netInfo);
+          } catch {}
+        }
       }
+      d1 = Math.round(performance.now() - t0);
+      phase = 2;
+      updateProgressSteps(jobKey, [
+        { ...s1, status: 'success', durationMs: d1 },
+        { ...s2, status: 'running' },
+        s3,
+      ]);
+
+      const t1 = performance.now();
+      const rollbackRes = await shareBridge.rollbackPolicies('host', netInfo);
+      const strictRes = await shareBridge.applyOsCompatibilityPatch('strict_26h2_default', netInfo);
+      d2 = Math.round(performance.now() - t1);
+
+      const allOk = rollbackRes.success && strictRes.success;
+      const errMsg = [
+        !rollbackRes.success ? rollbackRes.message : '',
+        !strictRes.success ? strictRes.summary : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
+      phase = 3;
+      const t2 = performance.now();
+      updateProgressSteps(jobKey, [
+        { ...s1, status: 'success', durationMs: d1 },
+        {
+          ...s2,
+          status: allOk ? 'success' : 'error',
+          durationMs: d2,
+          ...(allOk ? {} : { error: errMsg }),
+        },
+        { ...s3, status: allOk ? 'running' : 'idle' },
+      ]);
+
+      setShares(shareBridge.getSavedShares());
+      setPolicyStatus(strictRes.updatedPolicy);
+      setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+      refreshPortableSnapshot(netInfo.hostname);
+      try {
+        const updatedPeers = await shareBridge.scanLanPeers(netInfo);
+        setPeers(updatedPeers);
+      } catch {}
+
+      if (allOk) {
+        setExpiryAlerts([]);
+        appendLog('만료 보안 원복', `${rollbackRes.message} · Win 11 26H2 표준 보안 복원 완료`, 'success');
+        showToast('만료된 공유를 정리하고 Win 11 26H2 보안 기본값으로 원복했습니다.');
+        completeProgressJob(jobKey, '만료된 공유 정리 및 Win 11 26H2 표준 보안 원복 완료', [
+          { ...s1, status: 'success', durationMs: d1 },
+          { ...s2, status: 'success', durationMs: d2 },
+          { ...s3, status: 'success', durationMs: Math.round(performance.now() - t2) },
+        ]);
+      } else {
+        appendLog('만료 보안 원복', errMsg || '보안 원복 일부 단계 실패', 'error');
+        showToast(`만료 보안 원복 중 오류가 발생했습니다: ${errMsg}`);
+        failProgressJob(jobKey, errMsg || '호스트 보안 원복 또는 26H2 표준 보안 복원에 실패했습니다.', [
+          { ...s1, status: 'success', durationMs: d1 },
+          { ...s2, status: 'error', durationMs: d2, error: errMsg },
+          s3,
+        ]);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '만료 보안 원복 중 오류가 발생했습니다.';
+      appendLog('만료 보안 원복', msg, 'error');
+      showToast(msg);
+      const errSteps: PipelineStep[] =
+        phase === 1
+          ? [{ ...s1, status: 'error', durationMs: Math.round(performance.now() - t0), error: msg }, s2, s3]
+          : [
+              { ...s1, status: 'success', durationMs: d1 },
+              { ...s2, status: 'error', durationMs: d2 || Math.round(performance.now() - t0), error: msg },
+              s3,
+            ];
+      failProgressJob(jobKey, msg, errSteps);
     }
-    const rollbackRes = await shareBridge.rollbackPolicies('host', netInfo);
-    const strictRes = await shareBridge.applyOsCompatibilityPatch('strict_26h2_default', netInfo);
-    setShares(shareBridge.getSavedShares());
-    setPolicyStatus(strictRes.updatedPolicy);
-    setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-    refreshPortableSnapshot(netInfo.hostname);
-    setExpiryAlerts([]);
-    appendLog('만료 보안 원복', `${rollbackRes.message} · Win 11 26H2 표준 보안 복원 완료`, 'success');
-    showToast('만료된 공유를 정리하고 Win 11 26H2 보안 기본값으로 원복했습니다.');
   };
 
   const handleOpenDiagnostics = async () => {
@@ -1106,35 +1610,180 @@ export const App: React.FC = () => {
         return;
       }
 
+      const validShares = targetProfile.savedShares.filter((s) => Boolean(s.folderPath && s.shareName));
+      const initialBatchSteps: PipelineStep[] = [
+        ...validShares.map((sh, idx) => ({
+          id: `loc-sh-${idx}`,
+          title: `[호스트 공유] ${sh.shareName} (${sh.folderPath})`,
+          detail: '대기 중',
+          status: 'idle' as const,
+        })),
+        ...targetProfile.clientTargets.map((ct, idx) => ({
+          id: `loc-ct-${idx}`,
+          title: `[드라이브 연결] ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`,
+          detail: '대기 중',
+          status: 'idle' as const,
+        })),
+        {
+          id: 'loc-final-sync',
+          title: 'OS 네트워크 정책 및 USB·LAN 피어 최종 동기화',
+          detail: '일괄 적용 결과를 저장소에 반영합니다.',
+          status: 'idle',
+        },
+      ];
+
+      const jobKey = startProgressJob(
+        `사용장소 '${targetProfile.locationName}' 일괄 적용`,
+        `호스트 공유 ${validShares.length}건 · 네트워크 드라이브 ${targetProfile.clientTargets.length}건`,
+        initialBatchSteps
+      );
+      if (!jobKey) return;
+
       setLocationModalOpen(false);
       setIsLocationBatchApplying(true);
       setLocationBatchProgress(`'${targetProfile.locationName}' 설정 일괄 적용 준비 중...`);
+
+      const batchSteps = initialBatchSteps.map((s) => ({ ...s }));
+      let currentIdx = -1;
+      let currentItemStartMs = performance.now();
+
+      const advanceBatchItem = (nextIdx: number) => {
+        if (currentIdx >= 0 && currentIdx < batchSteps.length && batchSteps[currentIdx].status === 'running') {
+          batchSteps[currentIdx] = {
+            ...batchSteps[currentIdx],
+            status: 'success',
+            durationMs: Math.round(performance.now() - currentItemStartMs),
+          };
+        }
+        currentIdx = nextIdx;
+        currentItemStartMs = performance.now();
+        if (currentIdx >= 0 && currentIdx < batchSteps.length) {
+          batchSteps[currentIdx] = {
+            ...batchSteps[currentIdx],
+            status: 'running',
+            detail: '실행 준비 중...',
+          };
+        }
+        updateProgressSteps(
+          jobKey,
+          batchSteps.map((s) => ({ ...s }))
+        );
+      };
+
+      const updateCurrentSubStep = (subSteps: PipelineStep[]) => {
+        if (currentIdx < 0 || currentIdx >= batchSteps.length) return;
+        const activeSub = subSteps.find((s) => s.status === 'running') || subSteps[subSteps.length - 1];
+        if (!activeSub) return;
+        const doneCount = subSteps.filter((s) => s.status === 'success').length;
+        batchSteps[currentIdx] = {
+          ...batchSteps[currentIdx],
+          detail: `${activeSub.title} (${doneCount}/${subSteps.length})`,
+        };
+        updateProgressSteps(
+          jobKey,
+          batchSteps.map((s) => ({ ...s }))
+        );
+      };
+
       try {
         const freshNet = await shareBridge.getLocalNetworkInfo();
         setNetInfo(freshNet);
         const batchRes = await shareBridge.applyLocationProfileBatch(targetProfile, freshNet, {
-          onHostSteps: (steps) => setHostSteps(steps),
-          onClientSteps: (steps) => setClientSteps(steps),
-          onProgressText: (text) => setLocationBatchProgress(text),
+          onHostSteps: (steps) => {
+            setHostSteps(steps);
+            updateCurrentSubStep(steps);
+          },
+          onClientSteps: (steps) => {
+            setClientSteps(steps);
+            updateCurrentSubStep(steps);
+          },
+          onProgressText: (text) => {
+            setLocationBatchProgress(text);
+            const hostMatch = text.match(/^호스트 공유폴더\((\d+)\//);
+            const clientMatch = text.match(/^네트워크 드라이브\((\d+)\//);
+            if (hostMatch) {
+              advanceBatchItem(Math.max(0, parseInt(hostMatch[1], 10) - 1));
+            } else if (clientMatch) {
+              advanceBatchItem(validShares.length + Math.max(0, parseInt(clientMatch[1], 10) - 1));
+            }
+          },
         });
+
+        const finalSyncIdx = validShares.length + targetProfile.clientTargets.length;
+        advanceBatchItem(finalSyncIdx);
+
         setShares(shareBridge.getSavedShares());
         setMounts(shareBridge.getSavedMounts());
+        if (batchRes.appliedShares > 0 || batchRes.appliedMounts > 0) {
+          try {
+            const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+            setPolicyStatus(pol);
+          } catch {}
+        }
         refreshPortableSnapshot(freshNet.hostname);
         const updatedPeers = await shareBridge.scanLanPeers(freshNet);
         setPeers(updatedPeers);
         setLastLocationBatchResult(batchRes);
         appendLog('장소 일괄 적용', batchRes.summary, batchRes.success ? 'success' : 'error');
         showToast(batchRes.summary);
+
+        // Reconcile exact success/error status from batchRes.details
+        const shareDetails = batchRes.details.filter((d) => d.kind === 'share');
+        const mountDetails = batchRes.details.filter((d) => d.kind === 'mount');
+        shareDetails.forEach((d, i) => {
+          if (batchSteps[i]) {
+            batchSteps[i] = {
+              ...batchSteps[i],
+              status: d.success ? 'success' : 'error',
+              detail: d.success ? d.message : batchSteps[i].detail,
+              ...(d.success ? {} : { error: d.message }),
+            };
+          }
+        });
+        mountDetails.forEach((d, i) => {
+          const targetIdx = validShares.length + i;
+          if (batchSteps[targetIdx]) {
+            batchSteps[targetIdx] = {
+              ...batchSteps[targetIdx],
+              status: d.success ? 'success' : 'error',
+              detail: d.success ? d.message : batchSteps[targetIdx].detail,
+              ...(d.success ? {} : { error: d.message }),
+            };
+          }
+        });
+        batchSteps[finalSyncIdx] = {
+          ...batchSteps[finalSyncIdx],
+          status: 'success',
+          durationMs: Math.round(performance.now() - currentItemStartMs),
+        };
+
+        if (batchRes.success || (validShares.length === 0 && targetProfile.clientTargets.length === 0)) {
+          completeProgressJob(jobKey, batchRes.summary, batchSteps);
+        } else {
+          const firstErr = batchRes.details.find((d) => !d.success)?.message || batchRes.summary;
+          failProgressJob(jobKey, `${batchRes.summary} (${firstErr})`, batchSteps);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : '알 수 없는 오류';
         appendLog('장소 일괄 적용', `실행 예외: ${msg}`, 'error');
         showToast(`사용장소 일괄 적용 실패: ${msg}`);
+        failProgressJob(jobKey, msg, batchSteps);
       } finally {
         setIsLocationBatchApplying(false);
         setLocationBatchProgress(null);
       }
     },
-    [activeLocationProfile, applyLocationProfileToWorkspace, refreshPortableSnapshot, appendLog, showToast]
+    [
+      activeLocationProfile,
+      applyLocationProfileToWorkspace,
+      refreshPortableSnapshot,
+      appendLog,
+      showToast,
+      startProgressJob,
+      updateProgressSteps,
+      completeProgressJob,
+      failProgressJob,
+    ]
   );
 
   return (
@@ -1583,6 +2232,8 @@ export const App: React.FC = () => {
         onImportJsonFile={handleImportLocationJson}
         onDeleteProfile={handleDeleteLocationProfile}
       />
+
+      <WorkProgressModal job={progressJob} onClose={closeProgressModal} />
 
       <input
         ref={locationFileInputRef}

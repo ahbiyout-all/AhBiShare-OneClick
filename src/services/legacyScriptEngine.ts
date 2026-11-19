@@ -122,7 +122,11 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     '[HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Lsa]',
     '"LmCompatibilityLevel"=dword:00000003',
     ...(includeGuestLogon
-      ? ['"everyoneincludesanonymous"=dword:00000001', '"restrictanonymous"=dword:00000000']
+      ? [
+          '"everyoneincludesanonymous"=dword:00000001',
+          '"restrictanonymous"=dword:00000000',
+          '"LimitBlankPasswordUse"=dword:00000000',
+        ]
       : []),
     '',
   ];
@@ -163,6 +167,7 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     '"LmCompatibilityLevel"=dword:00000003',
     '"everyoneincludesanonymous"=dword:00000000',
     '"restrictanonymous"=dword:00000001',
+    '"LimitBlankPasswordUse"=dword:00000001',
     '',
     '[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System]',
     '"LocalAccountTokenFilterPolicy"=dword:00000000',
@@ -185,6 +190,7 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
           '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f >nul',
           '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f >nul',
           '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f >nul',
+          '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f >nul',
         ]
       : [
           '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 0 /f >nul',
@@ -223,6 +229,7 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     'if not exist "%BACKUP_DIR%\\LanmanWorkstation.reg" reg export "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" "%BACKUP_DIR%\\LanmanWorkstation.reg" /y >nul 2>&1',
     'if not exist "%BACKUP_DIR%\\Lsa.reg" reg export "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" "%BACKUP_DIR%\\Lsa.reg" /y >nul 2>&1',
     'if not exist "%BACKUP_DIR%\\PoliciesSystem.reg" reg export "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" "%BACKUP_DIR%\\PoliciesSystem.reg" /y >nul 2>&1',
+    'if not exist "%BACKUP_DIR%\\UserRights.inf" secedit /export /cfg "%BACKUP_DIR%\\UserRights.inf" /areas USER_RIGHTS >nul 2>&1',
     '',
     'echo [2/5] Applying SMB 2.1/3.0 and NTLMv2 compatibility settings...',
     'set "REG_OK=0"',
@@ -232,6 +239,13 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     'if "%REG_OK%"=="0" (',
     ...inlineRegFallbackLines,
     ')',
+    ...(includeGuestLogon
+      ? [
+          'if exist "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" (',
+          '  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$inf=Join-Path $env:TEMP (\'ahbi_u_\'+$PID+\'.inf\');$sdb=Join-Path $env:TEMP (\'ahbi_u_\'+$PID+\'.sdb\');$log=$inf+\'.log\';try{$g=Get-WmiObject Win32_UserAccount -Filter \'LocalAccount=True\' -ErrorAction SilentlyContinue|Where-Object{$_.SID -like \'*-501\'}|Select-Object -First 1;$gSid=if($g -and $g.SID){\'*\'+$g.SID}else{\'\'};$gName=if($g -and $g.Name){$g.Name}else{\'Guest\'};$psi=New-Object System.Diagnostics.ProcessStartInfo;$psi.FileName=\'net.exe\';$psi.Arguments=(\'user \"\'+$gName+\'\" \"\" /active:yes /passwordreq:no\');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$p=[System.Diagnostics.Process]::Start($psi);if($p){[void]$p.WaitForExit(5000)};& net.exe user $gName /active:yes 2>$null|Out-Null;& secedit.exe /export /cfg $inf /areas USER_RIGHTS 2>$null|Out-Null;if(Test-Path -LiteralPath $inf){$out=@();foreach($ln in ([System.IO.File]::ReadAllLines($inf,[System.Text.Encoding]::Unicode))){if($ln -match \'^(\\s*SeDenyNetworkLogonRight\\s*=\\s*)(.*)$\'){$items=@();foreach($tk in ($matches[2] -split \',\')){$rawTk=$tk.Trim();$t=$rawTk.Trim([char]34);if(-not $t){continue};$isG=($t -eq \'*S-1-5-32-546\')-or($t -eq \'*S-1-5-7\')-or($t -match \'-501$\')-or($t -match \'(?:^|\\\\)Guests?$\')-or($gSid -and ($t -ieq $gSid))-or($gName -and ($t -ieq $gName));if(-not $isG){$items+=$rawTk}};$out+=($matches[1]+($items -join \',\'))}elseif($ln -match \'^(\\s*SeNetworkLogonRight\\s*=\\s*)(.*)$\'){$items=@();foreach($tk in ($matches[2] -split \',\')){$t=$tk.Trim();if($t){$items+=$t}};if($items -notcontains \'*S-1-1-0\'){$items+=\'*S-1-1-0\'};if($gSid -and ($items -notcontains $gSid)){$items+=$gSid};$out+=($matches[1]+($items -join \',\'))}else{$out+=$ln}};$out|Out-File -FilePath $inf -Encoding Unicode -Force;& secedit.exe /configure /db $sdb /cfg $inf /areas USER_RIGHTS /log $log /quiet 2>$null|Out-Null}}catch{}finally{foreach($f in @($inf,$sdb,($sdb+\'.jfm\'),$log)){if($f -and (Test-Path -LiteralPath $f)){Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue}}}" >nul 2>&1',
+          ')',
+        ]
+      : []),
     '',
     ...(includeSmb1Protocol
       ? [
@@ -305,6 +319,13 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     '  if exist "%BACKUP_DIR%\\Lsa.reg" reg import "%BACKUP_DIR%\\Lsa.reg" >nul 2>&1',
     '  if exist "%BACKUP_DIR%\\PoliciesSystem.reg" reg import "%BACKUP_DIR%\\PoliciesSystem.reg" >nul 2>&1',
     ')',
+    'if exist "%BACKUP_DIR%\\UserRights.inf" (',
+    '  secedit /configure /db "%BACKUP_DIR%\\UserRights_restore.sdb" /cfg "%BACKUP_DIR%\\UserRights.inf" /areas USER_RIGHTS /log "%BACKUP_DIR%\\UserRights_restore.log" /quiet >nul 2>&1',
+    '  del /f /q "%BACKUP_DIR%\\UserRights_restore.*" >nul 2>&1',
+    ')',
+    'if exist "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" (',
+    '  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "try{$g=Get-WmiObject Win32_UserAccount -Filter \'LocalAccount=True\' -ErrorAction SilentlyContinue|Where-Object{$_.SID -like \'*-501\'}|Select-Object -First 1;if($g -and $g.Name){& net.exe user $g.Name /active:no 2>$null|Out-Null}}catch{}" >nul 2>&1',
+    ')',
     'if "%RESTORE_OK%"=="0" if exist "%~dp0AhBiShare_Legacy_Rollback.reg" (',
     '  echo [1/4] Applying standard security rollback registry file...',
     '  reg import "%~dp0AhBiShare_Legacy_Rollback.reg" >nul 2>&1 && set "RESTORE_OK=1"',
@@ -322,6 +343,7 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     '  reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 0 /f >nul 2>&1',
     '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f >nul 2>&1',
     '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f >nul 2>&1',
+    '  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f >nul 2>&1',
     '  reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 0 /f >nul 2>&1',
     ')',
     '',

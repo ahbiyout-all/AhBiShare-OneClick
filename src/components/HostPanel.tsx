@@ -105,9 +105,9 @@ export const HostPanel: React.FC<HostPanelProps> = ({
           ? pendingHostPreset.config.password || prev.password || generateSecureSharePassword(10)
           : prev.password,
     }));
-    if (pendingHostPreset.config.shareName) {
-      setShareNameCustomized(true);
-    }
+    setShareNameCustomized(
+      Boolean(pendingHostPreset.config.shareName && pendingHostPreset.config.shareName !== 'AhBiShared')
+    );
     onClearPendingHostPreset?.();
   }, [pendingHostPreset, onClearPendingHostPreset]);
 

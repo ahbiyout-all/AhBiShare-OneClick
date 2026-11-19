@@ -36,7 +36,7 @@ for (const reqFile of ['dist/**/*', 'main.js', 'preload.js', 'portableStore.js',
 }
 assert.strictEqual(rootPkg.name, 'ahbishare-oneclick');
 assert(/^\d+\.\d+\.\d+$/.test(rootPkg.version), `package.json version must strictly follow SemVer MAJOR.MINOR.PATCH (got "${rootPkg.version}")`);
-assert.strictEqual(rootPkg.version, '1.1.1');
+assert.strictEqual(rootPkg.version, '1.2.1');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
 const srcVersionTs = fs.readFileSync(path.join(rootDir, 'src', 'version.ts'), 'utf8');
 assert(
@@ -195,6 +195,7 @@ try {
         rpcAuthnLevelPrivacyDisabled: true,
         rpcUseNamedPipeProtocol: true,
         pointAndPrintRelaxed: true,
+        guestNetworkLogonDenied: true,
         capturedAt: '2026-11-16T10:00:00.000Z',
       },
     },
@@ -210,6 +211,7 @@ try {
   assert.strictEqual(diskParsed.shares[0].ttlMinutes, 60);
   assert.strictEqual(diskParsed.shares[0].autoRevokeOnExpiry, true);
   assert.strictEqual(diskParsed.hostPolicies['HOST-26H2-PC'].osDisplayVersion, '26H2');
+  assert.strictEqual(diskParsed.hostPolicies['HOST-26H2-PC'].guestNetworkLogonDenied, true);
 
   fs.writeFileSync(path.join(tempUsbDir, portableStore.PORTABLE_FILE_NAME), `\uFEFF${rawDisk}`, 'utf8');
 
@@ -219,6 +221,7 @@ try {
   assert.strictEqual(loadRes.document.shares[0].ttlMinutes, 60);
   assert.strictEqual(loadRes.document.shares[0].expiresAt, '2026-11-16T11:00:00.000Z');
   assert.strictEqual(loadRes.document.hostPolicies['HOST-26H2-PC'].rpcAuthnLevelPrivacyDisabled, true);
+  assert.strictEqual(loadRes.document.hostPolicies['HOST-26H2-PC'].guestNetworkLogonDenied, true);
 
   const unlimitedDoc = {
     ...sampleDoc,
@@ -321,7 +324,39 @@ try {
   const locDel = store.deleteLocationProfile(locSaveRes.profile.profileId);
   assert.strictEqual(locDel.success, true);
   assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
-  pass('Per-location .location.json AES-256-GCM encryption, BOM resilience, mixed-script ID safety & CRUD verified');
+
+  // Verify copied/renamed .location.json file whose filename differs from internal profileId
+  const renamedSaveRes = store.saveLocationProfile({
+    profileId: 'loc-renamed-check',
+    locationName: '외부 복사 장소',
+    networkHint: { subnetPrefix: '10.0.0', primaryIp: '10.0.0.5', hostname: 'COPY-PC' },
+    savedShares: [],
+    clientTargets: [
+      {
+        targetHost: '10.0.0.99',
+        shareName: 'CopyShare',
+        driveLetter: 'y',
+        authMode: 'account',
+        username: 'CopyUser',
+        password: 'CopySecret!9',
+        persistent: true,
+      },
+    ],
+  });
+  assert.strictEqual(renamedSaveRes.success, true);
+  const locDirPath = path.dirname(renamedSaveRes.filePath);
+  const aliasedLocPath = path.join(locDirPath, 'Manual_Renamed_Copy.location.json');
+  fs.renameSync(renamedSaveRes.filePath, aliasedLocPath);
+  const aliasedList = store.listLocationProfiles();
+  assert.strictEqual(aliasedList.profiles.length, 1);
+  assert.strictEqual(aliasedList.profiles[0].profileId, 'loc-renamed-check');
+  const aliasedLoad = store.loadLocationProfile('loc-renamed-check');
+  assert.strictEqual(aliasedLoad.success, true, 'loadLocationProfile must resolve renamed .location.json by internal profileId');
+  assert.strictEqual(aliasedLoad.profile.clientTargets[0].password, 'CopySecret!9');
+  const aliasedDel = store.deleteLocationProfile('loc-renamed-check');
+  assert.strictEqual(aliasedDel.success, true, 'deleteLocationProfile must delete renamed .location.json by internal profileId');
+  assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
+  pass('Per-location .location.json AES-256-GCM encryption, BOM resilience, mixed-script ID & renamed-file CRUD verified');
 } finally {
   fs.rmSync(tempUsbDir, { recursive: true, force: true });
 }
@@ -334,7 +369,17 @@ for (const marker of [
   'Policies\\\\Microsoft\\\\Windows\\\\LanmanWorkstation',
   'New-SmbMapping',
   'Clear-HostAndDriveConflicts',
-  "'/user:Guest'",
+  'Invoke-NetUseBlankPass',
+  'Invoke-WNetMap',
+  'WNetAddConnection2',
+  '/passwordreq:no',
+  '[System.IO.File]::ReadAllLines',
+  '[System.Text.Encoding]::Unicode',
+  '$rawTok',
+  '$canUseCliPass',
+  "Invoke-WNetMap $p_drive $p_unc '' '' $p_persistBool",
+  'LimitBlankPasswordUse',
+  'S-1-5-7',
   'Restart-Service -Name LanmanServer',
   'Restart-Service -Name LanmanWorkstation',
   'LocalAccountTokenFilterPolicy',
@@ -350,8 +395,9 @@ for (const marker of [
 }
 assert(!psEngineSrc.includes('($p_drive + "\\\\")'), 'powershellEngine.ts contains unterminated PowerShell backslash literal');
 assert(
-  !psEngineSrc.includes("Invoke-NetUseSafe @('use', $p_drive, $p_unc, '', '/user:Guest'"),
-  'powershellEngine.ts uses empty string arg that PowerShell 5.1 strips for native net.exe'
+  !psEngineSrc.includes("Invoke-NetUseSafe @('use', $p_drive, $p_unc, '', '/user:Guest'") &&
+    !psEngineSrc.includes("Invoke-NetUseSafe @('use', $p_drive, $p_unc, '\"\"', '/user:Guest'"),
+  'powershellEngine.ts uses empty/quoted empty string array arg that PowerShell 5.1 strips or passes as literal quotes to native net.exe'
 );
 assert(
   psEngineSrc.includes('try { Set-SmbServerConfiguration -RejectUnencryptedAccess'),
@@ -361,24 +407,24 @@ for (const win25Marker of [
   'Set-AhBiGuestNetworkLogonPolicy',
   'SeDenyNetworkLogonRight',
   'guestNetworkLogonDenied',
-  "'/user:Anonymous'",
+  "'Guest'",
+  "'Anonymous'",
   'cmdkey.exe "/delete:$p_host"',
 ]) {
   assert(psEngineSrc.includes(win25Marker), `powershellEngine.ts missing Win 11 24H2/25H2 safeguard: ${win25Marker}`);
 }
 assert(
-  psEngineSrc.indexOf('\\\\b1385\\\\b') < psEngineSrc.indexOf('\\\\b1223\\\\b') &&
-    psEngineSrc.indexOf('\\\\b1223\\\\b') < psEngineSrc.indexOf('게스트|guest'),
-  'powershellEngine.ts must diagnose Error 1385 & 1223 before generic guest pattern'
+  psEngineSrc.includes('1385') && psEngineSrc.includes('1223') && psEngineSrc.includes('0x80070035'),
+  'powershellEngine.ts must include Error 1385, 1223 and 0x80070035 diagnostics'
 );
-pass('Windows 7 SP1 ~ 11 26H2 PowerShell 2.0/5.1 fallbacks, network drive creation, GPO/UAC, SeDenyNetworkLogonRight & OS patch safeguards verified');
+pass('Windows 7 SP1 ~ 11 26H2 PowerShell 2.0/5.1 fallbacks, Win32 WNetAddConnection2, Guest blank-password, SeDenyNetworkLogonRight & OS patch safeguards verified');
 
 // 5. Verify NetworkMatrixPanel host-client mismatch detection & 1-click batch auto-align wiring
 const netEvoSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'networkEvolution.ts'), 'utf8');
 const bridgeSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'shareBridge.ts'), 'utf8');
 const matrixPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
 
-for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'HOST_POLICY_REFERENCE_TARGETS', 'diff_ntlm', 'diff_uac_token', 'diff_guest_deny', 'Error 1385', 'Error 1223', 'Win 7${ver']) {
+for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'HOST_POLICY_REFERENCE_TARGETS', 'diff_ntlm', 'diff_uac_token', 'diff_guest_deny', 'Error 1385', 'Error 1223', 'Error 5 / 86 / 1326', 'Win 7${ver']) {
   assert(netEvoSrc.includes(marker), `networkEvolution.ts missing auto-align / diagnostic / OS label symbol: ${marker}`);
 }
 assert(
@@ -388,6 +434,11 @@ assert(
 );
 assert(bridgeSrc.includes('autoAlignHostClientPolicies('), 'shareBridge.ts missing autoAlignHostClientPolicies method');
 assert(bridgeSrc.includes('Get-Command Remove-SmbMapping'), 'shareBridge.ts missing Win 7 Remove-SmbMapping guard in unmountDrive');
+assert(
+  bridgeSrc.includes('normalizeUnc(prev.uncPath) === normalizeUnc(live.uncPath)') &&
+    bridgeSrc.includes('prev.folderPath === nextFolderPath'),
+  'shareBridge.ts syncLiveState must validate UNC & folderPath changes before reusing stored metadata'
+);
 for (const uiId of ['matrix-auto-align-banner', 'btn-auto-align-top', 'btn-sync-cross-pc-policy', 'btn-copy-host-guide']) {
   assert(matrixPanelSrc.includes(uiId), `NetworkMatrixPanel.tsx missing auto-align UI element: ${uiId}`);
 }
@@ -409,11 +460,20 @@ for (const marker of [
   '"RejectUnencryptedAccess"=dword:00000000',
   '/v everyoneincludesanonymous /t REG_DWORD /d 1',
   '/v restrictanonymous /t REG_DWORD /d 0',
+  'LimitBlankPasswordUse',
   'if not exist "%BACKUP_DIR%\\\\LanmanServer.reg"',
   'dism /online /disable-feature /featurename:SMB1Protocol /norestart',
 ]) {
   assert(legacyEngineSrc.includes(marker), `legacyScriptEngine.ts missing marker: ${marker}`);
 }
+assert(
+  legacyEngineSrc.includes('UserRights.inf') &&
+    legacyEngineSrc.includes('SeDenyNetworkLogonRight') &&
+    legacyEngineSrc.includes('[System.IO.File]::ReadAllLines($inf,[System.Text.Encoding]::Unicode)') &&
+    legacyEngineSrc.includes('$rawTk') &&
+    legacyEngineSrc.includes('[char]34'),
+  'legacyScriptEngine.ts must back up/restore UserRights.inf, read UTF-16LE INF via ReadAllLines Unicode encoding, preserve non-guest quotes, and clear SeDenyNetworkLogonRight for Error 1385 parity'
+);
 assert(!legacyEngineSrc.includes('chcp 65001'), 'legacyScriptEngine.ts must avoid chcp 65001 in Win7 .bat scripts');
 assert(
   !/Windows\\{1,2}LanmanWorkstation/.test(legacyEngineSrc.replace(/Policies\\{1,2}Microsoft\\{1,2}Windows\\{1,2}LanmanWorkstation/g, '')),
@@ -592,8 +652,20 @@ assert(
     mainJsSrc.includes('res.complete') &&
     mainJsSrc.includes('cleanupPromise') &&
     mainJsSrc.includes('hasRealUtf16Interleaving') &&
+    mainJsSrc.includes('strictUtf8 === null') &&
     mainJsSrc.includes("stdio: ['ignore', 'pipe', 'pipe']"),
   'main.js must guard PSDefaultParameterValues, decode UTF-8 with stray NULs without CJK mojibake, ignore stdin on PowerShell spawn, handle empty Atom feed, support drive-root save-legacy-scripts, and guard stream completeness/cancel cleanup'
+);
+
+assert(
+  mainJsSrc.includes("parsedUrl.protocol !== 'https:'") &&
+    mainJsSrc.includes('isPortableReplacementQueued') &&
+    mainJsSrc.includes('totalBytes > 0 ?') &&
+    mainJsSrc.includes('!updaterProc || !updaterProc.pid') &&
+    mainJsSrc.includes("updaterProc.once('error'") &&
+    mainJsSrc.includes('clearTimeout(exitTimer)') &&
+    mainJsSrc.includes(`require('./package.json').version || '${rootPkg.version}'`),
+  'main.js must validate HTTPS redirects, guard double replacement & spawn PID/error cancellation, format unknown-total progress, and sync APP_PKG_VERSION fallback'
 );
 
 assert(
@@ -610,8 +682,11 @@ assert(
     appSrc.includes('currentVersion={APP_VERSION}') &&
     appSrc.includes('autoRevoked: revoked') &&
     appSrc.includes('updateCheckInFlightRef') &&
-    appSrc.includes('z-[60]'),
-  'App.tsx must use centralized APP_VERSION, prevent overlapping checks, render toasts above modals, and report accurate autoRevoked state'
+    appSrc.includes('z-[60]') &&
+    appSrc.includes('if (batchRes.appliedShares > 0 || batchRes.appliedMounts > 0)') &&
+    appSrc.includes('const allOk = rollbackRes.success && strictRes.success;') &&
+    appSrc.includes('showToast(res.success ? res.rebootJudgment.title : res.summary)'),
+  'App.tsx must use centralized APP_VERSION, prevent overlapping checks, render toasts above modals, refresh OS policy after batch apply, check rollbackRes && strictRes success, and report accurate error toasts/autoRevoked state'
 );
 
 const updateModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'UpdateModal.tsx'), 'utf8');
@@ -624,8 +699,10 @@ assert(
     updateModalSrc.includes('btn-cancel-portable-update') &&
     updateModalSrc.includes('portable-update-progress') &&
     updateModalSrc.includes('hasUserSelectedAssetRef') &&
-    updateModalSrc.includes('btn-skip-update-version'),
-  'UpdateModal.tsx must provide accessible dialog ARIA attributes, update confirmation, sticky selection, and portable auto-replace progress actions'
+    updateModalSrc.includes('btn-skip-update-version') &&
+    updateModalSrc.includes('formatBytesHuman') &&
+    updateModalSrc.includes('수신 중'),
+  'UpdateModal.tsx must provide accessible dialog ARIA attributes, update confirmation, sticky selection, clean byte units, and portable auto-replace progress actions'
 );
 
 assert(
@@ -634,19 +711,29 @@ assert(
     bridgeSrc.includes('mergedPolicies') &&
     bridgeSrc.includes('sanitizeLocalShareForStorage(') &&
     bridgeSrc.includes('sanitizeLocalShareForStorage(sanitizedLocal, netInfo)') &&
-    bridgeSrc.includes('promotedPortableEntries'),
-  'shareBridge.ts missing cross-OS bidirectional bridge sync, hostPolicies merge, or localStorage sanitization'
+    bridgeSrc.includes('promotedPortableEntries') &&
+    bridgeSrc.includes('guestNetworkLogonDenied: Boolean(parsed.guestNetworkLogonDenied)'),
+  'shareBridge.ts missing cross-OS bidirectional bridge sync, hostPolicies merge, localStorage sanitization, or guestNetworkLogonDenied propagation'
 );
 assert(
   bridgeSrc.includes('Get-Command Get-SmbShare') && bridgeSrc.includes('net.exe share $p_share /delete /y'),
   'shareBridge.ts removeHostShare missing Win 7 PowerShell 2.0 net.exe share delete fallback'
 );
+const typesShareSrc = fs.readFileSync(path.join(rootDir, 'src', 'types', 'share.ts'), 'utf8');
+assert(
+  typesShareSrc.includes('username?: string;') &&
+    bridgeSrc.includes('cacheLocationProfileCredentials(') &&
+    bridgeSrc.includes('setCachedPassword(trimmedHost, trimmedShare, config.password)') &&
+    bridgeSrc.includes('...(trimmedUser ? { username: trimmedUser } : {})'),
+  'share.ts & shareBridge.ts must preserve MountedDrive.username, cache client passwords on mount, and cache Electron location credentials on load/import'
+);
 const portableStoreSrc = fs.readFileSync(path.join(rootDir, 'portableStore.js'), 'utf8');
 assert(
   portableStoreSrc.includes('lmCompatibilityLevel') &&
     portableStoreSrc.includes('localAccountTokenFilterEnabled') &&
+    portableStoreSrc.includes('guestNetworkLogonDenied') &&
     portableStoreSrc.includes('path.basename(filePath)'),
-  'portableStore.js must preserve lmCompatibilityLevel, localAccountTokenFilterEnabled, and use per-target temp filenames in atomicWriteJson'
+  'portableStore.js must preserve lmCompatibilityLevel, localAccountTokenFilterEnabled, guestNetworkLogonDenied, and use per-target temp filenames in atomicWriteJson'
 );
 assert(
   rootBuildBat.includes('HAS_EXE'),
@@ -699,8 +786,14 @@ assert(
     locModalSrc.includes('aria-modal="true"') &&
     locModalSrc.includes("e.key === 'Escape'") &&
     locModalSrc.includes('btn-save-new-location') &&
-    locModalSrc.includes('btn-modal-import-json'),
-  'LocationManagerModal.tsx missing accessible dialog, Escape handler, or save/import controls'
+    locModalSrc.includes('btn-modal-import-json') &&
+    locModalSrc.includes('wasOpenRef'),
+  'LocationManagerModal.tsx missing accessible dialog, Escape handler, wasOpenRef open-edge init, or save/import controls'
+);
+const hostPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'HostPanel.tsx'), 'utf8');
+assert(
+  hostPanelSrc.includes("pendingHostPreset.config.shareName !== 'AhBiShared'"),
+  'HostPanel.tsx must only set shareNameCustomized when preset uses a non-default share name'
 );
 assert(
   clientPanelSrc.includes('driveLetterOptions'),
@@ -717,17 +810,45 @@ for (const fnMarker of [
   'importLocationProfileFile',
   'importLocationProfileFromJson',
   'applyLocationProfileBatch',
+  '보안 계정 모드의 공유 암호를 복원할 수 없습니다',
+  '보안 계정 모드의 접속 암호가 비어 있습니다',
 ]) {
-  assert(bridgeSrc.includes(fnMarker), `shareBridge.ts missing location method: ${fnMarker}`);
+  assert(bridgeSrc.includes(fnMarker), `shareBridge.ts missing location/credential guard: ${fnMarker}`);
 }
 assert(
   appSrc.includes('LocationProfileBar') &&
     appSrc.includes('LocationManagerModal') &&
+    appSrc.includes('WorkProgressModal') &&
+    appSrc.includes('startProgressJob') &&
     appSrc.includes('applyLocationProfileToWorkspace') &&
     appSrc.includes('Copyright © 1998-2026 AhBiYout. All rights reserved.'),
-  'App.tsx missing LocationProfileBar / LocationManagerModal / workspace auto-fill wiring or AhBiYout copyright'
+  'App.tsx missing LocationProfileBar / LocationManagerModal / WorkProgressModal wiring or AhBiYout copyright'
 );
-pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
+  const validSharesBridgeCheck =
+    bridgeSrc.includes('const validShares = profile.savedShares.filter') &&
+    bridgeSrc.includes('호스트 공유폴더(${i + 1}/${validShares.length})');
+  assert(
+    validSharesBridgeCheck,
+    'shareBridge.ts applyLocationProfileBatch must filter validShares identically to App.tsx before emitting progress indices'
+  );
+  const progressModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'WorkProgressModal.tsx'), 'utf8');
+  const indexCssSrc = fs.readFileSync(path.join(rootDir, 'src', 'index.css'), 'utf8');
+  assert(
+    progressModalSrc.includes('role="dialog"') &&
+      progressModalSrc.includes('aria-modal="true"') &&
+      progressModalSrc.includes('AUTO_CLOSE_DELAY_MS = 1500') &&
+      progressModalSrc.includes('ahbi-motion-ring-cw') &&
+      progressModalSrc.includes('ahbi-motion-ring-ccw') &&
+      progressModalSrc.includes('if (e.target === e.currentTarget && !isRunning)') &&
+      progressModalSrc.includes("document.body.style.overflow = 'hidden'") &&
+      progressModalSrc.includes('modalRef') &&
+      progressModalSrc.includes('previousFocusRef') &&
+      indexCssSrc.includes('@keyframes ahbi-ring-cw') &&
+      indexCssSrc.includes('@keyframes ahbi-ring-ccw') &&
+      indexCssSrc.includes('animation-iteration-count: 1 !important'),
+    'WorkProgressModal.tsx / src/index.css missing dual-ring animation, running lock, focus trap, scroll lock, reduced-motion iteration limit, or 1.5s success auto-close guard'
+  );
+  pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 
 // 9. Functional unit test of portableUpdater.js (runtime detection, edition matching, URL allowlist, PE verification, PS 2.0 script)
 const portableUpdater = require(path.join(rootDir, 'portableUpdater.js'));
@@ -817,11 +938,14 @@ try {
   assert(
     psSelfScript.includes('Remove-Item -LiteralPath $oldExe -Force') &&
       psSelfScript.includes('Copy-Item -LiteralPath $stagedExe -Destination $targetExe -Force') &&
+      psSelfScript.includes('old_portable_backup.exe') &&
+      psSelfScript.includes('Test-ValidPeExe $targetExe') &&
+      psSelfScript.includes('Copy-Item -LiteralPath $backupOldExe -Destination $oldExe -Force') &&
       psSelfScript.includes('Start-Process -FilePath $targetExe') &&
       psSelfScript.includes("''test.exe") &&
       !psSelfScript.includes('[PSCustomObject]@{') &&
       !/\s-(?:in|notin)\b/.test(psSelfScript),
-    'buildPortableSelfUpdatePsScript must be PS 2.0 compatible, escape single quotes, delete old EXE, copy target EXE, and relaunch'
+    'buildPortableSelfUpdatePsScript must be PS 2.0 compatible, backup old EXE, verify target PE MZ header with rollback, escape single quotes, delete old EXE, copy target EXE, and relaunch'
   );
   pass('portableUpdater.js runtime edition detection, GitHub asset allowlist, PE validation & PS 2.0 self-replacement script verified');
 } finally {

@@ -7,33 +7,47 @@
 
 ## 1️⃣ [작성 모드 (서식 있는 텍스트)]
 
-# AhBiShare OneClick v1.1.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
+# AhBiShare OneClick v1.2.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
 
 ## 프로그램 소개
 **AhBiShare OneClick**은 Windows PC 간 폴더 공유 개설(메인 PC), 네트워크 드라이브 연결(클라이언트 PC), 사용장소별(사무실·집·현장) 설정 파일 저장 및 원클릭 일괄 적용, Windows 10·11 정책 불일치 자동 정렬, 그리고 Windows 7·8·8.1 구형 OS 호환 브릿지 및 오프라인 스크립트 생성을 클릭 한 번으로 해결하는 **무료 오픈소스 유틸리티**입니다.
 
 ---
 
-## ✨ 이번 업데이트 주요 내용 (v1.1.1 · 2026-11-18)
-- **사용장소별 개별 프로필(`.location.json`) & 1클릭 일괄 적용 (신규)**:
-  - 사무실·집·현장 등 작업 장소마다 호스트 공유 설정과 클라이언트 네트워크 드라이브 구성을 **AES-256-GCM 암호화**된 `.location.json` 파일로 분리 저장하고, JSON 내보내기/불러오기 및 버튼 한 번으로 일괄 적용할 수 있습니다.
-- **GitHub 자동 업데이트 감지 + 기존 포터블 종료·제거·자동 교체 (신규)**:
-  - GitHub Releases에서 최신 버전을 감지하면 업데이트 확인창을 표시하며, 현재 실행 중인 에디션(`표준` · `Lite` · `Win7`)을 자동 판별해 동일 에디션의 최신 `.exe`를 내려받습니다.
-  - 공식 GitHub 도메인 검증 및 Windows PE 실행 헤더(`MZ`) 무결성 검증 후, **기존 포터블 프로세스를 종료·제거하고 새 버전 포터블로 자동 교체 및 재실행**합니다. (기존 `.portable.json` 및 `locations/` 데이터 유지)
+## ✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-19)
+- **실시간 작업 진행 모션창(`WorkProgressModal`) & 6차 자아성찰 심층 점검 안정화 (`v1.2.0 · MINOR`)**:
+  - 공유 개설·해제, 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS 통합 개설·접속, 사용장소 일괄 적용, 보안 원복까지 주요 작업 11종 전체에 **듀얼 링 회전 모션 + 실시간 단계 진행 타임라인 + 경과 시간 표시 모달**을 도입했습니다(실행 중 배경 잠금·포커스 트랩·성공 1.5초 후 자동 닫힘·오류 시 수동 확인 유지).
+  - `prefers-reduced-motion` 환경 고속 깜빡임 제거(`animation-iteration-count: 1`), 만료 공유 원복(`handleExpirySecurityRollback`) 실패 검증 및 실패 단계 추적, 정책 실패 시 완료 토스트 오표시 수정, 사용장소 일괄 적용 `validShares` 인덱스 불일치를 해결했습니다.
+- **5차 자아성찰 심층 점검 — 보안 정책 따옴표 보존 · Null 세션 · Live 상태 동기화 개선 (`v1.1.5`)**:
+  - `secedit` UTF-16LE INF 읽기 시 `[System.Text.Encoding]::Unicode`를 명시 지정하고, `SeDenyNetworkLogonRight`에서 비게스트 항목의 기존 따옴표를 손실 없이 보존하도록 수정했습니다(오프라인 USB `.bat` 키트 포함).
+  - 보안 계정 모드에서 `/`·`*` 시작 암호의 `net.exe` CLI 파싱 충돌을 회피해 Win32 `WNetAddConnection2`로 직접 연결하고, Guest 모드에 명시적 Win32 SMB Null 세션(빈 계정/빈 암호) 폴백을 추가했습니다.
+  - `syncLiveState`에서 공유폴더 경로(`folderPath`) 변경 및 드라이브 문자 외부 재매핑 시 Live UNC 불일치 기존 메타데이터 재사용을 차단했습니다.
+- **4차 심층 점검 — 무비밀번호(Guest) 마운트 오류 86·1223 근본 해결 (`v1.1.4`)**:
+  - PowerShell 5.1 네이티브 `net.exe` 인자 이스케이프 과정에서 `Guest`/`Anonymous` 빈 암호가 리터럴 `""` 문자열로 전달되어 **시스템 오류 86(암호 불일치)** 및 **오류 1223**이 발생하던 결함을 Win32 `WNetAddConnection2`(`mpr.dll`) 및 `ProcessStartInfo` 원시 빈 암호 전달(`Guest`/`Host\Guest`/`Anonymous` 우선)로 근본 해결했습니다.
+  - 호스트 `*-501` `Guest` 계정 빈 암호(`/passwordreq:no`) 명시 초기화·`S-1-5-7` 익명 공유 권한 부여, 안전/구형 호환 패치 및 오프라인 USB 키트 `LimitBlankPasswordUse=0` 정렬, `secedit` UTF-16LE INF 읽기(`[System.IO.File]::ReadAllLines`)를 보강했습니다.
+- **3차 자아성찰 심층 점검 — 업데이터 롤백 & 프로필 복원 안정화 (`v1.1.3`)**:
+  - 포터블 자동 교체 전 기존 EXE 사전 백업(`old_portable_backup.exe`), 복사 직후 PE `MZ` 헤더 검증 및 실패 시 자동 백업 롤백 복구와 업데이터 `spawn` 실패 시 앱 강제 종료 방지 가드를 추가했습니다.
+  - 파일명을 변경해 복사한 `.location.json`도 내부 `profileId`로 조회·삭제되도록 보완하고, 클라이언트 마운트·사용장소 프로필 로드 시 계정 사용자명·비밀번호 런타임 캐시 복원을 통합했습니다.
+- **Win 11 25H2 ↔ 24H2 시스템 오류 1385·1223 및 콘솔 한자 깨짐 해결 (`v1.1.1` ~ `v1.1.2`)**:
+  - 로컬 보안 정책(`SeDenyNetworkLogonRight`)의 Guest/Guests(`*S-1-5-32-546`, `*-501`) 네트워크 로그온 차단을 `secedit`로 자동 해제해 시스템 오류 1385를 해결했고, 오프라인 USB `.bat` 키트에도 동일 백업/복원 보호를 탑재했습니다.
+  - 클라이언트 `net.exe` 대화형 프롬프트 중단(오류 1223)과 콘솔 출력 한자 깨짐(`decodeWindowsBuffer` UTF-16LE 오판)을 수정했습니다.
+- **2차 자아성찰 심층 점검 안정화 (`v1.1.2`)**:
+  - 업데이터 `fetchTextHttps` URL·HTTPS 프로토콜·리다이렉트 검증 및 포터블 교체 이중 실행 방지 가드를 보강하고, 다운로드 중 KB/미상 용량 표시를 개선했습니다.
+  - 사용장소 프로필(`.location.json`) 1클릭 일괄 적용 시 `ABSHARE://` 연결 코드·캐시에서 계정 암호를 자동 복원하며, 구형 OS 통합 원클릭·장소 적용 직후 OS 네트워크 정책 상태를 즉시 재동기화합니다.
+- **사용장소별 개별 프로필(`.location.json`) & 포터블 자동 교체 (`v1.1.0`)**:
+  - 작업 장소별 호스트/클라이언트 구성을 **AES-256-GCM 암호화**로 분리 저장·원클릭 일괄 적용하며, GitHub 최신 버전 감지 후 **기존 포터블 EXE를 종료·제거하고 새 버전으로 자동 교체 및 재실행**합니다. (`.portable.json` 및 `locations/` 유지)
 - **Windows 7 화면 및 PowerShell 2.0 호환성 강화**:
-  - Tailwind CSS v4 `oklch()` 색상을 Electron 21(Chromium 106) 호환 색상으로 컴파일 변환해 Windows 7 환경에서 화면이 검게 보이던 문제를 해결했고, PowerShell 2.0 콘솔/변수 예외(`$PSDefaultParameterValues`, `[Console]` 핸들 등)를 보완했습니다.
-- **심층 안정화 및 릴리즈 무결성 체계 정비**:
-  - HTTP 청크 다운로드 완료(`res.complete`) 및 취소 동기화, USB 루트 드라이브(`E:\`) 키트 저장 경로, 모달 위 토스트 겹침(`z-[60]`), SemVer 2.0 pre-release 비교 오류를 수정했으며, 저장소 핵심 소스·공식 문서·버전 관리(`MAJOR.MINOR.PATCH`) 체계를 정비했습니다.
+  - Tailwind CSS v4 `oklch()` 색상을 Electron 21(Chromium 106) 호환 색상으로 변환해 Win 7 검은 화면 문제를 해결하고, PowerShell 2.0 콘솔/변수 예외를 보완했습니다.
 
 ---
 
 ## 📦 배포 파일 안내 (4종)
 | 배포 파일명 | 권장 운영체제 | 설명 |
 | :--- | :--- | :--- |
-| **`AhBiShare_OneClick_v1.1.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
-| **`AhBiShare_OneClick-Lite_v1.1.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·그래픽 모듈을 경량화한 포터블 버전 |
-| **`AhBiShare_OneClick_Win7_v1.1.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 구형 OS 전용 Electron 21 기반 호환 포터블 빌드 |
-| **`AhBiShare_OneClick-Setup_v1.1.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (바로가기 및 방화벽 자동 등록) |
+| **`AhBiShare_OneClick_v1.2.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
+| **`AhBiShare_OneClick-Lite_v1.2.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·그래픽 모듈을 경량화한 포터블 버전 |
+| **`AhBiShare_OneClick_Win7_v1.2.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 구형 OS 전용 Electron 21 기반 호환 포터블 빌드 |
+| **`AhBiShare_OneClick-Setup_v1.2.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (바로가기 및 방화벽 자동 등록) |
 
 ---
 
@@ -43,13 +57,13 @@
 ---
 
 ## 📥 공식 다운로드
-- 🔗 **[AhBiShare OneClick v1.1.1 공식 다운로드 (GitHub Releases)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)**
+- 🔗 **[AhBiShare OneClick v1.2.1 공식 다운로드 (GitHub Releases)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)**
 
 ---
 
 ## 🏷️ 버전 및 시스템 요구 사항
-- **현재 버전**: v1.1.1 (Semantic Versioning: `MAJOR.MINOR.PATCH`)
-- **배포 파일**: `AhBiShare_OneClick_v1.1.1.exe`, `AhBiShare_OneClick-Lite_v1.1.1.exe`, `AhBiShare_OneClick_Win7_v1.1.1.exe`, `AhBiShare_OneClick-Setup_v1.1.1.exe`
+- **현재 버전**: v1.2.1 (Semantic Versioning: `MAJOR.MINOR.PATCH`)
+- **배포 파일**: `AhBiShare_OneClick_v1.2.1.exe`, `AhBiShare_OneClick-Lite_v1.2.1.exe`, `AhBiShare_OneClick_Win7_v1.2.1.exe`, `AhBiShare_OneClick-Setup_v1.2.1.exe`
 - **지원 운영체제**: Windows 7 SP1, Windows 8 / 8.1, Windows 10, Windows 11 (21H2 ~ 26H2, x64)
 - **실행 권한**: 관리자 권한 필수 (SMB 서비스, 방화벽 TCP 445·139 및 레지스트리 정책 적용)
 
@@ -65,6 +79,19 @@
 ---
 
 ## 📜 전체 업데이트 누적 이력
+- **v1.2.0 (2026-11-19 · MINOR)**
+  - 주요 작업 11종 전체에 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·단계 진행 목록·경과 시간·성공 1.5초 자동 닫힘/오류 수동 유지·실행 중 포커스/스크롤 잠금) 추가
+  - 6차 자아성찰 심층 점검: `prefers-reduced-motion` 깜빡임 방지, 만료 보안 원복 및 OS 정책 패치 실패 판정/토스트 오류 수정, 사용장소 일괄 적용 `validShares` 진행 인덱스 불일치 수정
+- **v1.1.5 (2026-11-19 · PATCH)**
+  - 5차 자아성찰 심층 점검: `secedit` UTF-16LE INF `[System.Text.Encoding]::Unicode` 명시 & `SeDenyNetworkLogonRight` 비게스트 따옴표 보존, `c_mount` `/`·`*` 암호 `net.exe` 회피 및 Guest Win32 Null 세션 폴백 추가, `syncLiveState` 경로·UNC 변경 감지 강화
+- **v1.1.4 (2026-11-19 · PATCH)**
+  - 4차 심층 점검: 무비밀번호(Guest) 마운트 오류 86·1223 근본 해결 (`WNetAddConnection2` · `ProcessStartInfo` 빈 암호 전달, 호스트 `Guest` `/passwordreq:no`·`S-1-5-7` 공유 권한, `LimitBlankPasswordUse=0` 및 `secedit` UTF-16LE INF `ReadAllLines` 보강)
+- **v1.1.3 (2026-11-19 · PATCH)**
+  - 3차 자아성찰 심층 점검: 포터블 교체 전 기존 EXE 백업·복사 후 PE(`MZ`) 검증 및 실패 시 자동 롤백, 업데이터 `spawn` 오류 시 `exitTimer` 취소 가드, 이름 변경 `.location.json` 폴백 조회·삭제, 클라이언트/사용장소 자격증명 캐시 복원 보강
+- **v1.1.2 (2026-11-19 · PATCH)**
+  - 2차 자아성찰 심층 점검: HTTPS 리다이렉트·이중 교체 가드, 사용장소 일괄 적용 암호 복원/차단, 구형 OS·장소 적용 후 OS 정책 재동기화, 오프라인 USB `.bat` 1385 방어, 모달/업데이터 UI 수정
+- **v1.1.1 (2026-11-19 · PATCH)**
+  - Win 11 25H2 ↔ 24H2 공유 오류 1385(`SeDenyNetworkLogonRight`)·1223(`stdin` 격리)·콘솔 한자 깨짐(`decodeWindowsBuffer`)·USB 호스트 정책 스냅샷 동기화 수정
 - **v1.1.0 (2026-11-18 · MINOR)**
   - 사용장소별 개별 프로필(`.location.json`, AES-256-GCM 암호화), JSON 내보내기/불러오기 및 1클릭 일괄 적용 추가
   - GitHub Releases 업데이트 확인창 및 기존 포터블 종료·제거 후 새 포터블 자동 교체·재실행(Self-Replace) 기능 추가
@@ -88,7 +115,7 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
 ```html
 <div style="font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #1e293b; line-height: 1.75; max-width: 840px; margin: 0 auto; font-size: 15px;">
   <h2 style="color: #4338ca; border-bottom: 2px solid #4f46e5; padding-bottom: 12px; margin-bottom: 18px; line-height: 1.4;">
-    AhBiShare OneClick v1.1.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
+    AhBiShare OneClick v1.2.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
   </h2>
 
   <p style="margin-bottom: 18px;">
@@ -96,12 +123,16 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
   </p>
 
   <div style="background: #eef2ff; border-left: 4px solid #4f46e5; border-radius: 6px; padding: 16px 18px; margin: 20px 0;">
-    <h3 style="color: #312e81; margin: 0 0 10px 0; font-size: 17px;">✨ 이번 업데이트 주요 내용 (v1.1.1 · 2026-11-18)</h3>
+    <h3 style="color: #312e81; margin: 0 0 10px 0; font-size: 17px;">✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-19)</h3>
     <ul style="margin: 0; padding-left: 20px;">
-      <li style="margin-bottom: 8px;"><strong>사용장소별 개별 프로필(.location.json) &amp; 1클릭 일괄 적용 (신규)</strong>: 사무실·집·현장별 공유·드라이브 구성을 <strong>AES-256-GCM 암호화</strong>된 <code>.location.json</code> 파일로 저장·불러오기·내보내기하고 버튼 한 번으로 일괄 연결합니다.</li>
-      <li style="margin-bottom: 8px;"><strong>포터블 원클릭 자동 업데이트 교체 (신규)</strong>: GitHub 최신 버전 감지 시 실행 중인 에디션(표준·Lite·Win7)을 자동 판별해 내려받고, 공식 도메인 및 Windows PE 실행 헤더(<code>MZ</code>) 검증 후 <strong>기존 포터블 EXE를 종료·제거하고 새 버전으로 자동 교체·재실행</strong>합니다.</li>
-      <li style="margin-bottom: 8px;"><strong>Windows 7 화면 &amp; PowerShell 2.0 호환성 강화</strong>: Win 7(Electron 21) 화면 미표시 문제(<code>oklch()</code> 색상 호환 변환)와 PowerShell 2.0 콘솔·변수 예외를 해결해 Win 7 SP1 ~ Win 11 26H2 전 세대 안정성을 확보했습니다.</li>
-      <li><strong>원클릭 공유 개설·구형 OS 브릿지·무결성 정비</strong>: 방화벽 TCP 445·139 자동 개방, <code>ABSHARE://</code> 연결 코드·QR 발급, USB 오프라인 <code>.bat</code>/<code>.reg</code> 키트, 양방향 JSON 데이터 브릿지 및 다운로드 취소·USB 루트 경로 버그를 모두 보완했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>실시간 작업 진행 모션창(WorkProgressModal) &amp; 6차 자아성찰 심층 점검 안정화 (v1.2.0 · MINOR)</strong>: 공유 개설·해제, 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS 통합, 사용장소 일괄 적용, 보안 원복 등 주요 작업 11종에 <strong>듀얼 링 모션 · 실시간 단계 목록 · 경과 시간 표시창</strong>(실행 중 배경·포커스 잠금, 성공 1.5초 자동 닫힘, 오류 수동 확인)을 도입하고, <code>prefers-reduced-motion</code> 깜빡임 방지·만료 보안 원복/OS 패치 실패 판정·<code>validShares</code> 일괄 적용 인덱스 일치를 반영했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>5차 자아성찰 심층 점검 — 보안 정책 따옴표 보존 · Null 세션 · Live 동기화 정확도 개선 (v1.1.5)</strong>: <code>secedit</code> UTF-16LE INF 읽기에 <code>[System.Text.Encoding]::Unicode</code>를 명시하고 <code>SeDenyNetworkLogonRight</code> 비게스트 항목의 기존 따옴표를 보존했으며(오프라인 USB 키트 포함), <code>c_mount</code> 내 <code>/</code>·<code>*</code> 시작 암호의 <code>net.exe</code> 충돌 회피·Win32 SMB Null 세션(빈 계정/빈 암호) 폴백 추가 및 <code>syncLiveState</code> 경로/UNC 변경 감지를 보강했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>4차 심층 점검 — 무비밀번호(Guest) 마운트 오류 86·1223 근본 해결 (v1.1.4)</strong>: PowerShell 배열 이스케이프로 <code>net.exe</code>에 리터럴 <code>""</code> 암호가 전달되어 <code>Guest</code>/<code>Anonymous</code> <strong>오류 86·1223</strong>이 발생하던 결함을 Win32 <code>WNetAddConnection2</code> 및 <code>ProcessStartInfo</code> 원시 빈 암호 전달로 해결하고, 호스트 <code>*-501</code> 빈 암호(<code>/passwordreq:no</code>)·<code>S-1-5-7</code> 공유 권한·<code>LimitBlankPasswordUse=0</code>·<code>secedit</code> INF <code>ReadAllLines</code> 인코딩 정렬을 추가했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>3차 자아성찰 심층 점검 — 업데이터 롤백 &amp; 프로필 복원 안정화 (v1.1.3)</strong>: 포터블 교체 전 기존 EXE 사전 백업·PE(<code>MZ</code>) 검증·실패 시 자동 롤백 및 <code>spawn</code> 오류 시 강제 종료 방지 가드를 추가하고, 이름 변경 <code>.location.json</code> 폴백 조회·삭제 및 클라이언트·사용장소 자격증명 캐시 복원을 보강했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>Win 11 25H2 ↔ 24H2 공유 오류 1385·1223 및 콘솔 한자 깨짐 해결 (v1.1.1 ~ v1.1.2)</strong>: 로컬 보안 정책(<code>SeDenyNetworkLogonRight</code>)의 Guest/Guests 차단을 <code>secedit</code>로 자동 해제(오프라인 USB <code>.bat</code> 포함)하고, <code>net.exe</code> 1223 중단 및 콘솔 UTF-16LE 깨짐을 수정했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>2차 자아성찰 심층 점검 안정화 (v1.1.2)</strong>: 업데이터 HTTPS/리다이렉트 검증 및 이중 교체 가드, 장소 일괄 적용 시 <code>ABSHARE://</code> 암호 복원, 구형 OS·장소 적용 직후 OS 정책 재동기화 및 KB/미상 용량 진행 표시를 보완했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>사용장소별 개별 프로필(.location.json) &amp; 포터블 자동 교체 (v1.1.0)</strong>: 장소별 구성을 <strong>AES-256-GCM 암호화</strong> 저장·1클릭 일괄 적용하며, PE 헤더(<code>MZ</code>) 검증 후 <strong>기존 포터블 EXE를 종료·제거하고 새 버전으로 자동 교체</strong>합니다.</li>
+      <li><strong>Windows 7 화면 &amp; PowerShell 2.0 호환성 강화</strong>: Win 7(Electron 21) 화면 미표시 문제(<code>oklch()</code> 색상 호환 변환)와 PowerShell 2.0 콘솔·변수 예외를 해결해 Win 7 SP1 ~ Win 11 26H2 전 세대 안정성을 확보했습니다.</li>
     </ul>
   </div>
 
@@ -116,22 +147,22 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
     </thead>
     <tbody>
       <tr>
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_v1.1.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_v1.2.1.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 10 / 11 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행)</td>
       </tr>
       <tr style="background: #f8fafc;">
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Lite_v1.1.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Lite_v1.2.1.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 10 / 11 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블</td>
       </tr>
       <tr>
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_Win7_v1.1.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_Win7_v1.2.1.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 7 SP1 / 8 / 8.1 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">구형 OS 전용 Electron 21 기반 호환 포터블 빌드</td>
       </tr>
       <tr style="background: #f8fafc;">
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Setup_v1.1.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Setup_v1.2.1.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 7 ~ 11 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Inno Setup 설치형 (바로가기·방화벽 자동 등록)</td>
       </tr>
@@ -145,13 +176,13 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">📥 공식 다운로드</h3>
   <p style="margin: 12px 0 22px 0;">
-    <a href="https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4f46e5; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">AhBiShare OneClick v1.1.1 공식 다운로드 (GitHub Releases)</a>
+    <a href="https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4f46e5; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">AhBiShare OneClick v1.2.1 공식 다운로드 (GitHub Releases)</a>
   </p>
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">🏷️ 버전 및 시스템 요구 사항</h3>
   <ul style="padding-left: 20px;">
-    <li><strong>최신 버전</strong>: v1.1.1 (Semantic Versioning: MAJOR.MINOR.PATCH)</li>
-    <li><strong>배포 파일</strong>: <code>AhBiShare_OneClick_v1.1.1.exe</code> · <code>AhBiShare_OneClick-Lite_v1.1.1.exe</code> · <code>AhBiShare_OneClick_Win7_v1.1.1.exe</code> · <code>AhBiShare_OneClick-Setup_v1.1.1.exe</code></li>
+    <li><strong>최신 버전</strong>: v1.2.1 (Semantic Versioning: MAJOR.MINOR.PATCH)</li>
+    <li><strong>배포 파일</strong>: <code>AhBiShare_OneClick_v1.2.1.exe</code> · <code>AhBiShare_OneClick-Lite_v1.2.1.exe</code> · <code>AhBiShare_OneClick_Win7_v1.2.1.exe</code> · <code>AhBiShare_OneClick-Setup_v1.2.1.exe</code></li>
     <li><strong>운영체제</strong>: Windows 7 SP1, Windows 8 / 8.1, Windows 10, Windows 11 (21H2 ~ 26H2, x64)</li>
     <li><strong>실행 권한</strong>: 관리자 권한 필수 (SMB 서비스, 방화벽 TCP 445·139 및 레지스트리 정책 적용)</li>
   </ul>
@@ -166,6 +197,31 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
   </ul>
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">📜 전체 업데이트 누적 이력</h3>
+  <p style="margin-bottom: 6px;"><strong>v1.2.0 (2026-11-19 · MINOR)</strong></p>
+  <ul style="padding-left: 20px; margin-top: 0;">
+    <li>주요 작업 11종 전체에 실시간 작업 진행 모션창(<code>WorkProgressModal</code>: 듀얼 링 모션·실시간 단계 목록·경과 시간·성공 1.5초 자동 닫힘/오류 유지·실행 중 포커스/스크롤 잠금) 적용</li>
+    <li>6차 자아성찰 심층 점검: <code>prefers-reduced-motion</code> 고속 깜빡임 방지, 만료 보안 원복·OS 패치 실패 검증 및 토스트 오표시 수정, 사용장소 일괄 적용 <code>validShares</code> 단계 인덱스 불일치 해결</li>
+  </ul>
+  <p style="margin-bottom: 6px;"><strong>v1.1.5 (2026-11-19 · PATCH)</strong></p>
+  <ul style="padding-left: 20px; margin-top: 0;">
+    <li>5차 자아성찰 심층 점검: <code>secedit</code> UTF-16LE INF <code>[System.Text.Encoding]::Unicode</code> 명시 및 <code>SeDenyNetworkLogonRight</code> 비게스트 따옴표 보존, <code>c_mount</code> <code>/</code>·<code>*</code> 암호 <code>net.exe</code> 회피 및 Guest Win32 Null 세션 폴백 추가, <code>syncLiveState</code> 경로·UNC 변경 감지 강화</li>
+  </ul>
+  <p style="margin-bottom: 6px;"><strong>v1.1.4 (2026-11-19 · PATCH)</strong></p>
+  <ul style="padding-left: 20px; margin-top: 0;">
+    <li>4차 심층 점검: 무비밀번호(Guest) 마운트 오류 86·1223 근본 해결 (<code>WNetAddConnection2</code> · <code>ProcessStartInfo</code> 빈 암호 전달, 호스트 <code>*-501</code> <code>/passwordreq:no</code>·<code>S-1-5-7</code> 공유 권한, <code>LimitBlankPasswordUse=0</code> 및 <code>secedit</code> INF <code>ReadAllLines</code> 인코딩 정렬)</li>
+  </ul>
+  <p style="margin-bottom: 6px;"><strong>v1.1.3 (2026-11-19 · PATCH)</strong></p>
+  <ul style="padding-left: 20px; margin-top: 0;">
+    <li>3차 자아성찰 심층 점검: 포터블 교체 전 기존 EXE 백업·복사 후 PE(<code>MZ</code>) 검증 및 실패 시 자동 롤백, 업데이터 <code>spawn</code> 오류 시 <code>exitTimer</code> 취소 가드, 이름 변경 <code>.location.json</code> 폴백 조회·삭제, 클라이언트·사용장소 자격증명 캐시 복원 보강</li>
+  </ul>
+  <p style="margin-bottom: 6px;"><strong>v1.1.2 (2026-11-19 · PATCH)</strong></p>
+  <ul style="padding-left: 20px; margin-top: 0;">
+    <li>2차 자아성찰 심층 점검: HTTPS 리다이렉트·이중 교체 가드, 사용장소 일괄 적용 암호 복원/누락 차단, 정책 적용 후 OS 상태 재동기화, 오프라인 USB <code>.bat</code> 1385 방어, 모달·업데이터 UI 수정</li>
+  </ul>
+  <p style="margin-bottom: 6px;"><strong>v1.1.1 (2026-11-19 · PATCH)</strong></p>
+  <ul style="padding-left: 20px; margin-top: 0;">
+    <li>Win 11 25H2 ↔ 24H2 공유 오류 1385(<code>SeDenyNetworkLogonRight</code>)·1223(<code>stdin</code> 격리)·콘솔 한자 깨짐(<code>decodeWindowsBuffer</code>)·USB 호스트 정책 스냅샷 동기화 수정</li>
+  </ul>
   <p style="margin-bottom: 6px;"><strong>v1.1.0 (2026-11-18 · MINOR)</strong></p>
   <ul style="padding-left: 20px; margin-top: 0;">
     <li>사용장소별 개별 프로필(<code>.location.json</code>) AES-256-GCM 암호화 저장, JSON 내보내기/불러오기 및 1클릭 일괄 적용 추가</li>

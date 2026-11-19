@@ -77,11 +77,13 @@ function Set-AhBiGuestNetworkLogonPolicy([bool]$allowGuest) {
   try {
     & secedit.exe /export /cfg $tmpInf /areas USER_RIGHTS 2>$null | Out-Null
     if (-not (Test-Path -LiteralPath $tmpInf)) { return }
-    $lines = Get-Content -LiteralPath $tmpInf
+    $lines = [System.IO.File]::ReadAllLines($tmpInf, [System.Text.Encoding]::Unicode)
     $guestSid = ''
+    $guestName = ''
     try {
       $gAcc = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
       if ($gAcc -and $gAcc.SID) { $guestSid = ('*' + $gAcc.SID) }
+      if ($gAcc -and $gAcc.Name) { $guestName = "$($gAcc.Name)" }
     } catch {}
     $updated = @()
     $sawDeny = $false
@@ -91,13 +93,14 @@ function Set-AhBiGuestNetworkLogonPolicy([bool]$allowGuest) {
         $prefix = $matches[1]
         $items = @()
         foreach ($tok in ($matches[2] -split ',')) {
-          $t = $tok.Trim()
+          $rawTok = $tok.Trim()
+          $t = $rawTok.Trim('"')
           if (-not $t) { continue }
-          $isGuestTok = ($t -eq '*S-1-5-32-546') -or ($t -match '-501$') -or ($t -match '^(?:BUILTIN\\\\)?Guests?$') -or ($t -eq '게스트') -or ($guestSid -and ($t -ieq $guestSid))
+          $isGuestTok = ($t -eq '*S-1-5-32-546') -or ($t -match '-501$') -or ($t -match '(?:^|\\\\)Guests?$') -or ($t -match '(?:^|\\\\)게스트$') -or ($guestSid -and ($t -ieq $guestSid)) -or ($guestName -and ($t -ieq $guestName))
           if ($allowGuest) {
-            if (-not $isGuestTok -and ($t -ne '*S-1-5-7')) { $items += $t }
+            if (-not $isGuestTok -and ($t -ne '*S-1-5-7')) { $items += $rawTok }
           } else {
-            $items += $t
+            $items += $rawTok
           }
         }
         if (-not $allowGuest -and ($items -notcontains '*S-1-5-32-546')) {
@@ -233,10 +236,34 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
             try { Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
             if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
               $guest = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
-              if ($guest) { Enable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue }
+              if ($guest) {
+                try {
+                  $emptySec = New-Object System.Security.SecureString
+                  Set-LocalUser -Name $guest.Name -Password $emptySec -ErrorAction SilentlyContinue | Out-Null
+                } catch {}
+                try {
+                  $psiClr = New-Object System.Diagnostics.ProcessStartInfo
+                  $psiClr.FileName = 'net.exe'
+                  $psiClr.Arguments = ('user "' + $guest.Name + '" "" /active:yes /passwordreq:no')
+                  $psiClr.UseShellExecute = $false
+                  $psiClr.CreateNoWindow = $true
+                  $pClr = [System.Diagnostics.Process]::Start($psiClr)
+                  if ($pClr) { [void]$pClr.WaitForExit(5000) }
+                } catch {}
+                Enable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue
+              }
             } else {
               $guestWmi = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
               $guestName = if ($guestWmi) { $guestWmi.Name } else { 'Guest' }
+              try {
+                $psiClr = New-Object System.Diagnostics.ProcessStartInfo
+                $psiClr.FileName = 'net.exe'
+                $psiClr.Arguments = ('user "' + $guestName + '" "" /active:yes /passwordreq:no')
+                $psiClr.UseShellExecute = $false
+                $psiClr.CreateNoWindow = $true
+                $pClr = [System.Diagnostics.Process]::Start($psiClr)
+                if ($pClr) { [void]$pClr.WaitForExit(5000) }
+              } catch {}
               & net.exe user $guestName /active:yes 2>$null | Out-Null
             }
             Set-AhBiGuestNetworkLogonPolicy $true
@@ -339,6 +366,18 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
                 if ($guestAcc) {
                   Grant-SmbShareAccess -Name $p_share -AccountName $guestAcc.Name -AccessRight ${shareAccess} -Force -ErrorAction SilentlyContinue | Out-Null
                 }
+                try {
+                  $guestsNt = (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-546')).Translate([System.Security.Principal.NTAccount]).Value
+                  if ($guestsNt) {
+                    Grant-SmbShareAccess -Name $p_share -AccountName $guestsNt -AccessRight ${shareAccess} -Force -ErrorAction SilentlyContinue | Out-Null
+                  }
+                } catch {}
+                try {
+                  $anonNt = (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-7')).Translate([System.Security.Principal.NTAccount]).Value
+                  if ($anonNt) {
+                    Grant-SmbShareAccess -Name $p_share -AccountName $anonNt -AccessRight ${shareAccess} -Force -ErrorAction SilentlyContinue | Out-Null
+                  }
+                } catch {}
               }
             } else {
               & net.exe share $p_share /delete /y 2>$null | Out-Null
@@ -574,25 +613,121 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
           return New-Object PSObject -Property @{ Code = $code; Output = $out }
         }
 
+        function Invoke-NetUseBlankPass([string]$drv, [string]$uncPath, [string]$userArg, [string]$persistArg) {
+          try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = 'net.exe'
+            $psi.Arguments = ('use ' + $drv + ' "' + $uncPath + '" "" "/user:' + $userArg + '" ' + $persistArg)
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            try { $psi.StandardOutputEncoding = [System.Text.Encoding]::Default } catch {}
+            try { $psi.StandardErrorEncoding = [System.Text.Encoding]::Default } catch {}
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            if (-not $proc) { return New-Object PSObject -Property @{ Code = -1; Output = 'Process start failed' } }
+            try { $proc.StandardInput.Close() } catch {}
+            $stdOut = $proc.StandardOutput.ReadToEnd()
+            $stdErr = $proc.StandardError.ReadToEnd()
+            if (-not $proc.WaitForExit(15000)) {
+              try { $proc.Kill() } catch {}
+              return New-Object PSObject -Property @{ Code = 1460; Output = 'net.exe timed out' }
+            }
+            $combined = (($stdOut + ' ' + $stdErr) -replace '\\s+', ' ').Trim()
+            return New-Object PSObject -Property @{ Code = $proc.ExitCode; Output = $combined }
+          } catch {
+            return New-Object PSObject -Property @{ Code = -1; Output = $_.Exception.Message }
+          }
+        }
+
+        $script:ahbiMprReady = $false
+        try {
+          if (-not ('AhBiMprNet' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class AhBiMprNet {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct NETRESOURCE {
+    public int dwScope;
+    public int dwType;
+    public int dwDisplayType;
+    public int dwUsage;
+    public string lpLocalName;
+    public string lpRemoteName;
+    public string lpComment;
+    public string lpProvider;
+  }
+  [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+  public static extern int WNetAddConnection2(ref NETRESOURCE netResource, string password, string username, int flags);
+}
+"@ -ErrorAction Stop | Out-Null
+          }
+          if ('AhBiMprNet' -as [type]) { $script:ahbiMprReady = $true }
+        } catch {}
+
+        function Invoke-WNetMap([string]$drv, [string]$uncPath, $userArg, $passArg, [bool]$persistBool) {
+          if (-not $script:ahbiMprReady) {
+            return New-Object PSObject -Property @{ Code = -1; Output = 'WNetAddConnection2 unavailable' }
+          }
+          try {
+            $nr = New-Object AhBiMprNet+NETRESOURCE
+            $nr.dwType = 1
+            $nr.lpLocalName = $drv
+            $nr.lpRemoteName = $uncPath
+            $flags = if ($persistBool) { 1 } else { 0 }
+            $rc = [AhBiMprNet]::WNetAddConnection2([ref]$nr, $passArg, $userArg, $flags)
+            if ($rc -eq 0) {
+              return New-Object PSObject -Property @{ Code = 0; Output = 'WNetAddConnection2 OK' }
+            }
+            $msg = ''
+            try { $msg = (New-Object System.ComponentModel.Win32Exception([int]$rc)).Message } catch {}
+            return New-Object PSObject -Property @{ Code = [int]$rc; Output = ('시스템 오류 ' + $rc + ': ' + $msg).Trim() }
+          } catch {
+            return New-Object PSObject -Property @{ Code = -1; Output = $_.Exception.Message }
+          }
+        }
+
         Clear-HostAndDriveConflicts
         $mounted = $false
         $lastCode = 0
         $lastOut = ''
 
         if ($p_mode -eq 'account') {
-          if ($p_pass -and $p_pass -ne '*' -and -not $p_pass.StartsWith('/') -and $p_user) {
+          $canUseCliPass = ($p_pass -and $p_pass -ne '*' -and -not $p_pass.StartsWith('/'))
+          if ($canUseCliPass -and $p_user) {
             $r1 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_pass, "/user:$p_user", $p_persist)
-          } else {
-            $r1 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_persist)
+            $lastCode = $r1.Code; $lastOut = $r1.Output
+            if ($lastCode -eq 0) { $mounted = $true }
           }
-          $lastCode = $r1.Code; $lastOut = $r1.Output
-          if ($lastCode -eq 0) { $mounted = $true }
 
-          if (-not $mounted -and $p_bareUser -and $p_bareUser -ne $p_user -and $p_pass) {
+          if (-not $mounted -and $canUseCliPass -and $p_bareUser -and $p_bareUser -ne $p_user) {
             Clear-HostAndDriveConflicts
             $r2 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_pass, "/user:$p_bareUser", $p_persist)
             if ($r2.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $r2.Output }
-            else { $lastCode = $r2.Code; $lastOut = $r2.Output }
+            else { $lastCode = $r2.Code; $lastOut = ($lastOut + ' | ' + $r2.Output).Trim(' |') }
+          }
+
+          if (-not $mounted -and $p_user -and $p_pass) {
+            Clear-HostAndDriveConflicts
+            $rw1 = Invoke-WNetMap $p_drive $p_unc $p_user $p_pass $p_persistBool
+            if ($rw1.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rw1.Output }
+            elseif ($rw1.Code -ne -1) { $lastCode = $rw1.Code; $lastOut = ($lastOut + ' | WNet: ' + $rw1.Output).Trim(' |') }
+          }
+
+          if (-not $mounted -and $p_bareUser -and $p_bareUser -ne $p_user -and $p_pass) {
+            Clear-HostAndDriveConflicts
+            $rw2 = Invoke-WNetMap $p_drive $p_unc $p_bareUser $p_pass $p_persistBool
+            if ($rw2.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rw2.Output }
+            elseif ($rw2.Code -ne -1) { $lastCode = $rw2.Code; $lastOut = ($lastOut + ' | WNetBare: ' + $rw2.Output).Trim(' |') }
+          }
+
+          if (-not $mounted -and -not $p_pass) {
+            Clear-HostAndDriveConflicts
+            $rDef = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_persist)
+            if ($rDef.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rDef.Output }
+            else { $lastCode = $rDef.Code; $lastOut = ($lastOut + ' | ' + $rDef.Output).Trim(' |') }
           }
 
           if (-not $mounted -and (Get-Command New-SmbMapping -ErrorAction SilentlyContinue)) {
@@ -609,22 +744,64 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             }
           }
         } else {
-          $r1 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_persist)
-          $lastCode = $r1.Code; $lastOut = $r1.Output
-          if ($lastCode -eq 0) { $mounted = $true }
+          $rwGuest = Invoke-WNetMap $p_drive $p_unc 'Guest' '' $p_persistBool
+          if ($rwGuest.Code -eq 0) {
+            $mounted = $true; $lastCode = 0; $lastOut = $rwGuest.Output
+          } elseif ($rwGuest.Code -ne -1) {
+            $lastCode = $rwGuest.Code; $lastOut = ('WNet-Guest: ' + $rwGuest.Output)
+          }
 
           if (-not $mounted) {
             Clear-HostAndDriveConflicts
-            $r2 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, '""', '/user:Guest', $p_persist)
+            $rwHostGuest = Invoke-WNetMap $p_drive $p_unc ($p_host + '\\Guest') '' $p_persistBool
+            if ($rwHostGuest.Code -eq 0) {
+              $mounted = $true; $lastCode = 0; $lastOut = $rwHostGuest.Output
+            } elseif ($rwHostGuest.Code -ne -1) {
+              $lastCode = $rwHostGuest.Code; $lastOut = ($lastOut + ' | HostGuest: ' + $rwHostGuest.Output).Trim(' |')
+            }
+          }
+
+          if (-not $mounted) {
+            Clear-HostAndDriveConflicts
+            $rwNull = Invoke-WNetMap $p_drive $p_unc '' '' $p_persistBool
+            if ($rwNull.Code -eq 0) {
+              $mounted = $true; $lastCode = 0; $lastOut = $rwNull.Output
+            } elseif ($rwNull.Code -ne -1) {
+              $lastCode = $rwNull.Code; $lastOut = ($lastOut + ' | WNet-Null: ' + $rwNull.Output).Trim(' |')
+            }
+          }
+
+          if (-not $mounted) {
+            Clear-HostAndDriveConflicts
+            $r2 = Invoke-NetUseBlankPass $p_drive $p_unc 'Guest' $p_persist
             if ($r2.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $r2.Output }
             else { $lastCode = $r2.Code; $lastOut = ($lastOut + ' | Guest: ' + $r2.Output).Trim(' |') }
           }
 
           if (-not $mounted) {
             Clear-HostAndDriveConflicts
-            $rAnon = Invoke-NetUseSafe @('use', $p_drive, $p_unc, '""', '/user:Anonymous', $p_persist)
-            if ($rAnon.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rAnon.Output }
-            else { $lastCode = $rAnon.Code; $lastOut = ($lastOut + ' | Anonymous: ' + $rAnon.Output).Trim(' |') }
+            $r2b = Invoke-NetUseBlankPass $p_drive $p_unc ($p_host + '\\Guest') $p_persist
+            if ($r2b.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $r2b.Output }
+            else { $lastCode = $r2b.Code; $lastOut = ($lastOut + ' | HostGuestNet: ' + $r2b.Output).Trim(' |') }
+          }
+
+          if (-not $mounted) {
+            Clear-HostAndDriveConflicts
+            $r1 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_persist)
+            if ($r1.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $r1.Output }
+            else { $lastCode = $r1.Code; $lastOut = ($lastOut + ' | Default: ' + $r1.Output).Trim(' |') }
+          }
+
+          if (-not $mounted) {
+            Clear-HostAndDriveConflicts
+            $rwAnon = Invoke-WNetMap $p_drive $p_unc 'Anonymous' '' $p_persistBool
+            if ($rwAnon.Code -eq 0) {
+              $mounted = $true; $lastCode = 0; $lastOut = $rwAnon.Output
+            } else {
+              $rAnon = Invoke-NetUseBlankPass $p_drive $p_unc 'Anonymous' $p_persist
+              if ($rAnon.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rAnon.Output }
+              else { $lastCode = $rAnon.Code; $lastOut = ($lastOut + ' | Anonymous: ' + $rAnon.Output).Trim(' |') }
+            }
           }
 
           if (-not $mounted -and (Get-Command New-SmbMapping -ErrorAction SilentlyContinue)) {
@@ -639,20 +816,21 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
         }
 
         if (-not $mounted) {
+          $diagOut = ($lastOut -replace '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', ' ') -replace '(?:^|\\|\\s*)(?:WNet-Guest|HostGuestNet|HostGuest|WNet-Null|WNetBare|WNet|Guest|Anonymous|Default|New-SmbMapping):', ' '
           $hint = ''
-          if ($lastOut -match '\\b85\\b|이미 사용|already in use|already assigned') {
+          if ($diagOut -match '(?<![.\\d])85(?![.\\d])|이미 사용|already in use|already assigned') {
             $hint = ' [원인: 선택한 드라이브 문자(' + $p_drive + ')가 다른 세션에서 사용 중입니다. Y:/X: 등 다른 드라이브 문자를 선택하세요.]'
-          } elseif ($lastOut -match '\\b1219\\b|다중 연결|Multiple connections') {
+          } elseif ($diagOut -match '(?<![.\\d])1219(?![.\\d])|다중 연결|Multiple connections') {
             $hint = ' [원인: 대상 PC(' + $p_host + ')에 다른 계정의 기존 연결 세션이 남아 있습니다. 실행 창/탐색기 열려 있는 UNC 연결을 닫고 재시도하세요.]'
-          } elseif ($lastOut -match '\\b1385\\b|로그온 유형|logon type') {
+          } elseif ($diagOut -match '(?<![.\\d])1385(?![.\\d])|로그온 유형|logon type') {
             $hint = ' [원인: 호스트 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)에 Guest 네트워크 로그온이 차단되어 있습니다. 호스트 PC에서 최신 AhBiShare로 무비밀번호 공유를 재개설(또는 안전 호환 패치)하거나 [보안 계정 모드]로 연결하세요.]'
-          } elseif ($lastOut -match '\\b1223\\b|사용자 이름 입력|작업을 취소|canceled by the user') {
+          } elseif ($diagOut -match '(?<![.\\d])1223(?![.\\d])|사용자 이름 입력|작업을 취소|canceled by the user') {
             $hint = ' [원인: 호스트 PC가 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다. 호스트에서 공유를 재개설하거나 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.]'
-          } elseif ($lastOut -match '\\b1272\\b|\\b384\\b|0x80070035|게스트|guest') {
-            $hint = ' [원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]'
-          } elseif ($lastOut -match '\\b1326\\b|\\b86\\b|\\b5\\b|액세스|거부|로그온|암호') {
-            $hint = ' [원인: 호스트 계정 ID/암호 불일치 또는 익명 접근 제한. 보안 계정 모드 또는 호스트 공유 재개설을 확인하세요.]'
-          } elseif ($lastOut -match '\\b53\\b|\\b67\\b|네트워크 경로') {
+          } elseif ($diagOut -match '(?<![.\\d])1272(?![.\\d])|(?<![.\\d])384(?![.\\d])|0x80070035|게스트|guest') {
+            $hint = ' [원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌 또는 호스트 Guest 빈 암호 제한. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]'
+          } elseif ($diagOut -match '(?<![.\\d])1326(?![.\\d])|(?<![.\\d])86(?![.\\d])|(?<![.\\d])5(?![.\\d])|액세스|거부|로그온|암호|password is not correct') {
+            $hint = ' [원인: 호스트 계정 ID/암호 불일치, 빈 암호 제한(LimitBlankPasswordUse) 또는 익명 접근 제한. 호스트에서 무비밀번호 공유 재개설 또는 [보안 계정 모드]를 확인하세요.]'
+          } elseif ($diagOut -match '(?<![.\\d])53(?![.\\d])|(?<![.\\d])67(?![.\\d])|네트워크 경로') {
             $hint = ' [원인: 네트워크 경로(' + $p_unc + ') 또는 공유 이름을 찾을 수 없습니다. 호스트 방화벽/공유 이름을 확인하세요.]'
           }
           throw ("네트워크 드라이브 생성 실패 (코드 " + $lastCode + "): " + $lastOut + $hint)
@@ -923,16 +1101,18 @@ export function buildOsNetworkPolicyInspectScript(): string {
       & secedit.exe /export /cfg $tmpSecInf /areas USER_RIGHTS 2>$null | Out-Null
       if (Test-Path -LiteralPath $tmpSecInf) {
         $gSidChk = ''
+        $gNameChk = ''
         try {
           $gAccChk = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
           if ($gAccChk -and $gAccChk.SID) { $gSidChk = ('*' + $gAccChk.SID) }
+          if ($gAccChk -and $gAccChk.Name) { $gNameChk = "$($gAccChk.Name)" }
         } catch {}
-        foreach ($sLn in (Get-Content -LiteralPath $tmpSecInf -ErrorAction SilentlyContinue)) {
+        foreach ($sLn in ([System.IO.File]::ReadAllLines($tmpSecInf, [System.Text.Encoding]::Unicode))) {
           if ($sLn -match '^\\s*SeDenyNetworkLogonRight\\s*=\\s*(.*)$') {
             foreach ($sTok in ($matches[1] -split ',')) {
-              $st = $sTok.Trim()
+              $st = $sTok.Trim().Trim('"')
               if (-not $st) { continue }
-              if (($st -eq '*S-1-5-32-546') -or ($st -match '-501$') -or ($st -match '^(?:BUILTIN\\\\)?Guests?$') -or ($st -eq '게스트') -or ($gSidChk -and ($st -ieq $gSidChk))) {
+              if (($st -eq '*S-1-5-32-546') -or ($st -eq '*S-1-5-7') -or ($st -match '-501$') -or ($st -match '(?:^|\\\\)Guests?$') -or ($st -match '(?:^|\\\\)게스트$') -or ($gSidChk -and ($st -ieq $gSidChk)) -or ($gNameChk -and ($st -ieq $gNameChk))) {
                 $guestNetDenied = $true
                 break
               }
@@ -1210,11 +1390,25 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EncryptData /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RejectUnencryptedAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
+      try {
+        $gBr = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+        $gBrName = if ($gBr -and $gBr.Name) { $gBr.Name } else { 'Guest' }
+        $psiBr = New-Object System.Diagnostics.ProcessStartInfo
+        $psiBr.FileName = 'net.exe'
+        $psiBr.Arguments = ('user "' + $gBrName + '" "" /active:yes /passwordreq:no')
+        $psiBr.UseShellExecute = $false
+        $psiBr.CreateNoWindow = $true
+        $pBr = [System.Diagnostics.Process]::Start($psiBr)
+        if ($pBr) { [void]$pBr.WaitForExit(5000) }
+      } catch {}
       Set-AhBiGuestNetworkLogonPolicy $true
-      $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 (오류 1385 방지)'
+      $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 및 빈 암호 허용 정렬 (오류 1385·86 방지)'
       $actions += 'Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환을 위해 SMB 암호화·서명 강제 해제 및 비암호화 접근 허용'
 
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f | Out-Null
@@ -1316,7 +1510,11 @@ export function buildOsCompatibilityPatchScript(
         : 3;
     const uacFilterDword = rollbackSnapshot?.localAccountTokenFilterEnabled ? 1 : 0;
     const shouldDisableSmb1 = !rollbackSnapshot?.smb1Enabled;
-    const allowGuestRightsPs = rollbackSnapshot && rollbackSnapshot.allowInsecureGuestAuth ? '$true' : '$false';
+    const allowGuestRightsPs = rollbackSnapshot
+      ? (rollbackSnapshot.guestNetworkLogonDenied === false || (rollbackSnapshot.guestNetworkLogonDenied === undefined && rollbackSnapshot.allowInsecureGuestAuth)
+          ? '$true'
+          : '$false')
+      : '$false';
     const actionHeader = hasSnap
       ? `사전 캡처 스냅샷(${rollbackSnapshot?.capturedAt || ''}) 기준 SMB 서명·암호화·게스트·NTLMv(${lmDword})·UAC 상태 복원 완료`
       : 'SMB 서명 강제 · 비인증 게스트 차단 · UAC 원격 토큰 보호 표준 원복 완료';
@@ -1346,6 +1544,9 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d ${guestDword} /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d ${guestDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d ${guestDword} /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d ${lmDword} /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d ${uacFilterDword} /f 2>$null | Out-Null
       Set-AhBiGuestNetworkLogonPolicy ${allowGuestRightsPs}
@@ -1479,9 +1680,12 @@ export function buildOsCompatibilityPatchScript(
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
     reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v EnableLinkedConnections /t REG_DWORD /d 1 /f 2>$null | Out-Null
     Set-AhBiGuestNetworkLogonPolicy $true
-    $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 (오류 1385 방지)'
+    $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 및 빈 암호 허용 정렬 (오류 1385·86 방지)'
     $actions += 'Win 11 24H2~26H2 SMB 서명 강제 완화 및 게스트 로그온 · LinkedConnections 호환 허용'
 
     $lsa = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -ErrorAction SilentlyContinue

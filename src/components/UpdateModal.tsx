@@ -43,8 +43,11 @@ function formatPublishedDate(iso: string | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function formatBytesMb(bytes: number): string {
+function formatBytesHuman(bytes: number): string {
   if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
@@ -298,22 +301,31 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   <span className="truncate">{progress.message}</span>
                 </div>
                 <span className="tabular-data font-bold text-indigo-700 dark:text-indigo-300 shrink-0">
-                  {progress.percent}%
+                  {progress.phase === 'downloading' && progress.totalBytes <= 0
+                    ? '수신 중'
+                    : `${progress.percent}%`}
                 </span>
               </div>
               <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                 <div
-                  className="h-full bg-indigo-600 dark:bg-indigo-500 transition-all duration-150"
-                  style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }}
+                  className={`h-full bg-indigo-600 dark:bg-indigo-500 transition-all duration-150 ${
+                    progress.phase === 'downloading' && progress.totalBytes <= 0 ? 'animate-pulse' : ''
+                  }`}
+                  style={{
+                    width:
+                      progress.phase === 'downloading' && progress.totalBytes <= 0
+                        ? '65%'
+                        : `${Math.max(2, Math.min(100, progress.percent))}%`,
+                  }}
                 />
               </div>
               {(progress.totalBytes > 0 || (isUpdating && !isReplacingNow)) && (
                 <div className="flex items-center justify-between text-[11px] tabular-data text-slate-500 dark:text-slate-400">
                   <span>
                     {progress.totalBytes > 0
-                      ? `${formatBytesMb(progress.downloadedBytes)} / ${formatBytesMb(progress.totalBytes)}`
+                      ? `${formatBytesHuman(progress.downloadedBytes)} / ${formatBytesHuman(progress.totalBytes)}`
                       : progress.downloadedBytes > 0
-                        ? `${formatBytesMb(progress.downloadedBytes)} 받음`
+                        ? `${formatBytesHuman(progress.downloadedBytes)} 받음`
                         : '연결 중...'}
                   </span>
                   {isUpdating && !isReplacingNow && (
@@ -387,7 +399,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                         </div>
                         <div className="tabular-data text-[11px] text-slate-500 dark:text-slate-400 truncate">
                           {asset.name}
-                          {asset.size > 0 ? ` · ${formatBytesMb(asset.size)}` : ''}
+                          {asset.size > 0 ? ` · ${formatBytesHuman(asset.size)}` : ''}
                         </div>
                       </div>
                       {runtimeInfo?.canSelfReplace && portableAsset ? (
