@@ -15,7 +15,7 @@ GitHub 저장소에는 앱 빌드·실행·배포·문서화에 꼭 필요한 **
 - **포함 (추적 대상)**:
   - 핵심 소스코드: `src/**/*`, `src/version.ts`, `main.js`, `preload.js`, `portableStore.js`, `portableUpdater.js`, `index.html`, `public/config.json`, `icon.ico`
   - 빌드·설정·CI: `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `build.bat`, `build-config-lite.json`, `build-config-win7.json`, `scripts/*`, `installer/setup.iss`, `.github/workflows/release.yml`, `.gitattributes`, `.gitignore`, `.env.example`
-  - 공식 문서·라이선스: `README.md`, `LICENSE`, `docs/*` (`docs/README.md`, `docs/PATCH_NOTES.md`, `docs/VERSIONING.md`, `docs/google_blogger_post.md`, `docs/github_release_post.md`, `docs/github_release_guide.md`)
+  - 공식 문서·라이선스: `README.md`, `README.en.md`, `LICENSE`, `docs/*` (`docs/README.md`, `docs/PATCH_NOTES.md`, `docs/VERSIONING.md`, `docs/google_blogger_post.md`, `docs/github_release_post.md`, `docs/github_release_guide.md`)
 - **제외 (`.gitignore` 엄격 차단 대상)**:
   - 로컬 자동화 푸시 스크립트: `push_github.bat`, `push_github*.bat`, `build_release.bat`, `RELEASE_CHANGELOG.md`
   - 중첩 경로 및 플랫폼 메타·첨부 이미지: `/app/`, `.aistudio/`, `metadata.json`, `/public/assets/aistudio/`

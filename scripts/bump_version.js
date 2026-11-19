@@ -167,16 +167,18 @@ function runBump({ level, summary, notes, dryRun = false, targetRoot = rootDir }
     }
   }
 
-  // 6. README.md
-  const readmePath = path.join(targetRoot, 'README.md');
-  if (fs.existsSync(readmePath)) {
-    const readmeSrc = fs.readFileSync(readmePath, 'utf8');
-    const verRegex = new RegExp(`v${currentVersion.replace(/\./g, '\\.')}`, 'g');
-    const nextReadme = readmeSrc.replace(verRegex, `v${nextVersion}`);
-    if (!dryRun) {
-      fs.writeFileSync(readmePath, nextReadme, 'utf8');
+  // 6. README.md & README.en.md
+  for (const readmeRel of ['README.md', 'README.en.md']) {
+    const readmePath = path.join(targetRoot, readmeRel);
+    if (fs.existsSync(readmePath)) {
+      const readmeSrc = fs.readFileSync(readmePath, 'utf8');
+      const verRegex = new RegExp(`v${currentVersion.replace(/\./g, '\\.')}`, 'g');
+      const nextReadme = readmeSrc.replace(verRegex, `v${nextVersion}`);
+      if (!dryRun) {
+        fs.writeFileSync(readmePath, nextReadme, 'utf8');
+      }
+      updatedFiles.push(readmeRel);
     }
-    updatedFiles.push('README.md');
   }
 
   // 7. docs/PATCH_NOTES.md

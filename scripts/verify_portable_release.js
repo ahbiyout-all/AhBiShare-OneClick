@@ -537,8 +537,18 @@ const readmeSrc = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
 assert(
   readmeSrc.includes('build.bat') &&
     readmeSrc.includes('electron:build:win7') &&
-    readmeSrc.includes(`_v${rootPkg.version}.exe`),
-  'README.md must document build.bat, electron:build:win7, and version-numbered EXEs'
+    readmeSrc.includes(`_v${rootPkg.version}.exe`) &&
+    readmeSrc.includes('README.en.md'),
+  'README.md must document build.bat, electron:build:win7, version-numbered EXEs, and link README.en.md'
+);
+const readmeEnSrc = fs.readFileSync(path.join(rootDir, 'README.en.md'), 'utf8');
+assert(
+  readmeEnSrc.includes('build.bat') &&
+    readmeEnSrc.includes('electron:build:win7') &&
+    readmeEnSrc.includes(`_v${rootPkg.version}.exe`) &&
+    readmeEnSrc.includes('README.md') &&
+    readmeEnSrc.includes('AhBiYout'),
+  'README.en.md must document build.bat, electron:build:win7, version-numbered EXEs, AhBiYout copyright, and link README.md'
 );
 
 const win7BuildCfg = JSON.parse(fs.readFileSync(path.join(rootDir, 'build-config-win7.json'), 'utf8'));
