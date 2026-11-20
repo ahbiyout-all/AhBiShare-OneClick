@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X } from 'lucide-react';
+import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap } from 'lucide-react';
 import {
   RoleMode,
   AppSection,
@@ -15,6 +15,7 @@ import {
   PortableStorageStatus,
   OsNetworkPolicyStatus,
   HostPolicySnapshot,
+  PendingHostPolicyTask,
   PolicyApplyResult,
   AutoAlignBatchResult,
   PolicyPatchMode,
@@ -29,7 +30,7 @@ import {
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
 import { generateSecureSharePassword } from '@/utils/connectionCode';
-import { formatEraShortLabel, getPolicyPatchLabel } from '@/services/networkEvolution';
+import { formatEraShortLabel, formatSnapshotTimestamp, getPolicyPatchLabel } from '@/services/networkEvolution';
 import { TopBar } from '@/components/TopBar';
 import { HostPanel } from '@/components/HostPanel';
 import { ClientPanel } from '@/components/ClientPanel';
@@ -104,11 +105,15 @@ export const App: React.FC = () => {
   const [diagOpen, setDiagOpen] = useState(false);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagChecks, setDiagChecks] = useState<DiagnosticCheck[]>([]);
+  const [diagErrorText, setDiagErrorText] = useState<string | null>(null);
   const [activeTargetHost, setActiveTargetHost] = useState('');
 
   const [portableShares, setPortableShares] = useState<PortableHostShareEntry[]>([]);
   const [portableStatus, setPortableStatus] = useState<PortableStorageStatus>(() => shareBridge.getPortableSnapshot().status);
   const [hostPolicySnapshots, setHostPolicySnapshots] = useState<Record<string, HostPolicySnapshot>>({});
+  const [pendingHostActions, setPendingHostActions] = useState<Record<string, PendingHostPolicyTask>>({});
+  const [isApplyingPendingHostTask, setIsApplyingPendingHostTask] = useState(false);
+  const [confirmingDismissPendingTask, setConfirmingDismissPendingTask] = useState(false);
   const [pendingAutoFillEntry, setPendingAutoFillEntry] = useState<PortableHostShareEntry | null>(null);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -161,6 +166,10 @@ export const App: React.FC = () => {
     password: '',
     persistent: true,
   });
+  const [pendingClientAuthMode, setPendingClientAuthMode] = useState<{
+    key: string;
+    authMode: 'guest' | 'account';
+  } | null>(null);
   const [pendingLocationTarget, setPendingLocationTarget] = useState<{
     key: string;
     target: LocationClientTargetEntry;
@@ -336,6 +345,7 @@ export const App: React.FC = () => {
     setPortableShares(sortPortableEntriesForClient(snap.document.shares, hostname));
     setPortableStatus(snap.status);
     setHostPolicySnapshots(snap.document.hostPolicies ? { ...snap.document.hostPolicies } : {});
+    setPendingHostActions(snap.document.pendingHostActions ? { ...snap.document.pendingHostActions } : {});
   }, []);
 
   const refreshLocationProfiles = useCallback(async () => {
@@ -358,6 +368,7 @@ export const App: React.FC = () => {
         setPortableShares(sortedPortable);
         setPortableStatus(synced.portable.status);
         setHostPolicySnapshots(synced.portable.document.hostPolicies || {});
+        setPendingHostActions(synced.portable.document.pendingHostActions || {});
         if (sortedPortable.length > 0) {
           appendLog(
             'USB 포터블',
@@ -613,6 +624,183 @@ export const App: React.FC = () => {
     [netInfo, appendLog, showToast, refreshPortableSnapshot, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
   );
 
+  const handleDeleteHostPolicySnapshot = useCallback(
+    async (hostName: string) => {
+      try {
+        const updatedMap = await shareBridge.deleteHostPolicySnapshot(hostName);
+        setHostPolicySnapshots(updatedMap);
+        refreshPortableSnapshot(netInfo.hostname);
+        appendLog('OS 정책 스냅샷', `'${hostName}' 호스트 정책 스냅샷을 목록에서 삭제했습니다.`, 'success');
+        showToast(`'${hostName}' 정책 스냅샷을 삭제했습니다.`);
+      } catch {
+        showToast('호스트 정책 스냅샷 삭제 중 오류가 발생했습니다.');
+      }
+    },
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+  );
+
+  const handleClearAllHostPolicySnapshots = useCallback(async () => {
+    try {
+      const updatedMap = await shareBridge.clearAllHostPolicySnapshots();
+      setHostPolicySnapshots(updatedMap);
+      refreshPortableSnapshot(netInfo.hostname);
+      appendLog('OS 정책 스냅샷', '저장된 모든 호스트 정책 스냅샷 목록을 초기화했습니다.', 'success');
+      showToast('저장된 호스트 정책 스냅샷 목록을 모두 비웠습니다.');
+    } catch {
+      showToast('호스트 정책 스냅샷 목록 초기화 중 오류가 발생했습니다.');
+    }
+  }, [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]);
+
+  const myPendingHostTask = React.useMemo(() => {
+    const currentLower = netInfo.hostname.trim().toLowerCase();
+    for (const [k, task] of Object.entries(pendingHostActions || {})) {
+      if (
+        k.trim().toLowerCase() === currentLower ||
+        (task.targetHostName || '').trim().toLowerCase() === currentLower
+      ) {
+        return task;
+      }
+    }
+    return null;
+  }, [pendingHostActions, netInfo.hostname]);
+
+  const handleSavePendingHostTask = useCallback(
+    async (taskInput: Omit<PendingHostPolicyTask, 'taskId' | 'createdAt'>) => {
+      try {
+        const res = await shareBridge.savePendingHostPolicyTask(taskInput);
+        setPendingHostActions(res.pendingHostActions);
+        refreshPortableSnapshot(netInfo.hostname);
+        const targetLabel = res.task.targetHostName;
+        appendLog(
+          '호스트 대기 작업',
+          `'${targetLabel}' 호스트용 USB 자동 적용 작업 저장 완료 (${res.task.conflictLabels.join(' · ') || '정책 정렬'})`,
+          'success'
+        );
+        showToast(
+          `'${targetLabel}' 대상 USB 자동 적용 대기 작업을 저장했습니다. 해당 PC에서 앱을 열면 1클릭으로 적용됩니다.`
+        );
+      } catch {
+        showToast('호스트 대기 작업 저장 중 오류가 발생했습니다.');
+      }
+    },
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+  );
+
+  const handleDeletePendingHostTask = useCallback(
+    async (targetHostName: string) => {
+      try {
+        const updated = await shareBridge.deletePendingHostPolicyTask(targetHostName);
+        setPendingHostActions(updated);
+        setConfirmingDismissPendingTask(false);
+        refreshPortableSnapshot(netInfo.hostname);
+        appendLog('호스트 대기 작업', `'${targetHostName}' 대상 USB 대기 작업을 삭제했습니다.`, 'success');
+        showToast(`'${targetHostName}' 호스트 대기 작업을 삭제했습니다.`);
+      } catch {
+        showToast('호스트 대기 작업 삭제 중 오류가 발생했습니다.');
+      }
+    },
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+  );
+
+  const handleApplyPendingHostTask = useCallback(
+    async (task: PendingHostPolicyTask) => {
+      const initialSteps: PipelineStep[] = [
+        ...task.modes.map((m, idx) => ({
+          id: `pending-mode-${idx}-${m}`,
+          title: `[호스트 예약] ${getPolicyPatchLabel(m)} 적용`,
+          detail: '요청된 정책 패치 반영 및 SMB 서비스 갱신',
+          status: 'idle' as const,
+        })),
+        ...(task.includeGuestUnlock
+          ? [
+              {
+                id: 'pending-guest-unlock',
+                title: '[호스트 예약] Guest 무비밀번호 정책 완전 개방 (오류 86·1223·1385)',
+                detail: 'LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · 445 방화벽 개방',
+                status: 'idle' as const,
+              },
+            ]
+          : []),
+        {
+          id: 'pending-cleanup',
+          title: '호스트 OS 정책 재검사 및 USB 대기 작업 완료 처리',
+          detail: 'USB 포터블 저장소에서 완료된 대기 작업을 정리합니다.',
+          status: 'idle' as const,
+        },
+      ];
+      const jobKey = startProgressJob(
+        `원격 요청 호스트 정책 자동 적용 (${task.targetHostName})`,
+        `요청 PC: ${task.requestedByHostName} · ${task.conflictLabels.join(' · ') || '정책 정렬'}`,
+        initialSteps
+      );
+      if (!jobKey) return;
+
+      setIsApplyingPendingHostTask(true);
+      let latestSteps: PipelineStep[] = initialSteps;
+      try {
+        const batch = await shareBridge.applyPendingHostPolicyTask(task, netInfo, (steps) => {
+          latestSteps = steps;
+          updateProgressSteps(jobKey, steps);
+        });
+        setLastAutoAlignResult(batch);
+        setLastPatchResult({
+          success: batch.success,
+          mode: batch.appliedModes[0] || task.modes[0] || 'safe_compat',
+          summary: batch.summary,
+          appliedActions: batch.appliedActions,
+          rebootJudgment: batch.rebootJudgment,
+          updatedPolicy: batch.updatedPolicy,
+        });
+        setPolicyStatus(batch.updatedPolicy);
+        setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+        setConfirmingDismissPendingTask(false);
+        refreshPortableSnapshot(netInfo.hostname);
+        appendLog(
+          '호스트 대기 작업',
+          `${batch.summary} · ${batch.rebootJudgment.title}`,
+          batch.success ? 'success' : 'error'
+        );
+        showToast(batch.success ? `${batch.summary} 완료` : batch.summary);
+        if (batch.success) {
+          completeProgressJob(jobKey, `${batch.summary} · ${batch.rebootJudgment.title}`, latestSteps);
+        } else {
+          failProgressJob(jobKey, batch.summary, latestSteps);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+        appendLog('호스트 대기 작업', `대기 작업 적용 예외: ${msg}`, 'error');
+        showToast(`대기 작업 적용 실패: ${msg}`);
+        failProgressJob(jobKey, msg, latestSteps);
+      } finally {
+        setIsApplyingPendingHostTask(false);
+      }
+    },
+    [
+      netInfo,
+      refreshPortableSnapshot,
+      appendLog,
+      showToast,
+      startProgressJob,
+      updateProgressSteps,
+      completeProgressJob,
+      failProgressJob,
+    ]
+  );
+
+  const handleDeletePortableHostShare = useCallback(
+    async (sourceHostName: string, shareName: string) => {
+      try {
+        await shareBridge.deletePortableHostShare(sourceHostName, shareName);
+        refreshPortableSnapshot(netInfo.hostname);
+        appendLog('USB 포터블', `${sourceHostName} · \\\\...\\${shareName} 항목을 목록에서 삭제했습니다.`, 'success');
+        showToast(`포터블 공유 항목(${shareName})을 삭제했습니다.`);
+      } catch {
+        showToast('포터블 공유 항목 삭제 중 오류가 발생했습니다.');
+      }
+    },
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+  );
+
   const handleTriggerReboot = useCallback(async () => {
     const res = await shareBridge.requestSystemReboot();
     appendLog('시스템 제어', res.message, res.success ? 'success' : 'error');
@@ -683,8 +871,10 @@ export const App: React.FC = () => {
           setPolicyStatus(pol);
         } catch {}
         refreshPortableSnapshot(freshNet.hostname);
-        const updatedPeers = await shareBridge.scanLanPeers(freshNet);
-        setPeers(updatedPeers);
+        try {
+          const updatedPeers = await shareBridge.scanLanPeers(freshNet);
+          setPeers(updatedPeers);
+        } catch {}
         const syncNote =
           res.portableStatus && !res.portableStatus.writable
             ? ' (주의: USB 폴더가 읽기 전용이라 파일에 저장되지 않았습니다)'
@@ -746,8 +936,10 @@ export const App: React.FC = () => {
       setExpiryAlerts((prev) => prev.filter((a) => a.shareName.toLowerCase() !== removedLower));
       setShares(updated);
       refreshPortableSnapshot(netInfo.hostname);
-      const updatedPeers = await shareBridge.scanLanPeers(netInfo);
-      setPeers(updatedPeers);
+      try {
+        const updatedPeers = await shareBridge.scanLanPeers(netInfo);
+        setPeers(updatedPeers);
+      } catch {}
       appendLog('메인 PC', `공유폴더 '${shareName}' 공유 해제 및 USB 포터블 기록 갱신`, 'success');
       showToast(`'${shareName}' 공유가 해제되었습니다.`);
       completeProgressJob(jobKey, `'${shareName}' 공유폴더가 정상적으로 해제되었습니다.`, [
@@ -907,8 +1099,10 @@ export const App: React.FC = () => {
           setPolicyStatus(pol);
         } catch {}
         refreshPortableSnapshot(freshNet.hostname);
-        const updatedPeers = await shareBridge.scanLanPeers(freshNet);
-        setPeers(updatedPeers);
+        try {
+          const updatedPeers = await shareBridge.scanLanPeers(freshNet);
+          setPeers(updatedPeers);
+        } catch {}
         const syncNote =
           shareRes.portableStatus && !shareRes.portableStatus.writable
             ? ' (주의: USB 폴더가 읽기 전용이라 파일에 저장되지 않았습니다)'
@@ -1136,8 +1330,10 @@ export const App: React.FC = () => {
       setMounts(shareBridge.getSavedMounts());
       if (scope === 'host') {
         setExpiryAlerts([]);
-        const updatedPeers = await shareBridge.scanLanPeers(netInfo);
-        setPeers(updatedPeers);
+        try {
+          const updatedPeers = await shareBridge.scanLanPeers(netInfo);
+          setPeers(updatedPeers);
+        } catch {}
       }
       try {
         const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
@@ -1282,7 +1478,8 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleOpenDiagnostics = async () => {
+  const handleOpenDiagnostics = async (errorText?: string) => {
+    setDiagErrorText(errorText || null);
     setDiagOpen(true);
     setDiagLoading(true);
     try {
@@ -1721,8 +1918,10 @@ export const App: React.FC = () => {
           } catch {}
         }
         refreshPortableSnapshot(freshNet.hostname);
-        const updatedPeers = await shareBridge.scanLanPeers(freshNet);
-        setPeers(updatedPeers);
+        try {
+          const updatedPeers = await shareBridge.scanLanPeers(freshNet);
+          setPeers(updatedPeers);
+        } catch {}
         setLastLocationBatchResult(batchRes);
         appendLog('장소 일괄 적용', batchRes.summary, batchRes.success ? 'success' : 'error');
         showToast(batchRes.summary);
@@ -1916,6 +2115,77 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {myPendingHostTask && (
+          <div
+            id="my-pending-host-task-banner"
+            role="status"
+            className="px-5 py-4 rounded-xl border border-indigo-500/40 bg-indigo-500/8 dark:bg-indigo-500/12 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+          >
+            <div className="flex items-start gap-3 min-w-0">
+              <Zap className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+              <div className="space-y-1 min-w-0">
+                <div className="text-xs font-bold text-slate-900 dark:text-white">
+                  USB에 이 PC({netInfo.hostname})용 호스트 정책 자동 적용 대기 작업이 있습니다
+                </div>
+                <p className="tabular-data text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                  요청 PC: <span className="font-semibold">{myPendingHostTask.requestedByHostName}</span>
+                  {myPendingHostTask.requestedByIp ? ` (${myPendingHostTask.requestedByIp})` : ''} · 저장 일시:{' '}
+                  {formatSnapshotTimestamp(myPendingHostTask.createdAt)} · 해결 대상:{' '}
+                  <span className="font-semibold">
+                    {myPendingHostTask.conflictLabels.join(' · ') || 'SMB · 게스트 정책 정렬'}
+                  </span>
+                  {myPendingHostTask.includeGuestUnlock ? ' · Guest 무비밀번호 완전 개방 포함' : ''}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0 self-end lg:self-center">
+              <button
+                id="btn-apply-my-pending-task"
+                type="button"
+                disabled={isApplyingPendingHostTask || isAutoAligning}
+                onClick={() => void handleApplyPendingHostTask(myPendingHostTask)}
+                className="px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {isApplyingPendingHostTask ? '적용 중...' : '대기 작업 지금 적용'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveSection('matrix')}
+                className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer"
+              >
+                매트릭스 상세
+              </button>
+              {confirmingDismissPendingTask ? (
+                <div className="inline-flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleDeletePendingHostTask(myPendingHostTask.targetHostName)}
+                    className="px-2.5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer"
+                  >
+                    삭제 확정
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDismissPendingTask(false)}
+                    className="px-2.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
+                  >
+                    취소
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDismissPendingTask(true)}
+                  className="px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer"
+                >
+                  대기 삭제
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeSection === 'workspace' && (
           <LocationProfileBar
             profiles={locationProfiles}
@@ -1991,17 +2261,24 @@ export const App: React.FC = () => {
             onClearPendingAutoFill={() => setPendingAutoFillEntry(null)}
             onPortableAutoFill={handlePortableAutoFillLog}
             initialConfig={clientDraft}
+            pendingClientAuthMode={pendingClientAuthMode}
             pendingLocationTarget={pendingLocationTarget}
             savedLocationTargets={activeLocationProfile?.clientTargets || []}
             activeLocationName={activeLocationProfile?.locationName}
+            onClearPendingClientAuthMode={() => setPendingClientAuthMode(null)}
             onClearPendingLocationTarget={() => setPendingLocationTarget(null)}
             onConfigChange={setClientDraft}
             onOpenMatrix={() => setActiveSection('matrix')}
+            onOpenDiagnostics={(errText) => {
+              void handleOpenDiagnostics(errText);
+            }}
             onScanLan={handleScanLan}
             onConnect={handleConnectClient}
             onUnmount={handleUnmount}
             onOpenDrive={handleOpenPath}
             onTargetHostChange={setActiveTargetHost}
+            onDeleteHostPolicySnapshot={handleDeleteHostPolicySnapshot}
+            onDeletePortableShare={handleDeletePortableHostShare}
           />
         )}
 
@@ -2010,17 +2287,26 @@ export const App: React.FC = () => {
             netInfo={netInfo}
             policyStatus={policyStatus}
             hostPolicySnapshots={hostPolicySnapshots}
+            pendingHostActions={pendingHostActions}
+            portableShares={portableShares}
             lastPatchResult={lastPatchResult}
             lastAutoAlignResult={lastAutoAlignResult}
             isInspecting={isPolicyInspecting}
             isAutoAligning={isAutoAligning}
+            isApplyingPendingHostTask={isApplyingPendingHostTask}
             isApplyingMode={applyingPatchMode}
             onInspectPolicy={handleInspectOsPolicy}
             onApplyPatch={handleApplyOsPatch}
             onSyncMatchedPolicies={handleSyncMatchedPolicies}
+            onProbeRemoteHost={handlePingHost}
+            onSavePendingHostTask={handleSavePendingHostTask}
+            onDeletePendingHostTask={handleDeletePendingHostTask}
+            onApplyPendingHostTask={handleApplyPendingHostTask}
             onTriggerReboot={handleTriggerReboot}
             onOpenWindowsUpdate={handleOpenWindowsUpdate}
             onNotify={showToast}
+            onDeleteHostPolicySnapshot={handleDeleteHostPolicySnapshot}
+            onClearAllHostPolicySnapshots={handleClearAllHostPolicySnapshots}
           />
         )}
 
@@ -2186,13 +2472,26 @@ export const App: React.FC = () => {
         isOpen={diagOpen}
         isLoading={diagLoading}
         checks={diagChecks}
-        defaultTargetHost={activeTargetHost || peers[0]?.ipAddress || ''}
+        defaultTargetHost={activeTargetHost || clientDraft.targetHost || peers[0]?.ipAddress || ''}
+        defaultShareName={clientDraft.shareName || 'AhBiShared'}
+        activeErrorCode={diagErrorText}
+        failedErrorText={diagErrorText}
         suggestedTargets={suggestedTargets}
         policyStatus={policyStatus}
         onOpenMatrix={() => setActiveSection('matrix')}
+        onSwitchToAccountMode={() => {
+          setClientDraft((prev) => ({ ...prev, authMode: 'account' }));
+          setPendingClientAuthMode({ key: String(Date.now()), authMode: 'account' });
+          setRoleMode('client');
+          setActiveSection('workspace');
+          showToast('보안 계정 모드로 전환되었습니다. 계정 정보를 확인하고 연결을 실행하세요.');
+        }}
         onPingHost={handlePingHost}
-        onClose={() => setDiagOpen(false)}
-        onRerun={() => void handleOpenDiagnostics()}
+        onClose={() => {
+          setDiagOpen(false);
+          setDiagErrorText(null);
+        }}
+        onRerun={() => void handleOpenDiagnostics(diagErrorText || undefined)}
       />
 
       <UpdateModal
@@ -2233,7 +2532,13 @@ export const App: React.FC = () => {
         onDeleteProfile={handleDeleteLocationProfile}
       />
 
-      <WorkProgressModal job={progressJob} onClose={closeProgressModal} />
+      <WorkProgressModal
+        job={progressJob}
+        onClose={closeProgressModal}
+        onOpenDiagnostics={(errText) => {
+          void handleOpenDiagnostics(errText);
+        }}
+      />
 
       <input
         ref={locationFileInputRef}

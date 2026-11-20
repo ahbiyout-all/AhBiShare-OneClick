@@ -356,6 +356,14 @@ export function computeCompatibilityScoreAndIssues(
     score -= 10;
     issues.push('로컬 보안 정책(SeDenyNetworkLogonRight)이 Guest 네트워크 로그온을 거부 중이어서 타 PC 무비밀번호 접속 시 시스템 오류 1385가 발생할 수 있습니다.');
   }
+  if (status.firewall445Allowed === false) {
+    score -= 10;
+    issues.push('Windows 방화벽에서 TCP 445 파일 공유 인바운드 규칙이 비활성 상태입니다 (오류 53 원인).');
+  }
+  if (status.limitBlankPasswordUse && status.allowInsecureGuestAuth) {
+    score -= 5;
+    issues.push('LSA 빈 암호 네트워크 로그온 제한(LimitBlankPasswordUse=1)이 켜져 있어 무비밀번호 연결 시 오류 86이 발생할 수 있습니다.');
+  }
   if (status.lmCompatibilityLevel !== null && status.lmCompatibilityLevel < 3) {
     score -= 10;
     issues.push(`NTLM 호환성 수준(${status.lmCompatibilityLevel})이 낮아 Win 11 24H2+ 인증 협상에서 거부될 수 있습니다.`);
@@ -484,6 +492,7 @@ export interface ClientFailureDiagnostic {
   detail: string;
   needsOsPatchHint: boolean;
   actionLabel: string;
+  isHostAuthOrGuestIssue?: boolean;
 }
 
 export function classifyFailureDiagnostics(errorText?: string): ClientFailureDiagnostic | null {
@@ -519,18 +528,20 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
     return {
       code: 'Error 1385',
       title: '호스트 PC 게스트 네트워크 로그온 차단 (SeDenyNetworkLogonRight)',
-      detail: '호스트(24H2/25H2 등)의 로컬 보안 정책 "네트워크에서 이 컴퓨터에 액세스 거부"에 Guest/Guests가 남아 있어 무비밀번호 접속이 차단되었습니다. 호스트 PC에서 최신 AhBiShare로 공유를 다시 생성하거나 [안전 호환 패치] 실행, 또는 [보안 계정 모드]로 연결하세요.',
+      detail: '호스트의 로컬 보안 정책 "네트워크에서 이 컴퓨터에 액세스 거부"에 Guest/Guests가 남아 있어 무비밀번호 접속이 차단되었습니다. 호스트 PC에서 [무비밀번호 정책 개방]을 실행하거나 클라이언트에서 [보안 계정 모드]로 연결하세요.',
       needsOsPatchHint: true,
-      actionLabel: '매트릭스 호환 패치로 이동',
+      actionLabel: '통합 해결 가이드 & 도구 열기',
+      isHostAuthOrGuestIssue: true,
     };
   }
   if (/(?<![.\d])1223(?![.\d])|사용자 이름 입력|작업을 취소|canceled by the user/i.test(sanitized)) {
     return {
       code: 'Error 1223',
       title: '호스트 자격 증명 요구 또는 익명 게스트 접근 거부',
-      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 최신 AhBiShare로 무비밀번호 공유를 재개설하거나 클라이언트에서 [보안 계정 모드]로 연결하세요.',
+      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 무비밀번호 정책을 완전 개방하거나, 클라이언트에서 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.',
       needsOsPatchHint: false,
-      actionLabel: 'OS 매트릭스 보기',
+      actionLabel: '통합 해결 가이드 & 도구 열기',
+      isHostAuthOrGuestIssue: true,
     };
   }
   if (/(?<![.\d])1272(?![.\d])|(?<![.\d])384(?![.\d])|0x80070035|게스트|guest/i.test(sanitized)) {
@@ -540,15 +551,17 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       detail: '별도 Windows 업데이트는 필요 없으며, 호스트·클라이언트 양단에서 [안전 호환 패치] 또는 [보안 계정 모드] 전환으로 즉시 해결됩니다.',
       needsOsPatchHint: true,
       actionLabel: '매트릭스 호환 패치로 이동',
+      isHostAuthOrGuestIssue: true,
     };
   }
   if (/(?<![.\d])1326(?![.\d])|(?<![.\d])86(?![.\d])|(?<![.\d])5(?![.\d])|액세스|거부|로그온|암호|password is not correct/i.test(sanitized)) {
     return {
       code: 'Error 5 / 86 / 1326',
-      title: '계정 인증 실패 · 빈 암호 제한 또는 UAC/MSA 캐시 불일치',
-      detail: '호스트가 빈 암호 네트워크 로그온을 제한(LimitBlankPasswordUse)했거나 Guest 계정에 암호가 남아있는 경우, 또는 호스트가 MS 계정·PIN 로그인 전용/로컬 관리자 토큰 제한(오류 5)인 경우입니다. 호스트에서 최신 AhBiShare로 공유를 재개설하거나 [보안 계정 모드]로 연결하세요.',
+      title: '계정 인증 실패 · 빈 암호 제한 또는 암호 보호 공유',
+      detail: '호스트가 빈 암호 네트워크 로그온을 제한(LimitBlankPasswordUse=1)했거나 Guest 계정에 암호가 남아있는 경우, 또는 암호로 보호된 공유가 켜져 있는 상태입니다. 호스트 PC에서 [무비밀번호 정책 개방]을 실행하거나 [보안 계정 모드]로 연결하세요.',
       needsOsPatchHint: true,
-      actionLabel: '매트릭스 UAC·PIN 진단 열기',
+      actionLabel: '통합 해결 가이드 & 도구 열기',
+      isHostAuthOrGuestIssue: true,
     };
   }
   if (/(?<![.\d])53(?![.\d])|(?<![.\d])67(?![.\d])|네트워크 경로|연결 시간 초과|timeout|445/i.test(sanitized)) {
@@ -587,6 +600,25 @@ export function getPolicyPatchLabel(mode: PolicyPatchMode): string {
   return POLICY_PATCH_LABELS[mode] || mode;
 }
 
+export function formatSnapshotTimestamp(raw?: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  const t = Date.parse(trimmed);
+  if (Number.isNaN(t)) {
+    return trimmed;
+  }
+  const d = new Date(t);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const min = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+}
+
 export interface HostPolicyPreset {
   id: string;
   label: string;
@@ -598,7 +630,7 @@ export const HOST_POLICY_REFERENCE_TARGETS: HostPolicyPreset[] = [
   {
     id: '__preset_file_printer_compat__',
     label: '호환 파일·프린터 공유 호스트 기준 (권장)',
-    description: '게스트·서명 완화 + 프린터 RPC Named Pipe 호환이 열린 메인 호스트 기준과 현재 PC를 즉시 비교합니다.',
+    description: '게스트·서명 완화·방화벽 445·프린터 RPC Named Pipe 호환이 열린 메인 호스트 기준과 현재 PC를 즉시 비교합니다.',
     snapshot: {
       hostName: '호환 공유 호스트 기준',
       osProductName: 'Windows 11 / Windows 10',
@@ -613,13 +645,19 @@ export const HOST_POLICY_REFERENCE_TARGETS: HostPolicyPreset[] = [
       pointAndPrintRelaxed: true,
       lmCompatibilityLevel: 3,
       localAccountTokenFilterEnabled: false,
+      guestNetworkLogonDenied: false,
+      limitBlankPasswordUse: false,
+      restrictNullSessAccess: false,
+      restrictAnonymous: false,
+      guestAccountEnabled: true,
+      firewall445Allowed: true,
       capturedAt: '',
     },
   },
   {
     id: '__preset_file_only_compat__',
     label: '일반 파일 공유 호스트 기준 (Win 10~11)',
-    description: '비서명·무비밀번호 공유가 개방된 일반 호스트 PC 기준과 현재 PC의 SMB/게스트/프로필 불일치를 진단합니다.',
+    description: '비서명·무비밀번호 공유 및 TCP 445가 개방된 일반 호스트 PC 기준과 현재 PC의 SMB/게스트/프로필 불일치를 진단합니다.',
     snapshot: {
       hostName: '일반 파일 호스트 기준',
       osProductName: 'Windows 10 / 11',
@@ -634,14 +672,25 @@ export const HOST_POLICY_REFERENCE_TARGETS: HostPolicyPreset[] = [
       pointAndPrintRelaxed: false,
       lmCompatibilityLevel: 3,
       localAccountTokenFilterEnabled: false,
+      guestNetworkLogonDenied: false,
+      limitBlankPasswordUse: false,
+      restrictNullSessAccess: false,
+      restrictAnonymous: false,
+      guestAccountEnabled: true,
+      firewall445Allowed: true,
       capturedAt: '',
     },
   },
 ];
 
-export function toHostPolicySnapshot(hostName: string, status: OsNetworkPolicyStatus): HostPolicySnapshot {
+export function toHostPolicySnapshot(
+  hostName: string,
+  status: OsNetworkPolicyStatus,
+  sourceIp?: string
+): HostPolicySnapshot {
   return {
     hostName: hostName.trim() || 'MAIN-HOST-PC',
+    ...(sourceIp ? { sourceIp: sourceIp.trim() } : {}),
     osProductName: status.osProductName,
     osDisplayVersion: status.osDisplayVersion,
     osBuild: status.osBuild,
@@ -655,6 +704,21 @@ export function toHostPolicySnapshot(hostName: string, status: OsNetworkPolicySt
     lmCompatibilityLevel: status.lmCompatibilityLevel,
     localAccountTokenFilterEnabled: Boolean(status.localAccountTokenFilterEnabled),
     guestNetworkLogonDenied: Boolean(status.guestNetworkLogonDenied),
+    ...(typeof status.limitBlankPasswordUse === 'boolean'
+      ? { limitBlankPasswordUse: status.limitBlankPasswordUse }
+      : {}),
+    ...(typeof status.restrictNullSessAccess === 'boolean'
+      ? { restrictNullSessAccess: status.restrictNullSessAccess }
+      : {}),
+    ...(typeof status.restrictAnonymous === 'boolean'
+      ? { restrictAnonymous: status.restrictAnonymous }
+      : {}),
+    ...(typeof status.guestAccountEnabled === 'boolean'
+      ? { guestAccountEnabled: status.guestAccountEnabled }
+      : {}),
+    ...(typeof status.firewall445Allowed === 'boolean'
+      ? { firewall445Allowed: status.firewall445Allowed }
+      : {}),
     capturedAt: new Date().toISOString(),
   };
 }
@@ -748,17 +812,102 @@ export function computeHostClientPolicyDiff(
     recommendedPatchLabel: clientBlocksGuest ? getPolicyPatchLabel('safe_compat') : undefined,
   });
 
-  if (hostSnap.guestNetworkLogonDenied) {
+  if (typeof hostSnap.guestNetworkLogonDenied === 'boolean') {
+    const hostDenied = hostSnap.guestNetworkLogonDenied;
     diffs.push({
       id: 'diff_guest_deny',
       label: '호스트 Guest 네트워크 로그온 정책',
-      hostValue: '거부됨 (SeDenyNetworkLogonRight · 오류 1385 위험)',
+      hostValue: hostDenied ? '거부됨 (SeDenyNetworkLogonRight · 오류 1385 위험)' : '차단 해제됨 (허용)',
       clientValue: clientPolicy.guestNetworkLogonDenied ? '로컬도 거부됨' : '차단 해제됨',
-      status: 'warning',
-      actionTarget: 'host',
-      impact: '호스트 PC의 로컬 보안 정책에 Guest 네트워크 로그온 거부가 설정되어 무비밀번호 접속 시 오류 1385가 발생합니다. 호스트 PC에서 안전 호환 패치 또는 공유 재개설이 필요합니다.',
-      recommendedPatch: clientPolicy.guestNetworkLogonDenied ? 'safe_compat' : undefined,
-      recommendedPatchLabel: clientPolicy.guestNetworkLogonDenied ? getPolicyPatchLabel('safe_compat') : undefined,
+      status: hostDenied ? 'conflict' : 'match',
+      actionTarget: hostDenied ? (clientPolicy.guestNetworkLogonDenied ? 'both' : 'host') : 'none',
+      impact: hostDenied
+        ? '호스트 PC의 로컬 보안 정책에 Guest 네트워크 로그온 거부가 설정되어 무비밀번호 접속 시 오류 1385가 발생합니다. USB 호스트 대기 작업 예약 또는 호스트 측 정책 개방이 필요합니다.'
+        : '호스트 PC의 SeDenyNetworkLogonRight에서 Guest 거부가 해제되어 있습니다.',
+      recommendedPatch: hostDenied ? 'safe_compat' : undefined,
+      recommendedPatchLabel: hostDenied ? getPolicyPatchLabel('safe_compat') : undefined,
+    });
+  }
+
+  if (typeof hostSnap.limitBlankPasswordUse === 'boolean') {
+    const hostRestrictsBlank = hostSnap.limitBlankPasswordUse;
+    diffs.push({
+      id: 'diff_blank_pwd',
+      label: 'LSA 빈 암호 네트워크 로그온 제한 (오류 86)',
+      hostValue: hostRestrictsBlank ? '제한됨 (LimitBlankPasswordUse=1)' : '허용 (LimitBlankPasswordUse=0)',
+      clientValue:
+        typeof clientPolicy.limitBlankPasswordUse === 'boolean'
+          ? clientPolicy.limitBlankPasswordUse
+            ? '제한됨'
+            : '허용됨'
+          : '미측정',
+      status: hostRestrictsBlank ? 'conflict' : 'match',
+      actionTarget: hostRestrictsBlank ? 'host' : 'none',
+      impact: hostRestrictsBlank
+        ? '호스트 PC가 빈 암호 원격 로그온을 차단(LimitBlankPasswordUse=1) 중이므로 무비밀번호 공유 시 Error 86이 발생합니다. 호스트 USB 대기 작업으로 해제할 수 있습니다.'
+        : '호스트 PC에서 빈 암호 게스트 네트워크 로그온이 허용되어 있습니다.',
+      recommendedPatch: hostRestrictsBlank ? 'safe_compat' : undefined,
+      recommendedPatchLabel: hostRestrictsBlank ? getPolicyPatchLabel('safe_compat') : undefined,
+    });
+  }
+
+  if (typeof hostSnap.guestAccountEnabled === 'boolean') {
+    const hostGuestOff = !hostSnap.guestAccountEnabled;
+    diffs.push({
+      id: 'diff_guest_account',
+      label: '호스트 Guest 계정 (SID *-501) 활성 여부',
+      hostValue: hostGuestOff ? '비활성 (Disabled · 오류 86/1326)' : '활성 (무비밀번호 준비)',
+      clientValue:
+        typeof clientPolicy.guestAccountEnabled === 'boolean'
+          ? clientPolicy.guestAccountEnabled
+            ? '활성'
+            : '비활성'
+          : '미측정',
+      status: hostGuestOff ? 'conflict' : 'match',
+      actionTarget: hostGuestOff ? 'host' : 'none',
+      impact: hostGuestOff
+        ? '호스트 PC의 Guest 계정이 꺼져 있어 간편 무비밀번호 연결이 거부될 수 있습니다. USB 대기 작업의 [Guest 무비밀번호 개방]으로 즉시 활성화할 수 있습니다.'
+        : '호스트 PC의 Guest 계정이 활성화되어 있습니다.',
+      recommendedPatch: hostGuestOff ? 'safe_compat' : undefined,
+      recommendedPatchLabel: hostGuestOff ? getPolicyPatchLabel('safe_compat') : undefined,
+    });
+  }
+
+  if (typeof hostSnap.restrictNullSessAccess === 'boolean' || typeof hostSnap.restrictAnonymous === 'boolean') {
+    const hostNullRestricted = Boolean(hostSnap.restrictNullSessAccess || hostSnap.restrictAnonymous);
+    diffs.push({
+      id: 'diff_lsa_anon',
+      label: '호스트 LSA 익명·Null 세션 차단 (오류 1223)',
+      hostValue: hostNullRestricted ? '차단됨 (익명 거부 · 오류 1223 위험)' : '완화됨 (Null 세션 허용)',
+      clientValue: clientPolicy.restrictNullSessAccess || clientPolicy.restrictAnonymous ? '차단됨' : '완화됨',
+      status: hostNullRestricted ? 'warning' : 'match',
+      actionTarget: hostNullRestricted ? 'host' : 'none',
+      impact: hostNullRestricted
+        ? '호스트 PC의 RestrictNullSessAccess/restrictanonymous가 켜져 있어 자격 증명 창이 뜨거나 Error 1223이 발생할 수 있습니다.'
+        : '호스트 PC가 무비밀번호 Null 세션 핸드셰이크를 허용합니다.',
+      recommendedPatch: hostNullRestricted ? 'safe_compat' : undefined,
+      recommendedPatchLabel: hostNullRestricted ? getPolicyPatchLabel('safe_compat') : undefined,
+    });
+  }
+
+  if (typeof hostSnap.firewall445Allowed === 'boolean' || typeof clientPolicy.firewall445Allowed === 'boolean') {
+    const hostFwOk = hostSnap.firewall445Allowed !== false;
+    const clientFwOk = clientPolicy.firewall445Allowed !== false;
+    const anyFwMissing = !hostFwOk || !clientFwOk;
+    diffs.push({
+      id: 'diff_fw_445',
+      label: 'TCP 445 · 파일 공유 방화벽 개방 (오류 53)',
+      hostValue: hostFwOk ? '개방됨 (Allow)' : '차단 또는 미등록',
+      clientValue: clientFwOk ? '개방됨 (Allow)' : '차단 또는 미등록',
+      status: anyFwMissing ? 'conflict' : 'match',
+      actionTarget: !clientFwOk && !hostFwOk ? 'both' : !clientFwOk ? 'local' : !hostFwOk ? 'host' : 'none',
+      impact: !clientFwOk
+        ? '현재 PC 방화벽에 TCP 445 파일 공유 허용 규칙이 없어 LAN 응답이 끊길 수 있습니다. 내 PC 원클릭 정렬로 개방됩니다.'
+        : !hostFwOk
+          ? '호스트 PC 방화벽에 TCP 445 허용 규칙이 확인되지 않습니다. 호스트 USB 대기 작업을 저장해 인바운드 445 포트를 개방하세요.'
+          : '양단 Windows 방화벽의 TCP 445 파일 공유 규칙이 개방되어 있습니다.',
+      recommendedPatch: anyFwMissing ? 'safe_compat' : undefined,
+      recommendedPatchLabel: anyFwMissing ? getPolicyPatchLabel('safe_compat') : undefined,
     });
   }
 
@@ -861,7 +1010,11 @@ const PATCH_EXECUTION_ORDER: PolicyPatchMode[] = [
 export function extractAutoAlignModes(diffs: PolicyDiffItem[]): PolicyPatchMode[] {
   const needed = new Set<PolicyPatchMode>();
   for (const row of diffs) {
-    if (row.status !== 'match' && row.actionTarget === 'local' && row.recommendedPatch) {
+    if (
+      row.status !== 'match' &&
+      (row.actionTarget === 'local' || row.actionTarget === 'both') &&
+      row.recommendedPatch
+    ) {
       needed.add(row.recommendedPatch);
     }
   }
@@ -870,6 +1023,55 @@ export function extractAutoAlignModes(diffs: PolicyDiffItem[]): PolicyPatchMode[
     const ib = PATCH_EXECUTION_ORDER.indexOf(b);
     return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
   });
+}
+
+export function extractHostPendingPlan(diffs: PolicyDiffItem[]): {
+  modes: PolicyPatchMode[];
+  includeGuestUnlock: boolean;
+  conflictLabels: string[];
+} {
+  const needed = new Set<PolicyPatchMode>();
+  const labels: string[] = [];
+  let includeGuestUnlock = false;
+
+  for (const row of diffs) {
+    if (row.status === 'match') continue;
+    const isHostTarget = row.actionTarget === 'host' || row.actionTarget === 'both';
+    if (!isHostTarget) continue;
+
+    labels.push(row.label);
+    if (row.recommendedPatch) {
+      needed.add(row.recommendedPatch);
+    } else if (row.id === 'diff_profile' || row.id === 'diff_guest_auth' || row.id === 'diff_fw_445') {
+      needed.add('safe_compat');
+    } else if (row.id === 'diff_rpc_printer') {
+      needed.add('rpc_printer_compat');
+    } else if (row.id === 'diff_uac_token') {
+      needed.add('enable_uac_token_filter');
+    }
+
+    if (
+      row.id === 'diff_guest_deny' ||
+      row.id === 'diff_blank_pwd' ||
+      row.id === 'diff_guest_account' ||
+      row.id === 'diff_lsa_anon' ||
+      row.id === 'diff_guest_auth'
+    ) {
+      includeGuestUnlock = true;
+    }
+  }
+
+  const modes = Array.from(needed).sort((a, b) => {
+    const ia = PATCH_EXECUTION_ORDER.indexOf(a);
+    const ib = PATCH_EXECUTION_ORDER.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+
+  return {
+    modes,
+    includeGuestUnlock,
+    conflictLabels: labels,
+  };
 }
 
 export function combineRebootJudgments(judgments: RebootJudgment[]): RebootJudgment {

@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { X, CheckCircle2, AlertTriangle, XCircle, RefreshCw, Activity } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { X, CheckCircle2, AlertTriangle, XCircle, RefreshCw, Activity, KeyRound, Copy, Download, Shield, Check } from 'lucide-react';
 import { DiagnosticCheck, OsNetworkPolicyStatus, PingHostResult } from '@/types/share';
 import { validateTargetHost } from '@/utils/connectionCode';
-import { formatEraShortLabel } from '@/services/networkEvolution';
+import { classifyFailureDiagnostics, formatEraShortLabel } from '@/services/networkEvolution';
+import { buildHostGuestUnlockBatchScript, buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
 
 export interface SuggestedPingTarget {
   label: string;
@@ -14,9 +15,13 @@ interface DiagnosticsModalProps {
   isLoading: boolean;
   checks: DiagnosticCheck[];
   defaultTargetHost?: string;
+  defaultShareName?: string;
+  activeErrorCode?: string | null;
+  failedErrorText?: string | null;
   suggestedTargets?: SuggestedPingTarget[];
   policyStatus?: OsNetworkPolicyStatus | null;
   onOpenMatrix?: () => void;
+  onSwitchToAccountMode?: () => void;
   onPingHost: (target: string) => Promise<PingHostResult>;
   onClose: () => void;
   onRerun: () => void;
@@ -27,9 +32,13 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
   isLoading,
   checks,
   defaultTargetHost = '',
+  defaultShareName = 'AhBiShared',
+  activeErrorCode = null,
+  failedErrorText = null,
   suggestedTargets = [],
   policyStatus = null,
   onOpenMatrix,
+  onSwitchToAccountMode,
   onPingHost,
   onClose,
   onRerun,
@@ -38,14 +47,86 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
   const [isPinging, setIsPinging] = useState(false);
   const [pingError, setPingError] = useState<string | null>(null);
   const [pingResult, setPingResult] = useState<PingHostResult | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+  const wasOpenRef = useRef(false);
+
+  const isAuthOrGuestIssue = Boolean(
+    classifyFailureDiagnostics(failedErrorText || activeErrorCode || undefined)?.isHostAuthOrGuestIssue
+  );
+
+  const [showHostUnlockTools, setShowHostUnlockTools] = useState(isAuthOrGuestIssue);
 
   useEffect(() => {
-    if (!isOpen) return;
-    setPingError(null);
-    if (defaultTargetHost) {
-      setPingTarget(defaultTargetHost);
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopyText = async (text: string, key: string) => {
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {}
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
     }
-  }, [isOpen, defaultTargetHost]);
+    if (ok) {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      setCopiedKey(key);
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopiedKey(null);
+        copyTimerRef.current = null;
+      }, 2000);
+    }
+  };
+
+  const handleDownloadBat = () => {
+    const batContent = buildHostGuestUnlockBatchScript(defaultShareName).replace(/\r?\n/g, '\r\n');
+    const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'AhBiShare_Host_Unblock.bat';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  useEffect(() => {
+    if (isOpen && !wasOpenRef.current) {
+      setShowHostUnlockTools(isAuthOrGuestIssue);
+      setPingError(null);
+      setPingResult(null);
+      setCopiedKey(null);
+      if (defaultTargetHost) {
+        setPingTarget(defaultTargetHost);
+      }
+    } else if (isOpen && isAuthOrGuestIssue) {
+      setShowHostUnlockTools(true);
+    }
+    wasOpenRef.current = isOpen;
+  }, [isOpen, isAuthOrGuestIssue, defaultTargetHost]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -109,6 +190,120 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
         </div>
 
         <div className="p-6 space-y-6 overflow-y-auto">
+          {/* Emergency Solution Card for Error 86 / 1223 / 1385 / 5 / Host Auth Denied */}
+          {(isAuthOrGuestIssue || showHostUnlockTools) ? (
+            <section
+              id="diag-auth-solution-card"
+              className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/5 dark:bg-amber-950/20 space-y-4 shadow-sm"
+            >
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">
+                      호스트 자격증명 요구 · 오류 86 / 1223 해결 가이드
+                    </h4>
+                    <span className="tabular-data text-[11px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                      호스트 무비밀번호 개방 필요
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    대상 호스트 PC({defaultTargetHost || '메인 PC'})의 Windows에서 '암호로 보호된 공유'가 켜져 있거나 빈 암호 네트워크 로그온(LimitBlankPasswordUse=1)을 거부하고 있습니다. 아래 2가지 중 편한 방법으로 해결하세요.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                {/* Solution 1: Host Unlock */}
+                <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 space-y-2.5 flex flex-col justify-between">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-indigo-600 text-white text-[11px] font-bold flex items-center justify-center shrink-0">1</span>
+                      <h5 className="text-xs font-bold text-slate-900 dark:text-white">
+                        호스트 PC 무비밀번호 완전 개방 (추천)
+                      </h5>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      호스트 PC에서 관리자 권한으로 실행하면 빈 암호 제한 해제, Guest 계정 초기화 및 SeDenyNetworkLogonRight 정리가 즉시 적용됩니다.
+                    </p>
+                  </div>
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyText(buildHostGuestUnlockPsCommand(defaultShareName), 'host-cmd')}
+                        className="px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {copiedKey === 'host-cmd' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedKey === 'host-cmd' ? '복구 명령 복사됨!' : '원클릭 복구 명령 복사'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDownloadBat}
+                        className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        .bat 파일 다운로드
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                      ※ 호스트 PC에서도 AhBiShare를 실행 중이라면 메인 PC 탭에서 [간편 무비밀번호] 모드로 공유를 개설하거나 [.bat 복구 파일 저장]을 실행해 주세요.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Solution 2: Switch to Account Mode */}
+                <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 space-y-2.5 flex flex-col justify-between">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-slate-700 dark:bg-slate-300 text-white dark:text-slate-900 text-[11px] font-bold flex items-center justify-center shrink-0">2</span>
+                      <h5 className="text-xs font-bold text-slate-900 dark:text-white">
+                        보안 계정 모드로 즉시 전환
+                      </h5>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      호스트 PC의 Windows 정책을 바꾸지 않고, 호스트의 전용 계정(또는 Windows 사용자 이름과 암호)을 입력하여 인증 연결합니다.
+                    </p>
+                  </div>
+                  <div className="pt-2">
+                    {onSwitchToAccountMode ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSwitchToAccountMode();
+                          onClose();
+                        }}
+                        className="w-full px-3 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                      >
+                        <Shield className="w-3.5 h-3.5" />
+                        보안 계정(ID/PW) 모드로 즉시 전환
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-slate-500">
+                        클라이언트 패널에서 [보안 계정]을 선택해 연결할 수 있습니다.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between gap-3 text-xs">
+              <span className="text-slate-600 dark:text-slate-400">
+                무비밀번호 연결 시 호스트에서 오류 86 / 1223이 발생하나요?
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowHostUnlockTools(true)}
+                className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+              >
+                호스트 무비밀번호 개방 도구 열기
+              </button>
+            </div>
+          )}
+
           <section className="space-y-3">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
               대상 메인 PC Ping 지연 시간 및 포트 445 확인

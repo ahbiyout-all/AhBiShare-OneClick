@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -20,14 +20,22 @@ import {
   Zap,
   Copy,
   ChevronDown,
+  Trash2,
+  Calendar,
+  Clock,
+  Activity,
+  Usb,
 } from 'lucide-react';
 import {
   AutoAlignBatchResult,
   HostPolicySnapshot,
   LocalNetworkInfo,
   OsNetworkPolicyStatus,
+  PendingHostPolicyTask,
+  PingHostResult,
   PolicyApplyResult,
   PolicyPatchMode,
+  PortableHostShareEntry,
   RebootRequirementLevel,
   WindowsNetworkChangeItem,
   WindowsNetworkEra,
@@ -38,7 +46,9 @@ import {
   WINDOWS_NETWORK_MATRIX,
   computeHostClientPolicyDiff,
   extractAutoAlignModes,
+  extractHostPendingPlan,
   formatEraShortLabel,
+  formatSnapshotTimestamp,
   getPolicyPatchLabel,
 } from '@/services/networkEvolution';
 
@@ -46,17 +56,26 @@ interface NetworkMatrixPanelProps {
   netInfo: LocalNetworkInfo;
   policyStatus: OsNetworkPolicyStatus | null;
   hostPolicySnapshots: Record<string, HostPolicySnapshot>;
+  pendingHostActions?: Record<string, PendingHostPolicyTask>;
+  portableShares?: PortableHostShareEntry[];
   lastPatchResult: PolicyApplyResult | null;
   lastAutoAlignResult?: AutoAlignBatchResult | null;
   isInspecting: boolean;
   isAutoAligning?: boolean;
+  isApplyingPendingHostTask?: boolean;
   isApplyingMode: PolicyPatchMode | null;
   onInspectPolicy: () => Promise<void>;
   onApplyPatch: (mode: PolicyPatchMode) => Promise<void>;
   onSyncMatchedPolicies: (modes: PolicyPatchMode[]) => Promise<void>;
+  onProbeRemoteHost?: (target: string) => Promise<PingHostResult>;
+  onSavePendingHostTask?: (task: Omit<PendingHostPolicyTask, 'taskId' | 'createdAt'>) => Promise<void>;
+  onDeletePendingHostTask?: (targetHostName: string) => Promise<void>;
+  onApplyPendingHostTask?: (task: PendingHostPolicyTask) => Promise<void>;
   onTriggerReboot: () => Promise<{ success: boolean; message: string }>;
   onOpenWindowsUpdate: () => Promise<void>;
   onNotify?: (message: string) => void;
+  onDeleteHostPolicySnapshot?: (hostName: string) => Promise<void>;
+  onClearAllHostPolicySnapshots?: () => Promise<void>;
 }
 
 const CATEGORY_OPTIONS: Array<{ id: 'all' | WindowsNetworkChangeItem['category']; label: string }> = [
@@ -103,17 +122,26 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   netInfo,
   policyStatus,
   hostPolicySnapshots,
+  pendingHostActions = {},
+  portableShares = [],
   lastPatchResult,
   lastAutoAlignResult = null,
   isInspecting,
   isAutoAligning = false,
+  isApplyingPendingHostTask = false,
   isApplyingMode,
   onInspectPolicy,
   onApplyPatch,
   onSyncMatchedPolicies,
+  onProbeRemoteHost,
+  onSavePendingHostTask,
+  onDeletePendingHostTask,
+  onApplyPendingHostTask,
   onTriggerReboot,
   onOpenWindowsUpdate,
   onNotify,
+  onDeleteHostPolicySnapshot,
+  onClearAllHostPolicySnapshots,
 }) => {
   const [selectedEra, setSelectedEra] = useState<'all' | WindowsNetworkEra>('all');
   const [selectedCategory, setSelectedCategory] = useState<'all' | WindowsNetworkChangeItem['category']>('all');
@@ -123,13 +151,28 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   const [isRebooting, setIsRebooting] = useState(false);
   const [rebootFeedback, setRebootFeedback] = useState<string | null>(null);
   const [selectedHostKey, setSelectedHostKey] = useState<string>('');
+  const [confirmingDeleteKey, setConfirmingDeleteKey] = useState<string | null>(null);
+  const [confirmingClearAll, setConfirmingClearAll] = useState(false);
+  const [deletingSnapKey, setDeletingSnapKey] = useState<string | null>(null);
+  const [probeTargetIp, setProbeTargetIp] = useState('');
+  const [isProbingHost, setIsProbingHost] = useState(false);
+  const [probeError, setProbeError] = useState<string | null>(null);
+  const [probeResult, setProbeResult] = useState<PingHostResult | null>(null);
+  const [diffFilter, setDiffFilter] = useState<'all' | 'issues' | 'local' | 'host'>('all');
+  const [showSnapshotHistory, setShowSnapshotHistory] = useState(false);
+  const [pendingTargetHostOverride, setPendingTargetHostOverride] = useState('');
+  const [pendingModesDraft, setPendingModesDraft] = useState<PolicyPatchMode[]>(['safe_compat']);
+  const [pendingIncludeGuestUnlock, setPendingIncludeGuestUnlock] = useState(true);
+  const [isSavingPendingTask, setIsSavingPendingTask] = useState(false);
+  const [confirmingDeletePendingKey, setConfirmingDeletePendingKey] = useState<string | null>(null);
+  const initializedPendingSourceRef = useRef<string | null>(null);
 
-  const isBusy = isInspecting || isApplyingMode !== null || isAutoAligning;
+  const isBusy = isInspecting || isApplyingMode !== null || isAutoAligning || isApplyingPendingHostTask;
   const currentEra: WindowsNetworkEra = policyStatus?.osEra || netInfo.osEra || 'win11_24h2';
   const currentBuild = policyStatus?.osBuild || netInfo.osBuild || 26100;
   const currentDisp = policyStatus?.osDisplayVersion || netInfo.osDisplayVersion || '24H2';
 
-  const { remoteSnapshotKeys, localSnapshotKey } = useMemo(() => {
+  const { remoteSnapshotKeys, localSnapshotKey, allSavedSnapshotKeys } = useMemo(() => {
     const keys = Object.keys(hostPolicySnapshots || {});
     const currentLower = netInfo.hostname.trim().toLowerCase();
     const remote: string[] = [];
@@ -141,9 +184,20 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
         remote.push(k);
       }
     }
-    remote.sort((a, b) => a.localeCompare(b));
-    return { remoteSnapshotKeys: remote, localSnapshotKey: local };
+    remote.sort((a, b) => {
+      const ta = Date.parse(hostPolicySnapshots[a]?.capturedAt || '') || 0;
+      const tb = Date.parse(hostPolicySnapshots[b]?.capturedAt || '') || 0;
+      if (tb !== ta) return tb - ta;
+      return a.localeCompare(b);
+    });
+    const all = local ? [...remote, local] : [...remote];
+    return { remoteSnapshotKeys: remote, localSnapshotKey: local, allSavedSnapshotKeys: all };
   }, [hostPolicySnapshots, netInfo.hostname]);
+
+  useEffect(() => {
+    setConfirmingDeleteKey(null);
+    setConfirmingClearAll(false);
+  }, [allSavedSnapshotKeys.length]);
 
   const effectiveSourceId = useMemo(() => {
     if (selectedHostKey) {
@@ -179,8 +233,97 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
     [crossPcDiffs]
   );
   const hostSideRows = useMemo(
-    () => crossPcDiffs.filter((row) => row.actionTarget === 'host' && row.status !== 'match'),
+    () => crossPcDiffs.filter((row) => (row.actionTarget === 'host' || row.actionTarget === 'both') && row.status !== 'match'),
     [crossPcDiffs]
+  );
+  const hostPendingPlan = useMemo(() => extractHostPendingPlan(crossPcDiffs), [crossPcDiffs]);
+
+  const matchingPortableEntry = useMemo(() => {
+    if (!selectedHostSnap || isPresetTarget) return null;
+    const hostLower = selectedHostSnap.hostName.trim().toLowerCase();
+    return (
+      portableShares.find((s) => (s.sourceHostName || '').trim().toLowerCase() === hostLower) || null
+    );
+  }, [selectedHostSnap, isPresetTarget, portableShares]);
+
+  const resolvedHostIpHint = useMemo(() => {
+    if (selectedHostSnap?.sourceIp) return selectedHostSnap.sourceIp;
+    if (matchingPortableEntry?.sourceIp) return matchingPortableEntry.sourceIp;
+    if (!isPresetTarget && selectedHostSnap?.hostName) return selectedHostSnap.hostName;
+    const remoteShare = portableShares.find(
+      (s) => (s.sourceHostName || '').trim().toLowerCase() !== netInfo.hostname.trim().toLowerCase()
+    );
+    return remoteShare?.sourceIp || '';
+  }, [selectedHostSnap, matchingPortableEntry, isPresetTarget, portableShares, netInfo.hostname]);
+
+  useEffect(() => {
+    setProbeTargetIp(resolvedHostIpHint);
+    setProbeError(null);
+    setProbeResult(null);
+  }, [effectiveSourceId, resolvedHostIpHint]);
+
+  const pendingInitKey = `${effectiveSourceId}::${Boolean(policyStatus)}`;
+  useEffect(() => {
+    if (initializedPendingSourceRef.current === pendingInitKey) return;
+    initializedPendingSourceRef.current = pendingInitKey;
+    if (hostPendingPlan.modes.length > 0) {
+      setPendingModesDraft(hostPendingPlan.modes);
+    } else {
+      setPendingModesDraft(['safe_compat']);
+    }
+    setPendingIncludeGuestUnlock(
+      hostPendingPlan.includeGuestUnlock || (isPresetTarget && hostSideRows.length === 0)
+    );
+  }, [pendingInitKey, hostPendingPlan.modes, hostPendingPlan.includeGuestUnlock, isPresetTarget, hostSideRows.length]);
+
+  useEffect(() => {
+    if (isPresetTarget) {
+      const remoteShare = portableShares.find(
+        (s) => (s.sourceHostName || '').trim().toLowerCase() !== netInfo.hostname.trim().toLowerCase()
+      );
+      setPendingTargetHostOverride(remoteShare?.sourceHostName || 'MAIN-HOST-PC');
+    } else if (selectedHostSnap) {
+      setPendingTargetHostOverride(selectedHostSnap.hostName);
+    }
+  }, [isPresetTarget, selectedHostSnap, portableShares, netInfo.hostname]);
+
+  const filteredCrossPcDiffs = useMemo(() => {
+    if (diffFilter === 'issues') return crossPcDiffs.filter((r) => r.status !== 'match');
+    if (diffFilter === 'local') {
+      return crossPcDiffs.filter(
+        (r) => r.status !== 'match' && (r.actionTarget === 'local' || r.actionTarget === 'both')
+      );
+    }
+    if (diffFilter === 'host') {
+      return crossPcDiffs.filter(
+        (r) => r.status !== 'match' && (r.actionTarget === 'host' || r.actionTarget === 'both')
+      );
+    }
+    return crossPcDiffs;
+  }, [crossPcDiffs, diffFilter]);
+
+  const diffCounts = useMemo(
+    () => ({
+      all: crossPcDiffs.length,
+      issues: crossPcDiffs.filter((r) => r.status !== 'match').length,
+      local: crossPcDiffs.filter(
+        (r) => r.status !== 'match' && (r.actionTarget === 'local' || r.actionTarget === 'both')
+      ).length,
+      host: crossPcDiffs.filter(
+        (r) => r.status !== 'match' && (r.actionTarget === 'host' || r.actionTarget === 'both')
+      ).length,
+    }),
+    [crossPcDiffs]
+  );
+
+  const pendingTaskList = useMemo(
+    () =>
+      Object.values(pendingHostActions || {}).sort((a, b) => {
+        const ta = Date.parse(a.createdAt || '') || 0;
+        const tb = Date.parse(b.createdAt || '') || 0;
+        return tb - ta;
+      }),
+    [pendingHostActions]
   );
 
   const filteredItems = useMemo(() => {
@@ -219,12 +362,84 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
     }
   };
 
+  const handleRunHostProbe = async () => {
+    if (!onProbeRemoteHost) return;
+    const target = probeTargetIp.trim() || selectedHostSnap?.sourceIp || selectedHostSnap?.hostName || '';
+    if (!target) {
+      const msg = '진단할 호스트 IP 주소 또는 컴퓨터 이름을 입력하세요.';
+      setProbeError(msg);
+      onNotify?.(msg);
+      return;
+    }
+    setProbeError(null);
+    setIsProbingHost(true);
+    try {
+      const result = await onProbeRemoteHost(target);
+      setProbeResult(result);
+      onNotify?.(
+        result.reachable
+          ? `${result.target} 응답 확인 (TCP 445 ${result.smbPortOpen ? 'OPEN' : 'CLOSED'})`
+          : `${result.target} 응답 없음 — 방화벽·IP 대역을 확인하세요.`
+      );
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : '호스트 IP 진단 중 오류가 발생했습니다.';
+      setProbeResult(null);
+      setProbeError(errMsg);
+      onNotify?.(errMsg);
+    } finally {
+      setIsProbingHost(false);
+    }
+  };
+
+  const handleTogglePendingMode = (mode: PolicyPatchMode) => {
+    setPendingModesDraft((prev) =>
+      prev.includes(mode) ? prev.filter((m) => m !== mode) : [...prev, mode]
+    );
+  };
+
+  const handleSavePendingTask = async () => {
+    if (!onSavePendingHostTask) return;
+    const cleanTargetHost = (
+      isPresetTarget ? pendingTargetHostOverride : selectedHostSnap?.hostName || pendingTargetHostOverride
+    ).trim();
+    if (!cleanTargetHost) {
+      onNotify?.('USB 대기 작업을 저장할 대상 호스트 컴퓨터 이름을 입력하세요.');
+      return;
+    }
+    if (pendingModesDraft.length === 0 && !pendingIncludeGuestUnlock) {
+      onNotify?.('최소 1개 이상의 호스트 적용 정책 항목을 선택하세요.');
+      return;
+    }
+    setIsSavingPendingTask(true);
+    try {
+      await onSavePendingHostTask({
+        targetHostName: cleanTargetHost,
+        ...(probeTargetIp.trim() ? { targetIp: probeTargetIp.trim() } : {}),
+        requestedByHostName: netInfo.hostname,
+        ...(netInfo.primaryIp ? { requestedByIp: netInfo.primaryIp } : {}),
+        modes: pendingModesDraft,
+        includeGuestUnlock: pendingIncludeGuestUnlock,
+        conflictLabels:
+          hostPendingPlan.conflictLabels.length > 0
+            ? hostPendingPlan.conflictLabels
+            : pendingModesDraft.map((m) => getPolicyPatchLabel(m)),
+      });
+    } finally {
+      setIsSavingPendingTask(false);
+    }
+  };
+
   const handleCopyHostGuide = async () => {
-    if (!selectedHostSnap || hostSideRows.length === 0) return;
+    if (!selectedHostSnap) return;
+    const guideItems = hostSideRows.length > 0 ? hostSideRows : conflictRows;
+    const guideBody =
+      guideItems.length > 0
+        ? guideItems.map((row) => `- ${row.label}: ${row.impact}`)
+        : ['- 감지된 호스트-클라이언트 정책 불일치가 없습니다. (양단 공유 정책 호환 상태)'];
     const guideText = [
       `[AhBiShare OneClick 호스트 PC(${selectedHostSnap.hostName}) 정책 정렬 안내]`,
-      ...hostSideRows.map((row) => `- ${row.label}: ${row.impact}`),
-      '조치 방법: 호스트 PC에서 AhBiShare OneClick > [OS 호환성 매트릭스] 탭 > [안전 호환 원클릭 적용] 또는 [프린터 RPC·스풀러 호환]을 실행하세요.',
+      ...guideBody,
+      '조치 방법: 호스트 PC에서 AhBiShare OneClick을 실행하면 USB에 예약된 대기 작업을 원클릭 적용하거나 [OS 호환성 매트릭스] 탭 > [안전 호환 원클릭 적용]으로 해결할 수 있습니다.',
     ].join('\n');
     let copied = false;
     try {
@@ -294,7 +509,7 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
         {/* Live Telemetry Cards */}
         {policyStatus && (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
               <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
                 <div className="text-slate-500 dark:text-slate-400">공유 호환 지수</div>
                 <div
@@ -311,15 +526,16 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
               </div>
 
               <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
-                <div className="text-slate-500 dark:text-slate-400">네트워크 프로필</div>
+                <div className="text-slate-500 dark:text-slate-400">프로필 · TCP 445 방화벽</div>
                 <div
                   className={`mt-1 tabular-data font-bold ${
-                    policyStatus.networkProfile === 'Public'
+                    policyStatus.networkProfile === 'Public' || policyStatus.firewall445Allowed === false
                       ? 'text-red-600 dark:text-red-400'
                       : 'text-emerald-600 dark:text-emerald-400'
                   }`}
                 >
-                  {policyStatus.networkProfile}
+                  {policyStatus.networkProfile} ·{' '}
+                  {policyStatus.firewall445Allowed === false ? '445 차단' : '445 허용'}
                 </div>
               </div>
 
@@ -337,16 +553,35 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
               </div>
 
               <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
-                <div className="text-slate-500 dark:text-slate-400">게스트 로그온</div>
+                <div className="text-slate-500 dark:text-slate-400">게스트 로그온 · 계정(*-501)</div>
                 <div
                   className={`mt-1 font-bold ${
-                    policyStatus.allowInsecureGuestAuth && !policyStatus.guestNetworkLogonDenied
+                    policyStatus.allowInsecureGuestAuth &&
+                    !policyStatus.guestNetworkLogonDenied &&
+                    policyStatus.guestAccountEnabled !== false
                       ? 'text-emerald-600 dark:text-emerald-400'
                       : 'text-amber-600 dark:text-amber-400'
                   }`}
                 >
-                  {policyStatus.allowInsecureGuestAuth ? '허용 (클라이언트)' : '차단됨 (기본)'}
-                  {policyStatus.guestNetworkLogonDenied ? ' · 정책거부(1385)' : ''}
+                  {policyStatus.allowInsecureGuestAuth ? '허용' : '차단'} ·{' '}
+                  {policyStatus.guestAccountEnabled === false ? '계정 OFF' : '계정 ON'}
+                  {policyStatus.guestNetworkLogonDenied ? ' · 거부(1385)' : ''}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
+                <div className="text-slate-500 dark:text-slate-400">LSA 빈 암호(86) · 익명(1223)</div>
+                <div
+                  className={`mt-1 font-bold ${
+                    policyStatus.limitBlankPasswordUse ||
+                    policyStatus.restrictNullSessAccess ||
+                    policyStatus.restrictAnonymous
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
+                  {policyStatus.limitBlankPasswordUse ? '빈암호 제한(86)' : '빈암호 허용'} ·{' '}
+                  {policyStatus.restrictNullSessAccess || policyStatus.restrictAnonymous ? '익명 제한' : '익명 완화'}
                 </div>
               </div>
 
@@ -425,7 +660,8 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                     호스트-클라이언트 정책 불일치 {conflictRows.length}건 감지 · 원클릭 자동 정렬 대기
                   </span>
                   <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">
-                    비교 대상: {selectedHostSnap.hostName}
+                    비교 대상: {selectedHostSnap.hostName} ({formatEraShortLabel(selectedHostSnap.osEra, selectedHostSnap.osBuild, selectedHostSnap.osDisplayVersion)})
+                    {selectedHostSnap.capturedAt ? ` · 감지 일시: ${formatSnapshotTimestamp(selectedHostSnap.capturedAt)}` : ''}
                     {isPresetTarget ? ' (권장 호환 기준)' : ' (USB 포터블 호스트)'}
                   </span>
                 </div>
@@ -441,6 +677,49 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {!isPresetTarget && onDeleteHostPolicySnapshot && (
+                confirmingDeleteKey === `banner:${effectiveSourceId}` ? (
+                  <div className="inline-flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={deletingSnapKey === effectiveSourceId}
+                      onClick={async () => {
+                        setDeletingSnapKey(effectiveSourceId);
+                        try {
+                          await onDeleteHostPolicySnapshot(effectiveSourceId);
+                          setSelectedHostKey('');
+                        } finally {
+                          setDeletingSnapKey(null);
+                          setConfirmingDeleteKey(null);
+                        }
+                      }}
+                      className="px-2.5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer disabled:opacity-50"
+                    >
+                      삭제 확정
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDeleteKey(null)}
+                      className="px-2.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
+                    >
+                      취소
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    id="btn-banner-delete-snap"
+                    type="button"
+                    onClick={() => {
+                      setConfirmingClearAll(false);
+                      setConfirmingDeleteKey(`banner:${effectiveSourceId}`);
+                    }}
+                    className="px-3 py-2 text-xs font-semibold text-red-600 dark:text-red-400 bg-white dark:bg-slate-900 hover:bg-red-50 dark:hover:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    이 스냅샷 삭제
+                  </button>
+                )
+              )}
               <button
                 id="btn-scroll-diff-detail"
                 type="button"
@@ -946,182 +1225,787 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
         })()}
       </section>
 
-      {/* Cross-PC Policy Diff Diagnostics & Batch Auto-Align */}
+      {/* Cross-PC Policy Diff Diagnostics: 3-Step One-Click Resolution Wizard */}
       <section
         id="cross-pc-policy-diff"
         className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden"
       >
+        {/* Top Wizard Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1">
             <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <ArrowLeftRight className="w-4 h-4 text-indigo-500 shrink-0" />
-              메인 PC vs 클라이언트 PC 양단 정책 차이 비교 및 일괄 자동 정렬
+              메인 PC vs 클라이언트 PC 양단 정책 진단 & 3단계 원클릭 해결 마법사
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               {isPresetTarget
-                ? `원격 USB 호스트 스냅샷이 없어 '${selectedHostSnap?.hostName}' 기준으로 즉시 비교 중입니다. 호스트 PC에서 공유를 개설하면 실제 호스트 스냅샷이 우선 비교됩니다.`
+                ? `원격 USB 호스트 스냅샷 대신 '${selectedHostSnap?.hostName}' 기준과 대조 중입니다. 호스트 PC에서 앱을 실행하면 실제 스냅샷이 자동 기록됩니다.`
                 : isSelfComparison
-                  ? `현재 PC(${netInfo.hostname})의 저장 스냅샷과 실시간 정책을 대조 중입니다. 다른 호스트와 비교하려면 위 드롭다운에서 권장 기준 프로필을 선택하세요.`
-                  : `USB 포터블 설정(AhBiShare_OneClick.portable.json)에 기록된 원격 호스트(${selectedHostSnap?.hostName})와 현재 PC 정책을 대조합니다.`}
+                  ? `현재 PC(${netInfo.hostname})의 저장 스냅샷과 실시간 정책을 대조 중입니다.`
+                  : `USB 포터블 설정(${selectedHostSnap?.hostName}${selectedHostSnap?.sourceIp ? ` · ${selectedHostSnap.sourceIp}` : ''})과 현재 PC 정책을 심층 대조합니다.`}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <select
-              id="cross-pc-host-select"
-              value={effectiveSourceId}
-              onChange={(e) => setSelectedHostKey(e.target.value)}
-              className="px-3 py-2 text-xs tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {remoteSnapshotKeys.map((key) => (
-                <option key={key} value={key}>
-                  원격 호스트: {key}
-                </option>
-              ))}
-              {HOST_POLICY_REFERENCE_TARGETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  기준: {preset.label}
-                </option>
-              ))}
-              {localSnapshotKey && (
-                <option key={localSnapshotKey} value={localSnapshotKey}>
-                  현재 PC 스냅샷: {localSnapshotKey}
-                </option>
-              )}
-            </select>
+          <div className="tabular-data text-[11px] font-medium text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-2 shrink-0">
+            <span className={selectedHostSnap ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}>
+              01 대상·IP 프로브
+            </span>
+            <span>→</span>
+            <span className={diffConflictModes.length === 0 ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'font-semibold text-slate-800 dark:text-slate-200'}>
+              02 내 PC 정렬 ({diffConflictModes.length === 0 ? '완료' : `${diffConflictModes.length}종 대기`})
+            </span>
+            <span>→</span>
+            <span className={pendingTaskList.length > 0 ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}>
+              03 호스트 USB 예약 ({pendingTaskList.length}건)
+            </span>
+          </div>
+        </div>
 
-            {diffConflictModes.length > 0 && (
+        {/* 3-Step Resolution Wizard Cards (Single-elevation divided grid) */}
+        <div className="grid grid-cols-1 xl:grid-cols-3 divide-y xl:divide-y-0 xl:divide-x divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800">
+          {/* STEP 01: Target Selection & Live IP Probe */}
+          <div className="p-5 space-y-4 flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="tabular-data text-[11px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+                  STEP 01 · 대상 선택 & 실시간 IP 프로브
+                </span>
+                {allSavedSnapshotKeys.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowSnapshotHistory((v) => !v)}
+                    className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Calendar className="w-3 h-3" />
+                    스냅샷 목록 ({allSavedSnapshotKeys.length})
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <select
+                  id="cross-pc-host-select"
+                  value={effectiveSourceId}
+                  onChange={(e) => {
+                    setConfirmingDeleteKey(null);
+                    setConfirmingClearAll(false);
+                    setSelectedHostKey(e.target.value);
+                  }}
+                  className="w-full px-3 py-2 text-xs tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {remoteSnapshotKeys.map((key) => {
+                    const snap = hostPolicySnapshots[key];
+                    const ts = snap?.capturedAt ? formatSnapshotTimestamp(snap.capturedAt) : '';
+                    const eraText = snap ? formatEraShortLabel(snap.osEra, snap.osBuild, snap.osDisplayVersion) : '';
+                    return (
+                      <option key={key} value={key}>
+                        원격 호스트: {key}{snap?.sourceIp ? ` (${snap.sourceIp})` : ''}{eraText ? ` · ${eraText}` : ''}{ts ? ` · ${ts}` : ''}
+                      </option>
+                    );
+                  })}
+                  {HOST_POLICY_REFERENCE_TARGETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      기준: {preset.label}
+                    </option>
+                  ))}
+                  {localSnapshotKey && (
+                    <option key={localSnapshotKey} value={localSnapshotKey}>
+                      현재 PC 스냅샷: {localSnapshotKey}
+                      {hostPolicySnapshots[localSnapshotKey]?.capturedAt
+                        ? ` · ${formatSnapshotTimestamp(hostPolicySnapshots[localSnapshotKey]?.capturedAt)}`
+                        : ''}
+                    </option>
+                  )}
+                </select>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {!isPresetTarget && onDeleteHostPolicySnapshot && (
+                    confirmingDeleteKey === `select:${effectiveSourceId}` ? (
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          id="btn-confirm-delete-host-snap"
+                          type="button"
+                          disabled={deletingSnapKey === effectiveSourceId}
+                          onClick={async () => {
+                            setDeletingSnapKey(effectiveSourceId);
+                            try {
+                              await onDeleteHostPolicySnapshot(effectiveSourceId);
+                              setSelectedHostKey('');
+                            } finally {
+                              setDeletingSnapKey(null);
+                              setConfirmingDeleteKey(null);
+                            }
+                          }}
+                          className="px-2.5 py-1.5 text-[11px] font-bold text-white bg-red-600 hover:bg-red-500 rounded-md cursor-pointer disabled:opacity-50"
+                        >
+                          삭제 확정
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingDeleteKey(null)}
+                          className="px-2.5 py-1.5 text-[11px] font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-md cursor-pointer"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        id="btn-delete-host-snap"
+                        type="button"
+                        onClick={() => {
+                          setConfirmingClearAll(false);
+                          setConfirmingDeleteKey(`select:${effectiveSourceId}`);
+                        }}
+                        className="px-2.5 py-1.5 text-[11px] font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        이 스냅샷 삭제
+                      </button>
+                    )
+                  )}
+
+                  {allSavedSnapshotKeys.length > 0 && onClearAllHostPolicySnapshots && (
+                    confirmingClearAll ? (
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          id="btn-confirm-clear-all-snaps"
+                          type="button"
+                          disabled={deletingSnapKey === '__ALL__'}
+                          onClick={async () => {
+                            setDeletingSnapKey('__ALL__');
+                            try {
+                              await onClearAllHostPolicySnapshots();
+                              setSelectedHostKey(HOST_POLICY_REFERENCE_TARGETS[0].id);
+                            } finally {
+                              setDeletingSnapKey(null);
+                              setConfirmingClearAll(false);
+                            }
+                          }}
+                          className="px-2.5 py-1.5 text-[11px] font-bold text-white bg-red-600 hover:bg-red-500 rounded-md cursor-pointer disabled:opacity-50"
+                        >
+                          전체 비우기 확정
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingClearAll(false)}
+                          className="px-2.5 py-1.5 text-[11px] font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-md cursor-pointer"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        id="btn-clear-all-snaps"
+                        type="button"
+                        onClick={() => {
+                          setConfirmingDeleteKey(null);
+                          setConfirmingClearAll(true);
+                        }}
+                        className="px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 border border-slate-200 dark:border-slate-700 rounded-md inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        전체 목록 비우기
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+
+              {/* Live IP & SMB TCP 445 Probe */}
+              <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 space-y-2">
+                <label
+                  htmlFor="probe-host-ip-input"
+                  className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300"
+                >
+                  실시간 호스트 IP · SMB(TCP 445) 도달성 진단
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="probe-host-ip-input"
+                    type="text"
+                    value={probeTargetIp}
+                    onChange={(e) => {
+                      setProbeError(null);
+                      setProbeTargetIp(e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (!isProbingHost && onProbeRemoteHost) {
+                          void handleRunHostProbe();
+                        }
+                      }
+                    }}
+                    placeholder="예: 192.168.0.105 또는 호스트명"
+                    className="flex-1 min-w-0 px-3 py-1.5 text-xs tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    id="btn-probe-host-ip"
+                    type="button"
+                    disabled={isProbingHost || !onProbeRemoteHost}
+                    onClick={() => void handleRunHostProbe()}
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    <Activity className={`w-3.5 h-3.5 ${isProbingHost ? 'animate-pulse text-indigo-500' : ''}`} />
+                    {isProbingHost ? '진단 중...' : '실시간 IP 진단'}
+                  </button>
+                </div>
+
+                {probeError && (
+                  <p role="alert" className="text-[11px] font-medium text-red-600 dark:text-red-400">
+                    {probeError}
+                  </p>
+                )}
+
+                {probeResult && (
+                  <div
+                    id="live-host-probe-result"
+                    className={`tabular-data text-[11px] leading-relaxed ${
+                      probeResult.reachable && probeResult.smbPortOpen
+                        ? 'text-emerald-700 dark:text-emerald-300'
+                        : probeResult.reachable
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-red-600 dark:text-red-400'
+                    }`}
+                  >
+                    <span className="font-bold">
+                      {probeResult.reachable ? '도달 가능' : '응답 없음'}
+                    </span>
+                    {' · '}
+                    <span>{probeResult.resolvedIp || probeResult.target}</span>
+                    {probeResult.avgLatencyMs !== null && ` · 평균 ${probeResult.avgLatencyMs}ms`}
+                    {' · '}
+                    <span className="font-semibold">
+                      TCP 445 {probeResult.smbPortOpen ? 'OPEN' : 'CLOSED'}
+                    </span>
+                    {' · '}
+                    <span>손실 {probeResult.packetLossPct}%</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {selectedHostSnap?.capturedAt && (
+              <div className="tabular-data text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                <Clock className="w-3 h-3 shrink-0" />
+                <span>스냅샷 일시: {formatSnapshotTimestamp(selectedHostSnap.capturedAt)}</span>
+              </div>
+            )}
+          </div>
+
+          {/* STEP 02: Local PC 1-Click Auto-Align */}
+          <div className="p-5 space-y-4 flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="tabular-data text-[11px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+                  STEP 02 · 내 PC({netInfo.hostname}) 자동 정렬
+                </span>
+                <span
+                  className={`tabular-data text-[11px] font-bold ${
+                    diffConflictModes.length > 0
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
+                  {diffConflictModes.length > 0 ? `${diffConflictModes.length}종 패치 대기` : '정렬 완료'}
+                </span>
+              </div>
+
+              {!selectedHostSnap || !policyStatus ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  OS 네트워크 정책을 먼저 분석해 주세요.
+                </p>
+              ) : diffConflictModes.length > 0 ? (
+                <div className="space-y-2 text-xs">
+                  <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
+                    현재 PC에서 즉시 해결 가능한 정책 충돌{' '}
+                    <strong className="font-bold text-slate-900 dark:text-white">
+                      {diffCounts.local}건
+                    </strong>
+                    이 감지되었습니다.
+                  </p>
+                  <div className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                    실행 예정 패치:{' '}
+                    <span className="font-semibold text-indigo-600 dark:text-indigo-300">
+                      {diffConflictModes.map((m) => getPolicyPatchLabel(m)).join(' · ')}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5 text-xs text-emerald-700 dark:text-emerald-300">
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>내 PC 로컬 적용 가능 정책이 모두 정렬되었습니다.</span>
+                  </div>
+                  {lastAutoAlignResult && (
+                    <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                      최근 결과: {lastAutoAlignResult.rebootJudgment.title}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
               <button
                 id="btn-sync-cross-pc-policy"
                 type="button"
-                disabled={isBusy}
+                disabled={isBusy || diffConflictModes.length === 0}
                 onClick={() => void onSyncMatchedPolicies(diffConflictModes)}
-                className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                className="w-full py-2.5 px-4 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-45"
               >
                 {isAutoAligning ? (
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 ) : (
                   <Zap className="w-3.5 h-3.5" />
                 )}
-                {isAutoAligning
-                  ? '일괄 자동 정렬 적용 중...'
-                  : `불일치 정책 일괄 자동 정렬 (${diffConflictModes.length}종)`}
+                {diffConflictModes.length === 0
+                  ? '내 PC 정책 정렬 완료됨'
+                  : isAutoAligning
+                    ? '내 PC 정책 자동 정렬 중...'
+                    : `내 PC 불일치 정책 일괄 정렬 (${diffConflictModes.length}종)`}
               </button>
-            )}
+            </div>
+          </div>
+
+          {/* STEP 03: Remote Host USB Pending Task Reservation */}
+          <div className="p-5 space-y-4 flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="tabular-data text-[11px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+                  STEP 03 · 원격 호스트 USB 대기 작업 예약
+                </span>
+                <span className="tabular-data text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  호스트 조치 {diffCounts.host}건
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                빈 암호 제한(86)·Guest(1385)·익명 차단(1223)·방화벽 445 등 호스트 측 정책은 USB에 대기 작업을 저장해 두면 호스트 PC에서 앱 실행 시 1클릭 적용됩니다.
+              </p>
+
+              {isPresetTarget && (
+                <div className="space-y-1">
+                  <label
+                    htmlFor="pending-target-host-input"
+                    className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300"
+                  >
+                    대상 호스트 컴퓨터 이름
+                  </label>
+                  <input
+                    id="pending-target-host-input"
+                    type="text"
+                    value={pendingTargetHostOverride}
+                    onChange={(e) => setPendingTargetHostOverride(e.target.value)}
+                    placeholder="예: MAIN-HOST-PC"
+                    className="w-full px-2.5 py-1.5 text-xs tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-1.5 text-[11px] text-slate-700 dark:text-slate-300">
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pendingModesDraft.includes('safe_compat')}
+                    onChange={() => handleTogglePendingMode('safe_compat')}
+                    className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>안전 호환 패치 (프로필 · 서명 · 게스트 · NTLM)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pendingIncludeGuestUnlock}
+                    onChange={(e) => setPendingIncludeGuestUnlock(e.target.checked)}
+                    className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Guest 무비밀번호 완전 개방 (오류 86·1223·1385 · 445)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pendingModesDraft.includes('rpc_printer_compat')}
+                    onChange={() => handleTogglePendingMode('rpc_printer_compat')}
+                    className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>프린터 RPC · 스풀러 호환 (0x11b·0x709)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pendingModesDraft.includes('enable_uac_token_filter')}
+                    onChange={() => handleTogglePendingMode('enable_uac_token_filter')}
+                    className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>UAC 원격 토큰 필터 허용 (관리자 Error 5)</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              {isSelfComparison && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
+                  현재 PC 자체 스냅샷을 선택 중입니다. STEP 01에서 원격 호스트나 권장 기준을 선택하면 USB 대기 작업을 예약할 수 있습니다.
+                </p>
+              )}
+              <button
+                id="btn-save-pending-host-task"
+                type="button"
+                disabled={isSavingPendingTask || !onSavePendingHostTask || isSelfComparison}
+                onClick={() => void handleSavePendingTask()}
+                className="w-full py-2 px-3 text-xs font-bold text-white bg-slate-900 dark:bg-indigo-600 hover:bg-slate-800 dark:hover:bg-indigo-500 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-45"
+              >
+                <Usb className="w-3.5 h-3.5" />
+                {isSavingPendingTask
+                  ? 'USB 대기 작업 저장 중...'
+                  : 'USB에 호스트 자동 적용 대기 작업 저장'}
+              </button>
+              <button
+                id="btn-copy-host-guide"
+                type="button"
+                onClick={() => void handleCopyHostGuide()}
+                className="w-full py-1.5 px-3 text-[11px] font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Copy className="w-3 h-3" />
+                호스트 PC 조치 안내 텍스트 복사
+              </button>
+            </div>
           </div>
         </div>
 
+        {/* Collapsible Snapshot History List */}
+        {showSnapshotHistory && allSavedSnapshotKeys.length > 0 && (
+          <div
+            id="detected-host-snapshots-list"
+            className="px-6 py-4 bg-slate-50/70 dark:bg-slate-950/40 border-b border-slate-200 dark:border-slate-800 space-y-2.5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+                저장된 호스트 정책 스냅샷 ({allSavedSnapshotKeys.length}건 · 날짜/시간 표기)
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                항목을 클릭하면 비교 대상으로 즉시 전환됩니다.
+              </span>
+            </div>
+
+            <div className="divide-y divide-slate-200 dark:divide-slate-800 border-t border-slate-200 dark:border-slate-800">
+              {allSavedSnapshotKeys.map((key) => {
+                const snap = hostPolicySnapshots[key];
+                if (!snap) return null;
+                const isLocal = key === localSnapshotKey;
+                const isSelected = effectiveSourceId === key;
+                const ts = snap.capturedAt ? formatSnapshotTimestamp(snap.capturedAt) : '일시 미기록';
+                const eraLabel = formatEraShortLabel(snap.osEra, snap.osBuild, snap.osDisplayVersion);
+                const rowConfirmKey = `list:${key}`;
+
+                return (
+                  <div
+                    key={key}
+                    className={`py-2.5 flex items-center justify-between gap-3 text-xs ${
+                      isSelected ? 'text-indigo-700 dark:text-indigo-300' : ''
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmingDeleteKey(null);
+                        setConfirmingClearAll(false);
+                        setSelectedHostKey(key);
+                      }}
+                      className="min-w-0 flex-1 text-left cursor-pointer flex flex-wrap items-center gap-x-2 gap-y-0.5"
+                    >
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {snap.hostName || key}
+                      </span>
+                      <span className="tabular-data text-[11px] text-slate-500 dark:text-slate-400">
+                        {isLocal ? '현재 PC' : '원격 호스트'}
+                        {snap.sourceIp ? ` · ${snap.sourceIp}` : ''} · {eraLabel} · {ts}
+                      </span>
+                      {isSelected && (
+                        <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                          · 선택됨
+                        </span>
+                      )}
+                    </button>
+
+                    {onDeleteHostPolicySnapshot && (
+                      <div className="shrink-0">
+                        {confirmingDeleteKey === rowConfirmKey ? (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={deletingSnapKey === key}
+                              onClick={async () => {
+                                setDeletingSnapKey(key);
+                                try {
+                                  await onDeleteHostPolicySnapshot(key);
+                                  if (isSelected) {
+                                    setSelectedHostKey('');
+                                  }
+                                } finally {
+                                  setDeletingSnapKey(null);
+                                  setConfirmingDeleteKey(null);
+                                }
+                              }}
+                              className="px-2 py-1 text-[11px] font-bold text-white bg-red-600 hover:bg-red-500 rounded cursor-pointer disabled:opacity-50"
+                            >
+                              삭제 확정
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingDeleteKey(null)}
+                              className="px-2 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded cursor-pointer"
+                            >
+                              취소
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmingClearAll(false);
+                              setConfirmingDeleteKey(rowConfirmKey);
+                            }}
+                            title={`'${snap.hostName || key}' 스냅샷 삭제`}
+                            aria-label={`${snap.hostName || key} 스냅샷 삭제`}
+                            className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-md cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Saved USB Pending Host Tasks Queue */}
+        {pendingTaskList.length > 0 && (
+          <div
+            id="pending-host-tasks-queue"
+            className="px-6 py-3.5 bg-indigo-500/5 dark:bg-indigo-500/8 border-b border-slate-200 dark:border-slate-800 space-y-2"
+          >
+            <div className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+              <Usb className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+              <span>USB 포터블에 예약된 호스트 자동 적용 대기 작업 ({pendingTaskList.length}건)</span>
+            </div>
+            <div className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
+              {pendingTaskList.map((task) => {
+                const isForCurrentPc =
+                  task.targetHostName.trim().toLowerCase() === netInfo.hostname.trim().toLowerCase();
+                return (
+                  <div
+                    key={task.taskId}
+                    className="py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="tabular-data font-semibold text-slate-900 dark:text-white">
+                        대상 호스트: {task.targetHostName}
+                        {task.targetIp ? ` (${task.targetIp})` : ''}
+                        <span className="font-normal text-slate-500 dark:text-slate-400">
+                          {' · '}요청 PC: {task.requestedByHostName} · {formatSnapshotTimestamp(task.createdAt)}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-600 dark:text-slate-400">
+                        예약 패치: {task.modes.map((m) => getPolicyPatchLabel(m)).join(' · ')}
+                        {task.includeGuestUnlock ? ' · Guest 무비밀번호 개방 포함' : ''}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {onApplyPendingHostTask && isForCurrentPc && (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void onApplyPendingHostTask(task)}
+                          className="px-3 py-1.5 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-md inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                        >
+                          <Zap className="w-3 h-3" />
+                          지금 이 PC에 적용
+                        </button>
+                      )}
+                      {onDeletePendingHostTask && (
+                        confirmingDeletePendingKey === task.targetHostName ? (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await onDeletePendingHostTask(task.targetHostName);
+                                setConfirmingDeletePendingKey(null);
+                              }}
+                              className="px-2 py-1 text-[11px] font-bold text-white bg-red-600 hover:bg-red-500 rounded cursor-pointer"
+                            >
+                              삭제 확정
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingDeletePendingKey(null)}
+                              className="px-2 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded cursor-pointer"
+                            >
+                              취소
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingDeletePendingKey(task.targetHostName)}
+                            className="px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 border border-slate-300 dark:border-slate-700 rounded-md whitespace-nowrap cursor-pointer"
+                          >
+                            예약 취소
+                          </button>
+                        )
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Segmented Filter Tabs + Deep Comparison Table */}
         {!selectedHostSnap || !policyStatus ? (
           <div className="px-6 py-8 text-center text-xs text-slate-500 dark:text-slate-400">
             OS 네트워크 정책을 먼저 분석해 주세요.
           </div>
         ) : (
-          <div className="divide-y divide-slate-200 dark:divide-slate-800">
-            {diffConflictModes.length === 0 && (
-              <div className="px-6 py-3 bg-emerald-500/10 text-xs text-emerald-800 dark:text-emerald-300 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-medium">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>
-                    현재 PC와 선택된 비교 대상({selectedHostSnap.hostName}) 간의 로컬 적용 가능 네트워크 정책이 모두 호환 상태로 정렬되었습니다.
-                  </span>
-                </div>
-                {lastAutoAlignResult && (
-                  <span className="font-semibold text-emerald-700 dark:text-emerald-200">
-                    최근 정렬: {lastAutoAlignResult.rebootJudgment.title}
-                  </span>
-                )}
+          <div>
+            <div className="px-6 py-3 bg-slate-50/70 dark:bg-slate-950/30 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
+                {(
+                  [
+                    { id: 'all', label: `전체 항목 (${diffCounts.all})` },
+                    { id: 'issues', label: `불일치·경고 (${diffCounts.issues})` },
+                    { id: 'local', label: `내 PC 조치 (${diffCounts.local})` },
+                    { id: 'host', label: `호스트 조치 (${diffCounts.host})` },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    id={`diff-filter-${tab.id}`}
+                    type="button"
+                    onClick={() => setDiffFilter(tab.id)}
+                    className={`px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap cursor-pointer transition-colors ${
+                      diffFilter === tab.id
+                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
-            )}
 
-            {hostSideRows.length > 0 && (
-              <div className="px-6 py-3 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div className="flex items-start sm:items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 sm:mt-0" />
-                  <span>
-                    원격 호스트({selectedHostSnap.hostName}) 조치 필요 항목 ({hostSideRows.map((r) => r.label).join(' · ')}): 호스트 PC에서도 호환 패치를 실행해야 연결이 완료됩니다.
-                  </span>
-                </div>
-                <button
-                  id="btn-copy-host-guide"
-                  type="button"
-                  onClick={() => void handleCopyHostGuide()}
-                  className="px-3 py-1.5 text-xs font-semibold text-amber-900 dark:text-amber-100 bg-white/80 dark:bg-slate-900/80 hover:bg-white dark:hover:bg-slate-800 border border-amber-500/40 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer self-end sm:self-center"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  호스트 PC 조치 안내 복사
-                </button>
-              </div>
-            )}
+              <span className="tabular-data text-[11px] text-slate-500 dark:text-slate-400">
+                심층 비교 {filteredCrossPcDiffs.length}건 표시 중 · 호스트({selectedHostSnap.hostName}) ↔ 내 PC({netInfo.hostname})
+              </span>
+            </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 font-semibold">
                     <th className="py-3 px-6">비교 항목</th>
-                    <th className="py-3 px-4 tabular-data">호스트 ({selectedHostSnap.hostName})</th>
-                    <th className="py-3 px-4 tabular-data">현재 PC ({netInfo.hostname})</th>
+                    <th className="py-3 px-4 tabular-data">
+                      <div className="font-bold">
+                        호스트 ({selectedHostSnap.hostName})
+                        {selectedHostSnap.sourceIp ? ` · ${selectedHostSnap.sourceIp}` : ''}
+                      </div>
+                      {selectedHostSnap.capturedAt ? (
+                        <div className="text-[10px] font-normal text-slate-400 dark:text-slate-500 flex items-center gap-1 mt-0.5">
+                          <Calendar className="w-3 h-3 shrink-0" />
+                          <span>{formatSnapshotTimestamp(selectedHostSnap.capturedAt)}</span>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] font-normal text-slate-400 dark:text-slate-500 mt-0.5">
+                          기준 프로필
+                        </div>
+                      )}
+                    </th>
+                    <th className="py-3 px-4 tabular-data">
+                      <div className="font-bold">현재 PC ({netInfo.hostname})</div>
+                      {policyStatus.checkedAt && (
+                        <div className="text-[10px] font-normal text-slate-400 dark:text-slate-500 flex items-center gap-1 mt-0.5">
+                          <Clock className="w-3 h-3 shrink-0" />
+                          <span>{policyStatus.checkedAt}</span>
+                        </div>
+                      )}
+                    </th>
                     <th className="py-3 px-4">판정</th>
-                    <th className="py-3 px-6">자동 정렬 패치 · 영향</th>
+                    <th className="py-3 px-6">해결 방향 · 영향</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {crossPcDiffs.map((row) => (
-                    <tr
-                      key={row.id}
-                      className={
-                        row.status === 'conflict'
-                          ? 'bg-red-500/3 hover:bg-red-500/6 dark:hover:bg-red-500/10'
-                          : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/30'
-                      }
-                    >
-                      <td className="py-3 px-6 font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                        <div>{row.label}</div>
-                        {row.actionTarget && row.actionTarget !== 'none' && (
-                          <div className="mt-0.5 text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
-                            {row.actionTarget === 'local'
-                              ? '로컬 원클릭 정렬 대상'
-                              : row.actionTarget === 'host'
-                                ? '호스트 PC 조치 필요'
-                                : '프린터 공유 시 양단 권장'}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 tabular-data text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                        {row.hostValue}
-                      </td>
-                      <td className="py-3 px-4 tabular-data text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                        {row.clientValue}
-                      </td>
-                      <td className="py-3 px-4 font-bold whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center gap-1 ${
-                            row.status === 'conflict'
-                              ? 'text-red-600 dark:text-red-400'
-                              : row.status === 'warning'
-                                ? 'text-amber-600 dark:text-amber-400'
-                                : 'text-emerald-600 dark:text-emerald-400'
-                          }`}
-                        >
-                          {row.status === 'conflict' ? (
-                            <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                          ) : row.status === 'warning' ? (
-                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                          ) : (
-                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                          )}
-                          {row.status === 'conflict' ? '충돌 감지' : row.status === 'warning' ? '세대 차이' : '일치'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-6 text-slate-600 dark:text-slate-400">
-                        {row.recommendedPatchLabel && (
-                          <div className="mb-1 text-[11px] font-bold text-indigo-700 dark:text-indigo-300">
-                            원클릭 적용 예정: {row.recommendedPatchLabel}
-                          </div>
-                        )}
-                        <div>{row.impact}</div>
+                  {filteredCrossPcDiffs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 px-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                        선택한 필터 조건에 해당하는 정책 항목이 없습니다.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredCrossPcDiffs.map((row) => (
+                      <tr
+                        key={row.id}
+                        className={
+                          row.status === 'conflict'
+                            ? 'bg-red-500/3 hover:bg-red-500/6 dark:hover:bg-red-500/10'
+                            : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/30'
+                        }
+                      >
+                        <td className="py-3 px-6 font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
+                          <div>{row.label}</div>
+                          {row.actionTarget && row.actionTarget !== 'none' && (
+                            <div className="mt-0.5 text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
+                              {row.actionTarget === 'local'
+                                ? '내 PC 1클릭 정렬 대상'
+                                : row.actionTarget === 'host'
+                                  ? '호스트 PC USB 예약 대상'
+                                  : '양단 호환 정렬 권장'}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 tabular-data text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          {row.hostValue}
+                        </td>
+                        <td className="py-3 px-4 tabular-data text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          {row.clientValue}
+                        </td>
+                        <td className="py-3 px-4 font-bold whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center gap-1 ${
+                              row.status === 'conflict'
+                                ? 'text-red-600 dark:text-red-400'
+                                : row.status === 'warning'
+                                  ? 'text-amber-600 dark:text-amber-400'
+                                  : 'text-emerald-600 dark:text-emerald-400'
+                            }`}
+                          >
+                            {row.status === 'conflict' ? (
+                              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                            ) : row.status === 'warning' ? (
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            ) : (
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                            {row.status === 'conflict' ? '충돌 감지' : row.status === 'warning' ? '주의 · 차이' : '일치'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-6 text-slate-600 dark:text-slate-400">
+                          {row.recommendedPatchLabel && (
+                            <div className="mb-1 text-[11px] font-bold text-indigo-700 dark:text-indigo-300">
+                              권장 조치: {row.recommendedPatchLabel}
+                            </div>
+                          )}
+                          <div>{row.impact}</div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

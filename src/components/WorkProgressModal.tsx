@@ -28,6 +28,7 @@ export interface ProgressJobState {
 interface WorkProgressModalProps {
   job: ProgressJobState;
   onClose: () => void;
+  onOpenDiagnostics?: (errorDetail?: string) => void;
 }
 
 const AUTO_CLOSE_DELAY_MS = 1500;
@@ -49,7 +50,7 @@ function formatStepDuration(ms?: number): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClose }) => {
+export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClose, onOpenDiagnostics }) => {
   const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now());
   const [remainingAutoCloseMs, setRemainingAutoCloseMs] = useState<number>(AUTO_CLOSE_DELAY_MS);
   const activeStepRef = useRef<HTMLLIElement | null>(null);
@@ -479,16 +480,32 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
           ) : (
             <>
               <span className="text-xs text-red-600 dark:text-red-400 font-medium">
-                오류 내용을 확인한 뒤 창을 닫아 주세요.
+                오류 내용을 확인한 뒤 조치해 주세요.
               </span>
-              <button
-                id="btn-progress-confirm-error"
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-              >
-                확인 및 닫기
-              </button>
+              <div className="flex items-center gap-2">
+                {onOpenDiagnostics && (
+                  <button
+                    id="btn-progress-open-diag"
+                    type="button"
+                    onClick={() => {
+                      const err = job.errorDetail || job.summary || job.steps.find((s) => s.status === 'error')?.error;
+                      onClose();
+                      onOpenDiagnostics(err);
+                    }}
+                    className="px-3.5 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 shadow-sm"
+                  >
+                    해결 가이드 & 진단 열기
+                  </button>
+                )}
+                <button
+                  id="btn-progress-confirm-error"
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                >
+                  확인 및 닫기
+                </button>
+              </div>
             </>
           )}
         </div>

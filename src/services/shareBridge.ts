@@ -16,6 +16,7 @@ import {
   PortableEncryptedCredentials,
   OsNetworkPolicyStatus,
   HostPolicySnapshot,
+  PendingHostPolicyTask,
   PolicyApplyResult,
   AutoAlignBatchResult,
   PolicyPatchMode,
@@ -40,12 +41,14 @@ import {
   buildLiveStateScript,
   buildOsNetworkPolicyInspectScript,
   buildOsCompatibilityPatchScript,
+  buildHostGuestUnlockPsScript,
 } from '@/services/powershellEngine';
 import {
   classifyOsEra,
   combineRebootJudgments,
   computeCompatibilityScoreAndIssues,
   evaluateRebootJudgment,
+  formatSnapshotTimestamp,
   getPolicyPatchLabel,
   toHostPolicySnapshot,
 } from '@/services/networkEvolution';
@@ -190,6 +193,11 @@ let webSimPolicyBase: Omit<OsNetworkPolicyStatus, 'compatibilityScore' | 'detect
   allowInsecureGuestAuth: false,
   enableInsecureGuestLogons: false,
   guestNetworkLogonDenied: true,
+  limitBlankPasswordUse: true,
+  restrictNullSessAccess: true,
+  restrictAnonymous: false,
+  guestAccountEnabled: false,
+  firewall445Allowed: true,
   lmCompatibilityLevel: 3,
   ntlmRestrictOutbound: 0,
   netbiosEnabled: true,
@@ -456,6 +464,7 @@ async function loadWebPreviewPortable(): Promise<PortableLoadResult> {
       updatedAt: parsed.updatedAt || '',
       shares,
       ...(parsed.hostPolicies ? { hostPolicies: parsed.hostPolicies } : {}),
+      ...(parsed.pendingHostActions ? { pendingHostActions: parsed.pendingHostActions } : {}),
       ...(parsed.lastClientTarget ? { lastClientTarget: parsed.lastClientTarget } : {}),
     };
     return {
@@ -543,6 +552,7 @@ async function saveWebPreviewPortable(doc: PortableShareDocument): Promise<Porta
     updatedAt: nowIso,
     shares: diskShares,
     ...(doc.hostPolicies ? { hostPolicies: doc.hostPolicies } : {}),
+    ...(doc.pendingHostActions ? { pendingHostActions: doc.pendingHostActions } : {}),
     ...(doc.lastClientTarget ? { lastClientTarget: doc.lastClientTarget } : {}),
   };
   writeStore(STORAGE_PORTABLE_SIM_KEY, diskDoc);
@@ -552,6 +562,7 @@ async function saveWebPreviewPortable(doc: PortableShareDocument): Promise<Porta
     updatedAt: nowIso,
     shares: runtimeShares,
     ...(doc.hostPolicies ? { hostPolicies: doc.hostPolicies } : {}),
+    ...(doc.pendingHostActions ? { pendingHostActions: doc.pendingHostActions } : {}),
     ...(doc.lastClientTarget ? { lastClientTarget: doc.lastClientTarget } : {}),
   };
   return {
@@ -814,12 +825,90 @@ export const shareBridge = {
     return latestPortableDoc.hostPolicies ? { ...latestPortableDoc.hostPolicies } : {};
   },
 
+  getPendingHostActions(): Record<string, PendingHostPolicyTask> {
+    return latestPortableDoc.pendingHostActions ? { ...latestPortableDoc.pendingHostActions } : {};
+  },
+
+  async savePendingHostPolicyTask(
+    taskInput: Omit<PendingHostPolicyTask, 'taskId' | 'createdAt'>
+  ): Promise<{ success: boolean; task: PendingHostPolicyTask; pendingHostActions: Record<string, PendingHostPolicyTask> }> {
+    const cleanTarget = (taskInput.targetHostName || '').trim() || 'MAIN-HOST-PC';
+    const nextTask: PendingHostPolicyTask = {
+      taskId: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      targetHostName: cleanTarget,
+      ...(taskInput.targetIp ? { targetIp: taskInput.targetIp.trim() } : {}),
+      requestedByHostName: (taskInput.requestedByHostName || 'CLIENT-PC').trim(),
+      ...(taskInput.requestedByIp ? { requestedByIp: taskInput.requestedByIp.trim() } : {}),
+      modes: Array.from(new Set(taskInput.modes || [])),
+      includeGuestUnlock: Boolean(taskInput.includeGuestUnlock),
+      conflictLabels: Array.from(new Set(taskInput.conflictLabels || [])),
+      ...(taskInput.note ? { note: taskInput.note.trim() } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    const nextMap: Record<string, PendingHostPolicyTask> = {};
+    for (const [k, v] of Object.entries(latestPortableDoc.pendingHostActions || {})) {
+      if (k.trim().toLowerCase() !== cleanTarget.toLowerCase()) {
+        nextMap[k] = v;
+      }
+    }
+    nextMap[cleanTarget] = nextTask;
+
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: latestPortableDoc.shares,
+      ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      pendingHostActions: nextMap,
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return {
+      success: res.success,
+      task: nextTask,
+      pendingHostActions: res.document.pendingHostActions || nextMap,
+    };
+  },
+
+  async deletePendingHostPolicyTask(
+    targetHostName: string
+  ): Promise<Record<string, PendingHostPolicyTask>> {
+    const cleanLower = (targetHostName || '').trim().toLowerCase();
+    const nextMap: Record<string, PendingHostPolicyTask> = {};
+    for (const [k, v] of Object.entries(latestPortableDoc.pendingHostActions || {})) {
+      if (
+        k.trim().toLowerCase() !== cleanLower &&
+        (v.targetHostName || '').trim().toLowerCase() !== cleanLower
+      ) {
+        nextMap[k] = v;
+      }
+    }
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: latestPortableDoc.shares,
+      ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      ...(Object.keys(nextMap).length > 0 ? { pendingHostActions: nextMap } : {}),
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return res.document.pendingHostActions || {};
+  },
+
   async persistHostPolicySnapshot(
     hostName: string,
-    policy: OsNetworkPolicyStatus
+    policy: OsNetworkPolicyStatus,
+    sourceIp?: string
   ): Promise<Record<string, HostPolicySnapshot>> {
     const cleanHost = (hostName || 'MAIN-HOST-PC').trim();
-    const snap = toHostPolicySnapshot(cleanHost, policy);
+    const snap = toHostPolicySnapshot(cleanHost, policy, sourceIp);
     const nextMap: Record<string, HostPolicySnapshot> = {
       ...(latestPortableDoc.hostPolicies || {}),
       [cleanHost]: snap,
@@ -829,6 +918,7 @@ export const shareBridge = {
       updatedAt: new Date().toISOString(),
       shares: latestPortableDoc.shares,
       hostPolicies: nextMap,
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -837,6 +927,76 @@ export const shareBridge = {
     latestPortableDoc = res.document;
     latestPortableStatus = res.status;
     return res.document.hostPolicies || nextMap;
+  },
+
+  async deleteHostPolicySnapshot(
+    hostName: string
+  ): Promise<Record<string, HostPolicySnapshot>> {
+    const cleanLower = (hostName || '').trim().toLowerCase();
+    const curMap: Record<string, HostPolicySnapshot> = {};
+    for (const [k, v] of Object.entries(latestPortableDoc.hostPolicies || {})) {
+      if (k.trim().toLowerCase() !== cleanLower && (v.hostName || '').trim().toLowerCase() !== cleanLower) {
+        curMap[k] = v;
+      }
+    }
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: latestPortableDoc.shares,
+      hostPolicies: curMap,
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return res.document.hostPolicies || curMap;
+  },
+
+  async clearAllHostPolicySnapshots(): Promise<Record<string, HostPolicySnapshot>> {
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: latestPortableDoc.shares,
+      hostPolicies: {},
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return {};
+  },
+
+  async deletePortableHostShare(
+    sourceHostName: string,
+    shareName: string
+  ): Promise<PortableSaveResult> {
+    const hostLower = (sourceHostName || '').trim().toLowerCase();
+    const shareLower = (shareName || '').trim().toLowerCase();
+    const filteredShares = (latestPortableDoc.shares || []).filter((entry) => {
+      const eHost = (entry.sourceHostName || '').trim().toLowerCase();
+      const eShare = (entry.shareName || '').trim().toLowerCase();
+      return !(eHost === hostLower && eShare === shareLower);
+    });
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: filteredShares,
+      ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return res;
   },
 
   async persistPortableHostShares(
@@ -849,6 +1009,7 @@ export const shareBridge = {
       updatedAt: new Date().toISOString(),
       shares: mergedShares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
 
@@ -867,6 +1028,7 @@ export const shareBridge = {
       updatedAt: new Date().toISOString(),
       shares: latestPortableDoc.shares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
       lastClientTarget: {
         targetHost: config.targetHost.trim(),
         shareName: config.shareName.trim(),
@@ -1321,6 +1483,11 @@ export const shareBridge = {
         ...webSimPolicyBase,
         smbServerSigningRequired: true,
         localAccountTokenFilterEnabled: false,
+        limitBlankPasswordUse: true,
+        restrictNullSessAccess: true,
+        restrictAnonymous: true,
+        guestNetworkLogonDenied: true,
+        guestAccountEnabled: false,
       };
       writeStore(STORAGE_SHARES_KEY, []);
       if (netInfo) await this.persistPortableHostShares([], netInfo);
@@ -1417,7 +1584,7 @@ export const shareBridge = {
       detail: sameSubnet
         ? `웹 프리뷰 시뮬레이션: ${cleanTarget} 응답(${baseLatency}ms) 및 SMB 포트 445 개방 확인.`
         : `웹 프리뷰 시뮬레이션: ${cleanTarget}은 현재 서브넷(${netInfo?.subnetPrefix || '192.168.0'}.x) 외부이거나 응답이 없습니다.`,
-      checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
     };
   },
 
@@ -1459,6 +1626,16 @@ export const shareBridge = {
             allowInsecureGuestAuth: Boolean(parsed.allowInsecureGuestAuth),
             enableInsecureGuestLogons: Boolean(parsed.enableInsecureGuestLogons),
             guestNetworkLogonDenied: Boolean(parsed.guestNetworkLogonDenied),
+            limitBlankPasswordUse:
+              typeof parsed.limitBlankPasswordUse === 'boolean' ? parsed.limitBlankPasswordUse : undefined,
+            restrictNullSessAccess:
+              typeof parsed.restrictNullSessAccess === 'boolean' ? parsed.restrictNullSessAccess : undefined,
+            restrictAnonymous:
+              typeof parsed.restrictAnonymous === 'boolean' ? parsed.restrictAnonymous : undefined,
+            guestAccountEnabled:
+              typeof parsed.guestAccountEnabled === 'boolean' ? parsed.guestAccountEnabled : undefined,
+            firewall445Allowed:
+              typeof parsed.firewall445Allowed === 'boolean' ? parsed.firewall445Allowed : undefined,
             lmCompatibilityLevel: parsed.lmCompatibilityLevel ?? null,
             ntlmRestrictOutbound: parsed.ntlmRestrictOutbound ?? null,
             netbiosEnabled: Boolean(parsed.netbiosEnabled),
@@ -1475,12 +1652,12 @@ export const shareBridge = {
             pointAndPrintRelaxed: Boolean(parsed.pointAndPrintRelaxed),
             printSpoolerRunning: parsed.printSpoolerRunning ?? true,
             pendingRebootFlag: Boolean(parsed.pendingRebootFlag),
-            checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+            checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
           };
           const { compatibilityScore, detectedIssues } = computeCompatibilityScoreAndIssues(base);
           const fullStatus = { ...base, compatibilityScore, detectedIssues };
           if (netInfo?.hostname) {
-            await this.persistHostPolicySnapshot(netInfo.hostname, fullStatus);
+            await this.persistHostPolicySnapshot(netInfo.hostname, fullStatus, netInfo.primaryIp);
           }
           return fullStatus;
         }
@@ -1490,12 +1667,12 @@ export const shareBridge = {
     await new Promise((r) => setTimeout(r, 240));
     const baseWithTime = {
       ...webSimPolicyBase,
-      checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
     };
     const { compatibilityScore, detectedIssues } = computeCompatibilityScoreAndIssues(baseWithTime);
     const fullStatus = { ...baseWithTime, compatibilityScore, detectedIssues };
     if (netInfo?.hostname) {
-      await this.persistHostPolicySnapshot(netInfo.hostname, fullStatus);
+      await this.persistHostPolicySnapshot(netInfo.hostname, fullStatus, netInfo.primaryIp);
     }
     return fullStatus;
   },
@@ -1622,6 +1799,10 @@ export const shareBridge = {
         allowInsecureGuestAuth: true,
         enableInsecureGuestLogons: true,
         guestNetworkLogonDenied: false,
+        limitBlankPasswordUse: false,
+        restrictNullSessAccess: false,
+        restrictAnonymous: false,
+        firewall445Allowed: true,
         lmCompatibilityLevel: 3,
         netbiosEnabled: true,
         lanmanServerRunning: true,
@@ -1703,6 +1884,11 @@ export const shareBridge = {
         allowInsecureGuestAuth: true,
         enableInsecureGuestLogons: true,
         guestNetworkLogonDenied: false,
+        limitBlankPasswordUse: false,
+        restrictNullSessAccess: false,
+        restrictAnonymous: false,
+        guestAccountEnabled: true,
+        firewall445Allowed: true,
         lmCompatibilityLevel: 3,
         netbiosEnabled: true,
         lanmanServerRunning: true,
@@ -1774,6 +1960,9 @@ export const shareBridge = {
         allowInsecureGuestAuth: false,
         enableInsecureGuestLogons: false,
         guestNetworkLogonDenied: true,
+        limitBlankPasswordUse: true,
+        restrictNullSessAccess: true,
+        restrictAnonymous: true,
         localAccountTokenFilterEnabled: false,
       };
       appliedActions = [
@@ -1925,6 +2114,159 @@ export const shareBridge = {
 
     return {
       success: failedModes.length === 0 && appliedModes.length > 0,
+      appliedModes,
+      failedModes,
+      summary,
+      appliedActions: Array.from(actionSet),
+      rebootJudgment,
+      updatedPolicy: latestPolicy,
+    };
+  },
+
+  async applyPendingHostPolicyTask(
+    task: PendingHostPolicyTask,
+    netInfo?: LocalNetworkInfo,
+    onProgress?: (steps: PipelineStep[]) => void
+  ): Promise<AutoAlignBatchResult> {
+    const modeSteps: PipelineStep[] = task.modes.map((m, idx) => ({
+      id: `pending-mode-${idx}-${m}`,
+      title: `[호스트 예약] ${getPolicyPatchLabel(m)} 적용`,
+      detail: '요청된 정책 패치 반영 및 SMB 서비스 갱신',
+      status: 'idle',
+    }));
+    const steps: PipelineStep[] = [
+      ...modeSteps,
+      ...(task.includeGuestUnlock
+        ? [
+            {
+              id: 'pending-guest-unlock',
+              title: '[호스트 예약] Guest 무비밀번호 정책 완전 개방 (오류 86·1223·1385)',
+              detail: 'LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · 445 방화벽 개방',
+              status: 'idle' as const,
+            },
+          ]
+        : []),
+      {
+        id: 'pending-cleanup',
+        title: '호스트 OS 정책 재검사 및 USB 대기 작업 완료 처리',
+        detail: 'USB 포터블 저장소에서 완료된 대기 작업을 정리합니다.',
+        status: 'idle',
+      },
+    ];
+    onProgress?.([...steps]);
+
+    const appliedModes: PolicyPatchMode[] = [];
+    const failedModes: PolicyPatchMode[] = [];
+    const actionSet = new Set<string>();
+    const judgments: RebootJudgment[] = [];
+    let latestPolicy: OsNetworkPolicyStatus | null = null;
+    let guestUnlockFailed = false;
+
+    for (let i = 0; i < task.modes.length; i++) {
+      const mode = task.modes[i];
+      steps[i].status = 'running';
+      onProgress?.([...steps]);
+      const t0 = performance.now();
+      try {
+        const res = await this.applyOsCompatibilityPatch(mode, netInfo);
+        steps[i].durationMs = Math.round(performance.now() - t0);
+        latestPolicy = res.updatedPolicy;
+        judgments.push(res.rebootJudgment);
+        for (const a of res.appliedActions) actionSet.add(a);
+        if (res.success) {
+          appliedModes.push(mode);
+          steps[i].status = 'success';
+          steps[i].detail = res.rebootJudgment.title;
+        } else {
+          failedModes.push(mode);
+          steps[i].status = 'error';
+          steps[i].error = res.summary;
+        }
+      } catch (err) {
+        steps[i].durationMs = Math.round(performance.now() - t0);
+        failedModes.push(mode);
+        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+        steps[i].status = 'error';
+        steps[i].error = msg;
+      }
+      onProgress?.([...steps]);
+    }
+
+    if (task.includeGuestUnlock) {
+      const gIdx = task.modes.length;
+      steps[gIdx].status = 'running';
+      onProgress?.([...steps]);
+      const t0 = performance.now();
+      const hostLower = (netInfo?.hostname || task.targetHostName || '').trim().toLowerCase();
+      const localShareNames = Array.from(
+        new Set([
+          ...this.getSavedShares().map((s) => s.shareName),
+          ...(latestPortableDoc.shares || [])
+            .filter((s) => !hostLower || (s.sourceHostName || '').trim().toLowerCase() === hostLower)
+            .map((s) => s.shareName),
+          'AhBiShared',
+        ].filter(Boolean))
+      );
+      if (window.ahbiShareElectron?.runPowerShell) {
+        const res = await window.ahbiShareElectron.runPowerShell(
+          buildHostGuestUnlockPsScript(localShareNames[0] || 'AhBiShared', localShareNames)
+        );
+        steps[gIdx].durationMs = Math.round(performance.now() - t0);
+        if (res.success) {
+          steps[gIdx].status = 'success';
+          judgments.push(evaluateRebootJudgment({ mode: 'safe_compat', restartedServices: ['LanmanServer'] }));
+          actionSet.add('호스트 Guest 계정(SID *-501) 무비밀번호 개방·LSA 빈 암호 해제·TCP 445 방화벽 정렬');
+        } else {
+          guestUnlockFailed = true;
+          steps[gIdx].status = 'error';
+          steps[gIdx].error = res.error || 'Guest 무비밀번호 정책 개방 실패 (관리자 권한 확인 필요)';
+        }
+      } else {
+        await new Promise((r) => setTimeout(r, 220));
+        steps[gIdx].durationMs = Math.round(performance.now() - t0);
+        webSimPolicyBase = {
+          ...webSimPolicyBase,
+          networkProfile: 'Private',
+          allowInsecureGuestAuth: true,
+          enableInsecureGuestLogons: true,
+          guestNetworkLogonDenied: false,
+          limitBlankPasswordUse: false,
+          restrictNullSessAccess: false,
+          restrictAnonymous: false,
+          guestAccountEnabled: true,
+          firewall445Allowed: true,
+        };
+        steps[gIdx].status = 'success';
+        judgments.push(evaluateRebootJudgment({ mode: 'safe_compat', restartedServices: ['LanmanServer'] }));
+        actionSet.add('[시뮬레이션] 호스트 Guest 무비밀번호 정책·빈 암호 제한·445 방화벽 완전 개방 완료');
+      }
+      onProgress?.([...steps]);
+    }
+
+    const cleanIdx = steps.length - 1;
+    steps[cleanIdx].status = 'running';
+    onProgress?.([...steps]);
+    const tClean = performance.now();
+    latestPolicy = await this.inspectOsNetworkPolicy(netInfo);
+    const allSucceeded = failedModes.length === 0 && !guestUnlockFailed;
+    if (allSucceeded) {
+      await this.deletePendingHostPolicyTask(task.targetHostName);
+      steps[cleanIdx].status = 'success';
+      steps[cleanIdx].detail = '호스트 스냅샷 갱신 및 USB 대기 작업 완료 제거';
+    } else {
+      steps[cleanIdx].status = 'error';
+      steps[cleanIdx].error = '일부 단계 실패로 USB 대기 작업을 유지했습니다.';
+    }
+    steps[cleanIdx].durationMs = Math.round(performance.now() - tClean);
+    onProgress?.([...steps]);
+
+    const rebootJudgment = combineRebootJudgments(judgments);
+    const summary = allSucceeded
+      ? `${task.requestedByHostName}에서 예약한 호스트 호환 정책 자동 적용 완료`
+      : '예약된 호스트 정책 적용 중 일부 오류가 발생했습니다.';
+
+    return {
+      success: allSucceeded,
       appliedModes,
       failedModes,
       summary,
@@ -2185,11 +2527,23 @@ export const shareBridge = {
           ...importedPolicies,
         };
 
+        const importedPendingActions: Record<string, PendingHostPolicyTask> =
+          hasSnapshot && snapDoc.pendingHostActions && typeof snapDoc.pendingHostActions === 'object'
+            ? (snapDoc.pendingHostActions as Record<string, PendingHostPolicyTask>)
+            : {};
+        const mergedPendingActions: Record<string, PendingHostPolicyTask> = {
+          ...(latestPortableDoc.pendingHostActions || {}),
+          ...importedPendingActions,
+        };
+
         const nextDoc: PortableShareDocument = {
           schemaVersion: 1,
           updatedAt: new Date().toISOString(),
           shares: Array.from(portableMap.values()),
           ...(Object.keys(mergedPolicies).length > 0 ? { hostPolicies: mergedPolicies } : {}),
+          ...(Object.keys(mergedPendingActions).length > 0
+            ? { pendingHostActions: mergedPendingActions }
+            : {}),
           ...(snapDoc?.lastClientTarget
             ? { lastClientTarget: snapDoc.lastClientTarget }
             : latestPortableDoc.lastClientTarget

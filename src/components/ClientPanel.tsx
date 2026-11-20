@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin } from 'lucide-react';
+import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2 } from 'lucide-react';
 import {
   ClientTargetConfig,
   DiscoveredPeer,
@@ -16,7 +16,9 @@ import {
   classifyFailureDiagnostics,
   computeHostClientPolicyDiff,
   findHostPolicySnapshot,
+  formatSnapshotTimestamp,
 } from '@/services/networkEvolution';
+import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
 
 interface ClientPanelProps {
@@ -34,9 +36,11 @@ interface ClientPanelProps {
   onClearPendingAutoFill?: () => void;
   onPortableAutoFill?: (entry: PortableHostShareEntry) => void;
   initialConfig?: ClientTargetConfig;
+  pendingClientAuthMode?: { key: string; authMode: 'guest' | 'account' } | null;
   pendingLocationTarget?: { key: string; target: LocationClientTargetEntry } | null;
   savedLocationTargets?: LocationClientTargetEntry[];
   activeLocationName?: string;
+  onClearPendingClientAuthMode?: () => void;
   onClearPendingLocationTarget?: () => void;
   onConfigChange?: (config: ClientTargetConfig) => void;
   onOpenMatrix?: () => void;
@@ -45,6 +49,9 @@ interface ClientPanelProps {
   onUnmount: (driveLetter: string) => Promise<void>;
   onOpenDrive: (drivePath: string) => Promise<void>;
   onTargetHostChange?: (host: string) => void;
+  onOpenDiagnostics?: (errorText?: string) => void;
+  onDeleteHostPolicySnapshot?: (hostName: string) => Promise<void>;
+  onDeletePortableShare?: (sourceHostName: string, shareName: string) => Promise<void>;
 }
 
 const DRIVE_LETTERS = ['Z:', 'Y:', 'X:', 'W:', 'V:', 'S:', 'M:'];
@@ -64,9 +71,11 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onClearPendingAutoFill,
   onPortableAutoFill,
   initialConfig,
+  pendingClientAuthMode = null,
   pendingLocationTarget = null,
   savedLocationTargets = [],
   activeLocationName,
+  onClearPendingClientAuthMode,
   onClearPendingLocationTarget,
   onConfigChange,
   onOpenMatrix,
@@ -75,6 +84,9 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onUnmount,
   onOpenDrive,
   onTargetHostChange,
+  onOpenDiagnostics,
+  onDeleteHostPolicySnapshot,
+  onDeletePortableShare,
 }) => {
   const [rawCodeInput, setRawCodeInput] = useState('');
   const [codeParseState, setCodeParseState] = useState<'empty' | 'valid' | 'invalid'>('empty');
@@ -82,6 +94,12 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   const [selectedPortableIdx, setSelectedPortableIdx] = useState(0);
   const [portableAppliedKey, setPortableAppliedKey] = useState<string | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [hostCmdCopied, setHostCmdCopied] = useState(false);
+  const [confirmingDeletePortable, setConfirmingDeletePortable] = useState(false);
+  const [deletingPortable, setDeletingPortable] = useState(false);
+  const [deletingPolicySnap, setDeletingPolicySnap] = useState(false);
+  const hostCmdTimerRef = useRef<number | null>(null);
+  const lastAuthModeSwitchKeyRef = useRef<string | null>(null);
 
   const mountedSet = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
 
@@ -97,6 +115,14 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     }
   );
   const lastLocationTargetKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hostCmdTimerRef.current !== null) {
+        window.clearTimeout(hostCmdTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     onConfigChange?.(config);
@@ -131,6 +157,14 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     });
     onClearPendingLocationTarget?.();
   }, [pendingLocationTarget, onClearPendingLocationTarget]);
+
+  useEffect(() => {
+    if (!pendingClientAuthMode || pendingClientAuthMode.key === lastAuthModeSwitchKeyRef.current) return;
+    lastAuthModeSwitchKeyRef.current = pendingClientAuthMode.key;
+    setValidationError(null);
+    setConfig((prev) => ({ ...prev, authMode: pendingClientAuthMode.authMode }));
+    onClearPendingClientAuthMode?.();
+  }, [pendingClientAuthMode, onClearPendingClientAuthMode]);
 
   // Reset dismissal/index cleanly if portable share entries update
   useEffect(() => {
@@ -267,6 +301,10 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     : null;
   const isPortableApplied = Boolean(currentEntryKey && portableAppliedKey === currentEntryKey);
 
+  useEffect(() => {
+    setConfirmingDeletePortable(false);
+  }, [currentEntryKey]);
+
   const matchedHostPolicy = findHostPolicySnapshot(
     hostPolicySnapshots,
     activePortableEntry?.sourceHostName
@@ -329,6 +367,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                     ? `보안 계정 (${activePortableEntry.username || '-'} · 암호 재입력 필요)`
                     : `보안 계정 (${activePortableEntry.username || '-'} · 암호화 비밀번호 자동 복원)`
                   : '간편 무비밀번호'}
+                {activePortableEntry.updatedAt ? ` · 기록 일시: ${formatSnapshotTimestamp(activePortableEntry.updatedAt)}` : ''}
               </p>
 
               {portableShares.length > 1 && (
@@ -342,14 +381,18 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                     onChange={(e) => {
                       setSelectedPortableIdx(Number(e.target.value));
                       setPortableAppliedKey(null);
+                      setConfirmingDeletePortable(false);
                     }}
                     className="px-2.5 py-1 text-xs tabular-data bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
-                    {portableShares.map((entry, idx) => (
-                      <option key={`${entry.sourceHostName}-${entry.shareName}-${idx}`} value={idx}>
-                        {entry.sourceHostName || entry.sourceIp} · \\{entry.sourceIp}\{entry.shareName} ({entry.authMode === 'account' ? '보안 계정' : '무비밀번호'})
-                      </option>
-                    ))}
+                    {portableShares.map((entry, idx) => {
+                      const ts = entry.updatedAt ? formatSnapshotTimestamp(entry.updatedAt) : '';
+                      return (
+                        <option key={`${entry.sourceHostName}-${entry.shareName}-${idx}`} value={idx}>
+                          {entry.sourceHostName || entry.sourceIp} · \\{entry.sourceIp}\{entry.shareName} ({entry.authMode === 'account' ? '보안 계정' : '무비밀번호'}) {ts ? `[${ts}]` : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               )}
@@ -365,7 +408,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 <div className="pt-1 flex flex-wrap items-center gap-2 text-xs text-amber-800 dark:text-amber-300">
                   <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    호스트와 OS/SMB/RPC 정책 불일치 {portablePolicyConflicts.length}건 감지 ({portablePolicyConflicts.map((c) => c.label).join(', ')})
+                    호스트({matchedHostPolicy?.hostName || activePortableEntry.sourceHostName}{matchedHostPolicy?.capturedAt ? ` · ${formatSnapshotTimestamp(matchedHostPolicy.capturedAt)} 감지` : ''})와 OS/SMB/RPC 정책 불일치 {portablePolicyConflicts.length}건 감지 ({portablePolicyConflicts.map((c) => c.label).join(', ')})
                   </span>
                   {onOpenMatrix && (
                     <button
@@ -375,6 +418,25 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       className="font-semibold underline underline-offset-2 hover:text-amber-600 dark:hover:text-amber-200 cursor-pointer"
                     >
                       매트릭스에서 맞추기
+                    </button>
+                  )}
+                  {onDeleteHostPolicySnapshot && (matchedHostPolicy?.hostName || activePortableEntry.sourceHostName) && (
+                    <button
+                      id="btn-portable-delete-policy-snap"
+                      type="button"
+                      disabled={deletingPolicySnap}
+                      onClick={async () => {
+                        setDeletingPolicySnap(true);
+                        try {
+                          await onDeleteHostPolicySnapshot(matchedHostPolicy?.hostName || activePortableEntry.sourceHostName);
+                        } finally {
+                          setDeletingPolicySnap(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded cursor-pointer disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      {deletingPolicySnap ? '삭제 중...' : '감지 스냅샷 삭제'}
                     </button>
                   )}
                 </div>
@@ -391,6 +453,48 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
             >
               {isPortableApplied ? '연결 정보 다시 채우기' : '원클릭 자동 채우기'}
             </button>
+            {onDeletePortableShare && (
+              confirmingDeletePortable ? (
+                <div className="inline-flex items-center gap-1">
+                  <button
+                    id="btn-confirm-delete-portable"
+                    type="button"
+                    disabled={deletingPortable}
+                    onClick={async () => {
+                      setDeletingPortable(true);
+                      try {
+                        await onDeletePortableShare(activePortableEntry.sourceHostName, activePortableEntry.shareName);
+                        setPortableAppliedKey(null);
+                      } finally {
+                        setDeletingPortable(false);
+                        setConfirmingDeletePortable(false);
+                      }
+                    }}
+                    className="px-2.5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer disabled:opacity-50"
+                  >
+                    삭제 확인
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDeletePortable(false)}
+                    className="px-2 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
+                  >
+                    취소
+                  </button>
+                </div>
+              ) : (
+                <button
+                  id="btn-delete-portable-entry"
+                  type="button"
+                  onClick={() => setConfirmingDeletePortable(true)}
+                  aria-label="선택된 포터블 공유 항목 삭제"
+                  title="현재 선택된 포터블 공유 항목 삭제"
+                  className="p-2 text-slate-500 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-red-500/10 cursor-pointer shrink-0"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )
+            )}
             <button
               type="button"
               onClick={() => setBannerDismissed(true)}
@@ -752,17 +856,90 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
                   {diag.detail}
                 </p>
-                {onOpenMatrix && (
-                  <button
-                    id="btn-failure-open-matrix"
-                    type="button"
-                    onClick={onOpenMatrix}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
-                  >
-                    <ArrowLeftRight className="w-3.5 h-3.5" />
-                    {diag.actionLabel}
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {diag.isHostAuthOrGuestIssue ? (
+                    <>
+                      {onOpenDiagnostics && (
+                        <button
+                          id="btn-failure-open-diag"
+                          type="button"
+                          onClick={() => onOpenDiagnostics(failedStep?.error)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer shadow-sm"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" />
+                          통합 해결 가이드 & 도구 열기
+                        </button>
+                      )}
+                      <button
+                        id="btn-failure-switch-account"
+                        type="button"
+                        onClick={() => {
+                          setValidationError(null);
+                          setConfig((prev) => ({ ...prev, authMode: 'account' }));
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 border border-indigo-300 dark:border-indigo-700 rounded-lg cursor-pointer"
+                      >
+                        <Shield className="w-3.5 h-3.5" />
+                        보안 계정 모드로 즉시 전환
+                      </button>
+                      <button
+                        id="btn-failure-copy-host-cmd"
+                        type="button"
+                        onClick={async () => {
+                          const cmd = buildHostGuestUnlockPsCommand(config.shareName);
+                          let ok = false;
+                          try {
+                            if (navigator.clipboard?.writeText) {
+                              await navigator.clipboard.writeText(cmd);
+                              ok = true;
+                            }
+                          } catch {}
+                            if (!ok) {
+                            try {
+                              const ta = document.createElement('textarea');
+                              ta.value = cmd;
+                              ta.setAttribute('readonly', '');
+                              ta.style.position = 'fixed';
+                              ta.style.left = '-9999px';
+                              document.body.appendChild(ta);
+                              ta.focus();
+                              ta.select();
+                              ta.setSelectionRange(0, ta.value.length);
+                              ok = document.execCommand('copy');
+                              document.body.removeChild(ta);
+                            } catch {}
+                          }
+                          if (ok) {
+                            if (hostCmdTimerRef.current !== null) {
+                              window.clearTimeout(hostCmdTimerRef.current);
+                            }
+                            setHostCmdCopied(true);
+                            hostCmdTimerRef.current = window.setTimeout(() => {
+                              setHostCmdCopied(false);
+                              hostCmdTimerRef.current = null;
+                            }, 2000);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-lg cursor-pointer"
+                      >
+                        {hostCmdCopied ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        {hostCmdCopied ? '복구 명령 복사됨!' : '호스트 원클릭 복구 명령 복사'}
+                      </button>
+                    </>
+                  ) : (
+                    onOpenMatrix && (
+                      <button
+                        id="btn-failure-open-matrix"
+                        type="button"
+                        onClick={onOpenMatrix}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
+                      >
+                        <ArrowLeftRight className="w-3.5 h-3.5" />
+                        {diag.actionLabel}
+                      </button>
+                    )
+                  )}
+                </div>
               </div>
             );
           })()}

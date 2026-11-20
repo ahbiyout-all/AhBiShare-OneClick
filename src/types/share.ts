@@ -160,6 +160,11 @@ export interface OsNetworkPolicyStatus {
   allowInsecureGuestAuth: boolean;
   enableInsecureGuestLogons: boolean;
   guestNetworkLogonDenied?: boolean;
+  limitBlankPasswordUse?: boolean;
+  restrictNullSessAccess?: boolean;
+  restrictAnonymous?: boolean;
+  guestAccountEnabled?: boolean;
+  firewall445Allowed?: boolean;
   lmCompatibilityLevel: number | null;
   ntlmRestrictOutbound: number | null;
   netbiosEnabled: boolean;
@@ -233,6 +238,7 @@ export interface LegacyComparisonRow {
 
 export interface HostPolicySnapshot {
   hostName: string;
+  sourceIp?: string;
   osProductName: string;
   osDisplayVersion: string;
   osBuild: number;
@@ -246,7 +252,25 @@ export interface HostPolicySnapshot {
   lmCompatibilityLevel?: number | null;
   localAccountTokenFilterEnabled?: boolean;
   guestNetworkLogonDenied?: boolean;
+  limitBlankPasswordUse?: boolean;
+  restrictNullSessAccess?: boolean;
+  restrictAnonymous?: boolean;
+  guestAccountEnabled?: boolean;
+  firewall445Allowed?: boolean;
   capturedAt: string;
+}
+
+export interface PendingHostPolicyTask {
+  taskId: string;
+  targetHostName: string;
+  targetIp?: string;
+  requestedByHostName: string;
+  requestedByIp?: string;
+  modes: PolicyPatchMode[];
+  includeGuestUnlock: boolean;
+  conflictLabels: string[];
+  note?: string;
+  createdAt: string;
 }
 
 export interface PolicyDiffItem {
@@ -350,6 +374,7 @@ export interface PortableShareDocument {
   updatedAt: string;
   shares: PortableHostShareEntry[];
   hostPolicies?: Record<string, HostPolicySnapshot>;
+  pendingHostActions?: Record<string, PendingHostPolicyTask>;
   lastClientTarget?: PortableLastClientTarget;
 }
 

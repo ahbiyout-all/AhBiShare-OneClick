@@ -164,6 +164,9 @@ function sanitizeHostPolicySnapshot(snap) {
     pointAndPrintRelaxed: Boolean(snap.pointAndPrintRelaxed),
     capturedAt: String(snap.capturedAt || new Date().toISOString()),
   };
+  if (snap.sourceIp) {
+    out.sourceIp = String(snap.sourceIp);
+  }
   if (snap.lmCompatibilityLevel === null || typeof snap.lmCompatibilityLevel === 'number') {
     out.lmCompatibilityLevel = snap.lmCompatibilityLevel;
   }
@@ -172,6 +175,21 @@ function sanitizeHostPolicySnapshot(snap) {
   }
   if (typeof snap.guestNetworkLogonDenied === 'boolean') {
     out.guestNetworkLogonDenied = snap.guestNetworkLogonDenied;
+  }
+  if (typeof snap.limitBlankPasswordUse === 'boolean') {
+    out.limitBlankPasswordUse = snap.limitBlankPasswordUse;
+  }
+  if (typeof snap.restrictNullSessAccess === 'boolean') {
+    out.restrictNullSessAccess = snap.restrictNullSessAccess;
+  }
+  if (typeof snap.restrictAnonymous === 'boolean') {
+    out.restrictAnonymous = snap.restrictAnonymous;
+  }
+  if (typeof snap.guestAccountEnabled === 'boolean') {
+    out.guestAccountEnabled = snap.guestAccountEnabled;
+  }
+  if (typeof snap.firewall445Allowed === 'boolean') {
+    out.firewall445Allowed = snap.firewall445Allowed;
   }
   return out;
 }
@@ -184,6 +202,43 @@ function sanitizeHostPoliciesMap(rawMap) {
     const clean = sanitizeHostPolicySnapshot(v);
     if (clean) {
       out[String(k || clean.hostName)] = clean;
+      count++;
+    }
+  }
+  return count > 0 ? out : undefined;
+}
+
+function sanitizePendingHostPolicyTask(task) {
+  if (!task || typeof task !== 'object' || !task.targetHostName) return null;
+  const modes = Array.isArray(task.modes)
+    ? task.modes.map((m) => String(m)).filter(Boolean)
+    : [];
+  const includeGuestUnlock = Boolean(task.includeGuestUnlock);
+  if (modes.length === 0 && !includeGuestUnlock) return null;
+  return {
+    taskId: String(task.taskId || `task-${Date.now()}`),
+    targetHostName: String(task.targetHostName).trim(),
+    ...(task.targetIp ? { targetIp: String(task.targetIp).trim() } : {}),
+    requestedByHostName: String(task.requestedByHostName || 'CLIENT-PC').trim(),
+    ...(task.requestedByIp ? { requestedByIp: String(task.requestedByIp).trim() } : {}),
+    modes,
+    includeGuestUnlock,
+    conflictLabels: Array.isArray(task.conflictLabels)
+      ? task.conflictLabels.map((l) => String(l)).filter(Boolean)
+      : [],
+    ...(task.note ? { note: String(task.note).trim() } : {}),
+    createdAt: String(task.createdAt || new Date().toISOString()),
+  };
+}
+
+function sanitizePendingHostActionsMap(rawMap) {
+  if (!rawMap || typeof rawMap !== 'object') return undefined;
+  const out = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(rawMap)) {
+    const clean = sanitizePendingHostPolicyTask(v);
+    if (clean) {
+      out[String(k || clean.targetHostName)] = clean;
       count++;
     }
   }
@@ -237,11 +292,13 @@ function prepareDiskDocument(doc) {
   }
 
   const hostPolicies = sanitizeHostPoliciesMap(doc?.hostPolicies);
+  const pendingHostActions = sanitizePendingHostActionsMap(doc?.pendingHostActions);
   const out = {
     schemaVersion: 1,
     updatedAt: doc?.updatedAt || nowIso,
     shares: serializedShares,
     ...(hostPolicies ? { hostPolicies } : {}),
+    ...(pendingHostActions ? { pendingHostActions } : {}),
   };
   if (doc?.lastClientTarget && doc.lastClientTarget.targetHost && doc.lastClientTarget.shareName) {
     out.lastClientTarget = {
@@ -302,11 +359,13 @@ function hydrateRuntimeDocument(diskDoc) {
   }
 
   const hostPolicies = sanitizeHostPoliciesMap(diskDoc?.hostPolicies);
+  const pendingHostActions = sanitizePendingHostActionsMap(diskDoc?.pendingHostActions);
   const runtimeDoc = {
     schemaVersion: 1,
     updatedAt: String(diskDoc?.updatedAt || ''),
     shares,
     ...(hostPolicies ? { hostPolicies } : {}),
+    ...(pendingHostActions ? { pendingHostActions } : {}),
   };
   if (diskDoc?.lastClientTarget) {
     runtimeDoc.lastClientTarget = diskDoc.lastClientTarget;
