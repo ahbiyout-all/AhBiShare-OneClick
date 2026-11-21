@@ -541,7 +541,7 @@ function runSystemPing(target) {
 
 ipcMain.handle('ping-host', async (_event, { target }) => {
   const cleanTarget = String(target || '').trim();
-  if (!cleanTarget || /[\x00-\x1f\\/:*?"<>|\s;&$`'(){}[\]!]/.test(cleanTarget)) {
+  if (!cleanTarget || cleanTarget.startsWith('-') || /[\x00-\x1f\\/:*?"<>|\s;&$`'(){}[\]!]/.test(cleanTarget)) {
     return {
       target: cleanTarget,
       reachable: false,
@@ -1220,12 +1220,7 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
     return { success: false, error: '포터블 교체용 실행 파일(.exe)만 자동 교체를 지원합니다.' };
   }
 
-  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-portable-update-'));
-  const partFilePath = path.join(stagingDir, `${safeAssetName}.part`);
-  const stagedExePath = path.join(stagingDir, safeAssetName);
-  const psScriptPath = path.join(stagingDir, 'apply_portable_update.ps1');
-  const targetExePath = path.join(runtime.portableDir, safeAssetName);
-
+  let stagingDir = '';
   let resolveCleanup = () => {};
   const cleanupPromise = new Promise((res) => {
     resolveCleanup = res;
@@ -1236,18 +1231,25 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
     req: null,
     res: null,
     stream: null,
-    stagingDir,
+    stagingDir: '',
     cleanupPromise,
   };
   activeUpdateDownload = downloadState;
 
   const cleanupStaging = () => {
+    if (!stagingDir) return;
     try {
       fs.rmSync(stagingDir, { recursive: true, force: true });
     } catch {}
   };
 
   try {
+    stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-portable-update-'));
+    downloadState.stagingDir = stagingDir;
+    const partFilePath = path.join(stagingDir, `${safeAssetName}.part`);
+    const stagedExePath = path.join(stagingDir, safeAssetName);
+    const psScriptPath = path.join(stagingDir, 'apply_portable_update.ps1');
+    const targetExePath = path.join(runtime.portableDir, safeAssetName);
     emitUpdateProgress({
       phase: 'downloading',
       percent: 0,

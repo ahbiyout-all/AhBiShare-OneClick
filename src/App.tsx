@@ -26,6 +26,7 @@ import {
   LocationProfileFile,
   LocationProfileSummary,
   LocationBatchApplyResult,
+  LocationPreflightReport,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
@@ -39,6 +40,7 @@ import { NetworkMatrixPanel } from '@/components/NetworkMatrixPanel';
 import { LegacySharingPanel } from '@/components/LegacySharingPanel';
 import { LocationProfileBar } from '@/components/LocationProfileBar';
 import { LocationManagerModal } from '@/components/LocationManagerModal';
+import { LocationPreflightModal } from '@/components/LocationPreflightModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
 import { WorkProgressModal, ProgressJobState } from './components/WorkProgressModal';
@@ -140,9 +142,15 @@ export const App: React.FC = () => {
   const [activeLocationProfile, setActiveLocationProfile] = useState<LocationProfileFile | null>(null);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
   const [locationModalTab, setLocationModalTab] = useState<'save' | 'manage'>('manage');
+  const [locationModalEditProfileId, setLocationModalEditProfileId] = useState<string | null>(null);
   const [isLocationBatchApplying, setIsLocationBatchApplying] = useState(false);
   const [locationBatchProgress, setLocationBatchProgress] = useState<string | null>(null);
   const [lastLocationBatchResult, setLastLocationBatchResult] = useState<LocationBatchApplyResult | null>(null);
+  const [preflightModalOpen, setPreflightModalOpen] = useState(false);
+  const [preflightChecking, setPreflightChecking] = useState(false);
+  const [preflightTargetProfile, setPreflightTargetProfile] = useState<LocationProfileFile | null>(null);
+  const [preflightReport, setPreflightReport] = useState<LocationPreflightReport | null>(null);
+  const preflightSeqRef = useRef(0);
   const locationFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [hostDraft, setHostDraft] = useState<HostConfig>(() => ({
@@ -1391,7 +1399,9 @@ export const App: React.FC = () => {
       '10개 핵심 보안 기본값 일괄 복원 및 검증',
       [s1, s2, s3]
     );
-    if (!jobKey) return;
+    if (!jobKey) {
+      return { success: false, message: '다른 작업이 진행 중입니다.' };
+    }
 
     const t0 = performance.now();
     try {
@@ -1454,6 +1464,7 @@ export const App: React.FC = () => {
       } else {
         failProgressJob(jobKey, msg, finalSteps);
       }
+      return { success: allOk, message: msg };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : '전체 보안 원복 중 오류가 발생했습니다.';
       appendLog('전체 보안 원복', errMsg, 'error');
@@ -1463,6 +1474,7 @@ export const App: React.FC = () => {
         s2,
         s3,
       ]);
+      return { success: false, message: errMsg };
     }
   };
 
@@ -1671,16 +1683,16 @@ export const App: React.FC = () => {
 
       if (profile.hostPreset) {
         const preset = profile.hostPreset;
-        setHostDraft((prev) => ({
+        setHostDraft({
           folderPath: preset.folderPath,
           shareName: preset.shareName,
           authMode: preset.authMode,
           permission: preset.permission,
           username: preset.username,
-          password: preset.password || prev.password,
+          password: preset.authMode === 'account' ? preset.password || '' : '',
           ttlMinutes: preset.ttlMinutes,
           autoRevokeOnExpiry: preset.autoRevokeOnExpiry,
-        }));
+        });
         setPendingHostPreset({
           key: stamp,
           config: {
@@ -1696,16 +1708,16 @@ export const App: React.FC = () => {
         });
       } else if (profile.savedShares.length > 0) {
         const firstShare = profile.savedShares[0];
-        setHostDraft((prev) => ({
+        setHostDraft({
           folderPath: firstShare.folderPath || 'C:\\AhBiShared',
           shareName: firstShare.shareName,
           authMode: firstShare.authMode,
           permission: firstShare.permission,
           username: firstShare.username || 'AhBiShare',
-          password: firstShare.password || prev.password,
+          password: firstShare.authMode === 'account' ? firstShare.password || '' : '',
           ttlMinutes: firstShare.ttlMinutes,
           autoRevokeOnExpiry: firstShare.autoRevokeOnExpiry,
-        }));
+        });
         setPendingHostPreset({
           key: stamp,
           config: {
@@ -1889,25 +1901,68 @@ export const App: React.FC = () => {
     [activeLocationProfile, refreshLocationProfiles, appendLog, showToast]
   );
 
-  const handleBatchApplyLocation = useCallback(
-    async (profileIdOverride?: string) => {
-      let targetProfile = activeLocationProfile;
-      if (profileIdOverride) {
-        const loaded = await shareBridge.loadLocationProfile(profileIdOverride);
-        if (!loaded.success || !loaded.profile) {
-          showToast(loaded.error || '적용할 사용장소 파일을 불러오지 못했습니다.');
-          return;
-        }
-        targetProfile = loaded.profile;
-        applyLocationProfileToWorkspace(loaded.profile, false);
+  const handleLoadLocationProfileForEdit = useCallback(
+    async (profileId: string): Promise<LocationProfileFile | null> => {
+      const res = await shareBridge.loadLocationProfile(profileId);
+      if (!res.success || !res.profile) {
+        const msg = res.error || '수정할 사용장소 프로필 파일을 불러오지 못했습니다.';
+        appendLog('사용장소', msg, 'error');
+        showToast(msg);
+        return null;
       }
-      if (!targetProfile) {
-        showToast('먼저 적용할 사용장소 프로필을 선택하세요.');
-        return;
-      }
+      return res.profile;
+    },
+    [appendLog, showToast]
+  );
 
+  const handleUpdateLocationProfile = useCallback(
+    async (edited: LocationProfileFile, applyToWorkspace: boolean): Promise<boolean> => {
+      const res = await shareBridge.saveEditedLocationProfile(edited);
+      if (!res.success || !res.profile) {
+        const msg = res.error || '사용장소 프로필 파일 수정 저장에 실패했습니다.';
+        appendLog('사용장소', msg, 'error');
+        showToast(msg);
+        return false;
+      }
+      const saved = res.profile;
+      await refreshLocationProfiles();
+      if (applyToWorkspace) {
+        applyLocationProfileToWorkspace(saved, false);
+      } else if (activeLocationProfile?.profileId === saved.profileId) {
+        setActiveLocationProfile(saved);
+      }
+      appendLog(
+        '사용장소',
+        `'${saved.locationName}' 프로필 파일 내용 수정 완료 (${saved.profileId}.location.json)`,
+        'success'
+      );
+      showToast(`사용장소 '${saved.locationName}' 파일 내용을 저장했습니다.`);
+      return true;
+    },
+    [
+      activeLocationProfile,
+      applyLocationProfileToWorkspace,
+      refreshLocationProfiles,
+      appendLog,
+      showToast,
+    ]
+  );
+
+  const executeBatchApplyLocation = useCallback(
+    async (targetProfile: LocationProfileFile, report?: LocationPreflightReport | null) => {
       const validShares = targetProfile.savedShares.filter((s) => Boolean(s.folderPath && s.shareName));
+      const preflightSummaryStep: PipelineStep | null = report
+        ? {
+            id: 'loc-preflight-summary',
+            title: `[사전 검증] 환경·경로·권한·TCP 445 검사 완료`,
+            detail: `전체 ${report.totalItems}건: 통과 ${report.passCount} · 주의 ${report.warningCount} · 오류 ${report.failCount}`,
+            status: 'success',
+          }
+        : null;
+      const stepOffset = preflightSummaryStep ? 1 : 0;
+
       const initialBatchSteps: PipelineStep[] = [
+        ...(preflightSummaryStep ? [preflightSummaryStep] : []),
         ...validShares.map((sh, idx) => ({
           id: `loc-sh-${idx}`,
           title: `[호스트 공유] ${sh.shareName} (${sh.folderPath})`,
@@ -1935,6 +1990,7 @@ export const App: React.FC = () => {
       );
       if (!jobKey) return;
 
+      setPreflightModalOpen(false);
       setLocationModalOpen(false);
       setIsLocationBatchApplying(true);
       setLocationBatchProgress(`'${targetProfile.locationName}' 설정 일괄 적용 준비 중...`);
@@ -1944,7 +2000,7 @@ export const App: React.FC = () => {
       let currentItemStartMs = performance.now();
 
       const advanceBatchItem = (nextIdx: number) => {
-        if (currentIdx >= 0 && currentIdx < batchSteps.length && batchSteps[currentIdx].status === 'running') {
+        if (currentIdx >= stepOffset && currentIdx < batchSteps.length && batchSteps[currentIdx].status === 'running') {
           batchSteps[currentIdx] = {
             ...batchSteps[currentIdx],
             status: 'success',
@@ -1953,7 +2009,7 @@ export const App: React.FC = () => {
         }
         currentIdx = nextIdx;
         currentItemStartMs = performance.now();
-        if (currentIdx >= 0 && currentIdx < batchSteps.length) {
+        if (currentIdx >= stepOffset && currentIdx < batchSteps.length) {
           batchSteps[currentIdx] = {
             ...batchSteps[currentIdx],
             status: 'running',
@@ -1967,7 +2023,7 @@ export const App: React.FC = () => {
       };
 
       const updateCurrentSubStep = (subSteps: PipelineStep[]) => {
-        if (currentIdx < 0 || currentIdx >= batchSteps.length) return;
+        if (currentIdx < stepOffset || currentIdx >= batchSteps.length) return;
         const activeSub = subSteps.find((s) => s.status === 'running') || subSteps[subSteps.length - 1];
         if (!activeSub) return;
         const doneCount = subSteps.filter((s) => s.status === 'success').length;
@@ -1998,14 +2054,14 @@ export const App: React.FC = () => {
             const hostMatch = text.match(/^호스트 공유폴더\((\d+)\//);
             const clientMatch = text.match(/^네트워크 드라이브\((\d+)\//);
             if (hostMatch) {
-              advanceBatchItem(Math.max(0, parseInt(hostMatch[1], 10) - 1));
+              advanceBatchItem(stepOffset + Math.max(0, parseInt(hostMatch[1], 10) - 1));
             } else if (clientMatch) {
-              advanceBatchItem(validShares.length + Math.max(0, parseInt(clientMatch[1], 10) - 1));
+              advanceBatchItem(stepOffset + validShares.length + Math.max(0, parseInt(clientMatch[1], 10) - 1));
             }
           },
         });
 
-        const finalSyncIdx = validShares.length + targetProfile.clientTargets.length;
+        const finalSyncIdx = stepOffset + validShares.length + targetProfile.clientTargets.length;
         advanceBatchItem(finalSyncIdx);
 
         setShares(shareBridge.getSavedShares());
@@ -2029,17 +2085,18 @@ export const App: React.FC = () => {
         const shareDetails = batchRes.details.filter((d) => d.kind === 'share');
         const mountDetails = batchRes.details.filter((d) => d.kind === 'mount');
         shareDetails.forEach((d, i) => {
-          if (batchSteps[i]) {
-            batchSteps[i] = {
-              ...batchSteps[i],
+          const targetIdx = stepOffset + i;
+          if (batchSteps[targetIdx]) {
+            batchSteps[targetIdx] = {
+              ...batchSteps[targetIdx],
               status: d.success ? 'success' : 'error',
-              detail: d.success ? d.message : batchSteps[i].detail,
+              detail: d.success ? d.message : batchSteps[targetIdx].detail,
               ...(d.success ? {} : { error: d.message }),
             };
           }
         });
         mountDetails.forEach((d, i) => {
-          const targetIdx = validShares.length + i;
+          const targetIdx = stepOffset + validShares.length + i;
           if (batchSteps[targetIdx]) {
             batchSteps[targetIdx] = {
               ...batchSteps[targetIdx],
@@ -2072,8 +2129,6 @@ export const App: React.FC = () => {
       }
     },
     [
-      activeLocationProfile,
-      applyLocationProfileToWorkspace,
       refreshPortableSnapshot,
       appendLog,
       showToast,
@@ -2082,6 +2137,61 @@ export const App: React.FC = () => {
       completeProgressJob,
       failProgressJob,
     ]
+  );
+
+  const runPreflightCheckForProfile = useCallback(
+    async (targetProfile: LocationProfileFile) => {
+      const seq = ++preflightSeqRef.current;
+      setPreflightTargetProfile(targetProfile);
+      setPreflightReport(null);
+      setPreflightChecking(true);
+      setPreflightModalOpen(true);
+      try {
+        const freshNet = await shareBridge.getLocalNetworkInfo();
+        if (seq !== preflightSeqRef.current) return;
+        setNetInfo(freshNet);
+        const report = await shareBridge.preflightLocationProfileBatch(targetProfile, freshNet);
+        if (seq !== preflightSeqRef.current) return;
+        setPreflightReport(report);
+        appendLog(
+          '사전 검증',
+          `'${targetProfile.locationName}' Pre-flight Check: 통과 ${report.passCount} · 주의 ${report.warningCount} · 오류 ${report.failCount}`,
+          report.hasBlockingErrors ? 'error' : 'success'
+        );
+      } catch (err) {
+        if (seq !== preflightSeqRef.current) return;
+        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+        showToast(`사전 검증 실행 실패: ${msg}`);
+      } finally {
+        if (seq === preflightSeqRef.current) {
+          setPreflightChecking(false);
+        }
+      }
+    },
+    [appendLog, showToast]
+  );
+
+  const handleBatchApplyLocation = useCallback(
+    async (profileIdOverride?: string) => {
+      let targetProfile = activeLocationProfile;
+      if (profileIdOverride) {
+        const loaded = await shareBridge.loadLocationProfile(profileIdOverride);
+        if (!loaded.success || !loaded.profile) {
+          showToast(loaded.error || '적용할 사용장소 파일을 불러오지 못했습니다.');
+          return;
+        }
+        targetProfile = loaded.profile;
+        applyLocationProfileToWorkspace(loaded.profile, false);
+      }
+      if (!targetProfile) {
+        showToast('먼저 적용할 사용장소 프로필을 선택하세요.');
+        return;
+      }
+
+      setLocationModalOpen(false);
+      await runPreflightCheckForProfile(targetProfile);
+    },
+    [activeLocationProfile, applyLocationProfileToWorkspace, runPreflightCheckForProfile, showToast]
   );
 
   return (
@@ -2294,11 +2404,19 @@ export const App: React.FC = () => {
             lastBatchResult={lastLocationBatchResult}
             onSelectProfile={(id) => void handleSelectLocationProfile(id)}
             onOpenSaveModal={() => {
+              setLocationModalEditProfileId(null);
               setLocationModalTab('save');
               setLocationModalOpen(true);
             }}
             onOpenManagerModal={() => {
+              setLocationModalEditProfileId(null);
               setLocationModalTab('manage');
+              setLocationModalOpen(true);
+            }}
+            onEditActiveProfile={() => {
+              if (!activeLocationProfile) return;
+              setLocationModalTab('manage');
+              setLocationModalEditProfileId(activeLocationProfile.profileId);
               setLocationModalOpen(true);
             }}
             onQuickImportJson={() => void handleImportLocationJson()}
@@ -2627,6 +2745,7 @@ export const App: React.FC = () => {
       <LocationManagerModal
         isOpen={locationModalOpen}
         initialTab={locationModalTab}
+        initialEditProfileId={locationModalEditProfileId}
         netInfo={netInfo}
         profiles={locationProfiles}
         storageDirectory={locationStorageDir}
@@ -2636,16 +2755,56 @@ export const App: React.FC = () => {
         clientDraft={clientDraft}
         mountedDrives={mounts}
         isBatchApplying={isLocationBatchApplying}
-        onClose={() => setLocationModalOpen(false)}
+        onClose={() => {
+          setLocationModalOpen(false);
+          setLocationModalEditProfileId(null);
+        }}
+        onSelectFolder={shareBridge.selectFolder}
         onSaveProfile={handleSaveLocationProfile}
+        onLoadProfileForEdit={handleLoadLocationProfileForEdit}
+        onUpdateProfile={handleUpdateLocationProfile}
         onSelectProfile={async (id) => {
           await handleSelectLocationProfile(id);
           setLocationModalOpen(false);
+          setLocationModalEditProfileId(null);
         }}
         onBatchApplyProfile={handleBatchApplyLocation}
         onExportProfile={handleExportLocationProfile}
         onImportJsonFile={handleImportLocationJson}
         onDeleteProfile={handleDeleteLocationProfile}
+      />
+
+      <LocationPreflightModal
+        isOpen={preflightModalOpen}
+        isChecking={preflightChecking}
+        isExecuting={isLocationBatchApplying}
+        profile={preflightTargetProfile}
+        report={preflightReport}
+        onClose={() => {
+          preflightSeqRef.current += 1;
+          setPreflightChecking(false);
+          setPreflightModalOpen(false);
+        }}
+        onRerun={() => {
+          if (!preflightTargetProfile) return;
+          void (async () => {
+            const fresh = await shareBridge.loadLocationProfile(preflightTargetProfile.profileId);
+            const target = fresh.success && fresh.profile ? fresh.profile : preflightTargetProfile;
+            await runPreflightCheckForProfile(target);
+          })();
+        }}
+        onEditProfile={(profileId) => {
+          preflightSeqRef.current += 1;
+          setPreflightChecking(false);
+          setPreflightModalOpen(false);
+          setLocationModalTab('manage');
+          setLocationModalEditProfileId(profileId);
+          setLocationModalOpen(true);
+        }}
+        onConfirmExecute={() => {
+          if (!preflightTargetProfile) return;
+          void executeBatchApplyLocation(preflightTargetProfile, preflightReport);
+        }}
       />
 
       <WorkProgressModal

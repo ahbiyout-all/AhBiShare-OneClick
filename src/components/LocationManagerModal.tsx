@@ -10,7 +10,10 @@ import {
   Search,
   MapPin,
   FolderOpen,
+  Pencil,
+  RefreshCw,
 } from 'lucide-react';
+import { LocationProfileEditView } from '@/components/LocationProfileEditView';
 import {
   ActiveShare,
   ClientTargetConfig,
@@ -33,7 +36,9 @@ interface LocationManagerModalProps {
   clientDraft: ClientTargetConfig;
   mountedDrives: MountedDrive[];
   isBatchApplying: boolean;
+  initialEditProfileId?: string | null;
   onClose: () => void;
+  onSelectFolder?: (currentPath: string) => Promise<string | null>;
   onSaveProfile: (options: {
     overwriteProfileId?: string;
     locationName: string;
@@ -42,6 +47,8 @@ interface LocationManagerModalProps {
     includeClient: boolean;
     includeNetworkHint: boolean;
   }) => Promise<boolean>;
+  onLoadProfileForEdit: (profileId: string) => Promise<LocationProfileFile | null>;
+  onUpdateProfile: (edited: LocationProfileFile, applyToWorkspace: boolean) => Promise<boolean>;
   onSelectProfile: (profileId: string) => Promise<void>;
   onBatchApplyProfile: (profileId: string) => Promise<void>;
   onExportProfile: (profileId: string) => Promise<void>;
@@ -69,8 +76,12 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
   clientDraft,
   mountedDrives,
   isBatchApplying,
+  initialEditProfileId,
   onClose,
+  onSelectFolder,
   onSaveProfile,
+  onLoadProfileForEdit,
+  onUpdateProfile,
   onSelectProfile,
   onBatchApplyProfile,
   onExportProfile,
@@ -85,16 +96,23 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<LocationProfileFile | null>(null);
+  const [loadingEditId, setLoadingEditId] = useState<string | null>(null);
   const wasOpenRef = useRef(false);
+  const loadProfileForEditRef = useRef(onLoadProfileForEdit);
+  loadProfileForEditRef.current = onLoadProfileForEdit;
 
   useEffect(() => {
     if (!isOpen) {
       wasOpenRef.current = false;
+      setEditingProfile(null);
+      setLoadingEditId(null);
       return;
     }
     if (wasOpenRef.current) return;
     wasOpenRef.current = true;
     setSaveError(null);
+    setEditingProfile(null);
     if (activeProfile && (initialTab === 'save' || initialTab === 'manage')) {
       setLocationName(activeProfile.locationName);
       setDescription(activeProfile.description || '');
@@ -105,15 +123,35 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
   }, [isOpen, initialTab, activeProfile]);
 
   useEffect(() => {
+    if (!isOpen || !initialEditProfileId) return;
+    let cancelled = false;
+    setLoadingEditId(initialEditProfileId);
+    void loadProfileForEditRef.current(initialEditProfileId).then((loaded) => {
+      if (cancelled) return;
+      setLoadingEditId(null);
+      if (loaded) {
+        setEditingProfile(loaded);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, initialEditProfileId]);
+
+  useEffect(() => {
     if (!isOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isSaving && !isBatchApplying) {
-        onClose();
+      if (e.key === 'Escape' && !isSaving && !isBatchApplying && !loadingEditId) {
+        if (editingProfile) {
+          setEditingProfile(null);
+        } else {
+          onClose();
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, isSaving, isBatchApplying, onClose]);
+  }, [isOpen, isSaving, isBatchApplying, loadingEditId, editingProfile, onClose]);
 
   if (!isOpen) return null;
 
@@ -193,15 +231,17 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              id="btn-modal-import-json"
-              type="button"
-              onClick={() => void onImportJsonFile()}
-              className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              .json 가져오기
-            </button>
+            {!editingProfile && (
+              <button
+                id="btn-modal-import-json"
+                type="button"
+                onClick={() => void onImportJsonFile()}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                .json 가져오기
+              </button>
+            )}
             <button
               type="button"
               disabled={isSaving || isBatchApplying}
@@ -214,6 +254,37 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
           </div>
         </div>
 
+        {editingProfile ? (
+          <LocationProfileEditView
+            key={`${editingProfile.profileId}-${editingProfile.updatedAt}`}
+            profile={editingProfile}
+            isCurrentlyActive={activeProfile?.profileId === editingProfile.profileId}
+            netInfo={netInfo}
+            activeShares={activeShares}
+            isSaving={isSaving}
+            onSelectFolder={onSelectFolder}
+            onCancel={() => setEditingProfile(null)}
+            onSave={async (edited, applyToWorkspace) => {
+              setIsSaving(true);
+              try {
+                const ok = await onUpdateProfile(edited, applyToWorkspace);
+                if (ok) {
+                  setEditingProfile(null);
+                }
+                return ok;
+              } finally {
+                setIsSaving(false);
+              }
+            }}
+          />
+        ) : loadingEditId ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-12 text-center gap-3">
+            <RefreshCw className="w-6 h-6 text-indigo-500 animate-spin" />
+            <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+              사용장소 프로필(.location.json) 내용을 불러오는 중입니다...
+            </p>
+          </div>
+        ) : (
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/70 dark:bg-slate-950/50 p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -399,15 +470,35 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                         <button
                           type="button"
                           onClick={() => void onSelectProfile(item.profileId)}
-                          disabled={isBatchApplying}
+                          disabled={isBatchApplying || Boolean(loadingEditId)}
                           className="px-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
                           불러오기
                         </button>
                         <button
                           type="button"
+                          onClick={async () => {
+                            setLoadingEditId(item.profileId);
+                            try {
+                              const loaded = await onLoadProfileForEdit(item.profileId);
+                              if (loaded) {
+                                setEditingProfile(loaded);
+                              }
+                            } finally {
+                              setLoadingEditId(null);
+                            }
+                          }}
+                          disabled={isBatchApplying || Boolean(loadingEditId)}
+                          className="px-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          {loadingEditId === item.profileId ? '열기 중...' : '수정'}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => void onBatchApplyProfile(item.profileId)}
-                          disabled={isBatchApplying || (item.shareCount === 0 && item.clientTargetCount === 0)}
+                          disabled={isBatchApplying || Boolean(loadingEditId) || (item.shareCount === 0 && item.clientTargetCount === 0)}
+                          title="사전 검증(경로·권한·포트 445) 후 일괄 적용을 실행합니다"
                           className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
                           <Play className="w-3 h-3" />
@@ -416,7 +507,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                         <button
                           type="button"
                           onClick={() => void onExportProfile(item.profileId)}
-                          disabled={isBatchApplying}
+                          disabled={isBatchApplying || Boolean(loadingEditId)}
                           className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
                           <Download className="w-3 h-3" />
@@ -425,7 +516,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                         <button
                           type="button"
                           onClick={() => void onDeleteProfile(item.profileId, item.locationName)}
-                          disabled={isBatchApplying}
+                          disabled={isBatchApplying || Boolean(loadingEditId)}
                           aria-label={`${item.locationName} 사용장소 파일 삭제`}
                           title="사용장소 파일 삭제"
                           className="p-1.5 text-slate-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 rounded-lg cursor-pointer disabled:opacity-50"
@@ -440,6 +531,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
             )}
           </section>
         </div>
+        )}
       </div>
     </div>
   );

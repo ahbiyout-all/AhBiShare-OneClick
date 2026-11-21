@@ -103,7 +103,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
       ...pendingHostPreset.config,
       password:
         pendingHostPreset.config.authMode === 'account'
-          ? pendingHostPreset.config.password || prev.password || generateSecureSharePassword(10)
+          ? pendingHostPreset.config.password || generateSecureSharePassword(10)
           : prev.password,
     }));
     setShareNameCustomized(

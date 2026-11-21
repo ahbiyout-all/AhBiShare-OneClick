@@ -1411,7 +1411,7 @@ export function buildRawSecurityRegistryScript(remoteHostTarget?: string): strin
           return $map
         } -ArgumentList $remoteTarget
 
-        $done = Wait-Job -Job $job -Timeout 3
+        $done = Wait-Job -Job $job -Timeout 6
         if ($done) {
           $resObj = Receive-Job -Job $job -ErrorAction Stop
           if ($resObj) {
@@ -1789,6 +1789,7 @@ export function buildOsCompatibilityPatchScript(
         : 3;
     const uacFilterDword = rollbackSnapshot?.localAccountTokenFilterEnabled ? 1 : 0;
     const shouldDisableSmb1 = !rollbackSnapshot?.smb1Enabled;
+    const shouldDisableGuest501 = !rollbackSnapshot?.guestAccountEnabled;
     const allowGuestRightsPs = rollbackSnapshot
       ? (rollbackSnapshot.guestNetworkLogonDenied === false || (rollbackSnapshot.guestNetworkLogonDenied === undefined && rollbackSnapshot.allowInsecureGuestAuth)
           ? '$true'
@@ -1829,6 +1830,19 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d ${lmDword} /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d ${uacFilterDword} /f 2>$null | Out-Null
       Set-AhBiGuestNetworkLogonPolicy ${allowGuestRightsPs}
+      ${
+        shouldDisableGuest501
+          ? `
+      if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+        $guestLegacy = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
+        if ($guestLegacy) { Disable-LocalUser -Name $guestLegacy.Name -ErrorAction SilentlyContinue }
+      } else {
+        $guestLegacyWmi = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+        $guestLegacyName = if ($guestLegacyWmi) { $guestLegacyWmi.Name } else { 'Guest' }
+        & net.exe user $guestLegacyName /active:no 2>$null | Out-Null
+      }`
+          : ''
+      }
       $actions += '${escapePsSingle(actionHeader)}'
 
       ${
@@ -2282,4 +2296,166 @@ export function buildHostGuestUnlockPsScript(
     } | ConvertTo-AhBiJson
   `.trim();
 }
+
+export function buildLocationPreflightScript(
+  shares: Array<{ idx: number; shareName: string; folderPath: string }>,
+  driveLetters: string[]
+): string {
+  const shareLiterals = shares.map(
+    (s) =>
+      `@{ idx = ${Math.max(0, Math.floor(s.idx))}; shareName = '${escapePsSingle(s.shareName)}'; folderPath = '${escapePsSingle(normalizeWindowsFolderPath(s.folderPath))}' }`
+  );
+  const driveLiterals = driveLetters.map((d) => `'${escapePsSingle(normalizeDriveLetter(d))}'`);
+
+  return `
+    ${PS_JSON_HELPER}
+    $isAdmin = $false
+    try {
+      $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+      $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {}
+
+    $srvRunning = $false
+    $wrkRunning = $false
+    try {
+      $s1 = Get-Service -Name 'LanmanServer' -ErrorAction SilentlyContinue
+      if ($s1 -and "$($s1.Status)" -eq 'Running') { $srvRunning = $true }
+    } catch {}
+    try {
+      $s2 = Get-Service -Name 'LanmanWorkstation' -ErrorAction SilentlyContinue
+      if ($s2 -and "$($s2.Status)" -eq 'Running') { $wrkRunning = $true }
+    } catch {}
+
+    $existingShares = @{}
+    if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+      Get-SmbShare -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Name) {
+          $existingShares["$($_.Name)".ToLower()] = "$($_.Path)"
+        }
+      }
+    } else {
+      Get-WmiObject Win32_Share -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Name) {
+          $existingShares["$($_.Name)".ToLower()] = "$($_.Path)"
+        }
+      }
+    }
+
+    $localDrives = @{}
+    $driveReadOnlyMap = @{}
+    try {
+      foreach ($di in [System.IO.DriveInfo]::GetDrives()) {
+        $dName = "$($di.Name)".Substring(0, 2).ToUpper()
+        if ($di.DriveType -eq [System.IO.DriveType]::CDRom) {
+          $driveReadOnlyMap[$dName] = $true
+        }
+        if ($di.DriveType -ne [System.IO.DriveType]::Network) {
+          $localDrives[$dName] = "$($di.DriveType)"
+        }
+      }
+    } catch {}
+
+    $mappedDrives = @{}
+    if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
+      Get-SmbMapping -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.LocalPath) {
+          $mappedDrives["$($_.LocalPath)".Trim().ToUpper()] = "$($_.RemotePath)"
+        }
+      }
+    } else {
+      Get-WmiObject Win32_MappedLogicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.DeviceID) {
+          $mappedDrives["$($_.DeviceID)".Trim().ToUpper()] = "$($_.ProviderName)"
+        }
+      }
+    }
+
+    $shareInputs = @(${shareLiterals.join(', ')})
+    $shareResults = @()
+    foreach ($sh in $shareInputs) {
+      $fp = "$($sh.folderPath)"
+      $snLower = "$($sh.shareName)".ToLower()
+      $rootDrive = ''
+      try {
+        if ($fp.Length -ge 2 -and $fp.Substring(1, 1) -eq ':') {
+          $rootDrive = $fp.Substring(0, 2).ToUpper()
+        }
+      } catch {}
+      $driveExists = $false
+      if ($rootDrive) {
+        $driveExists = Test-Path -LiteralPath ($rootDrive + '\\') -ErrorAction SilentlyContinue
+      }
+      $isReadOnlyDrive = [bool]($rootDrive -and $driveReadOnlyMap.ContainsKey($rootDrive))
+      $isFileConflict = Test-Path -LiteralPath $fp -PathType Leaf -ErrorAction SilentlyContinue
+      $folderExists = Test-Path -LiteralPath $fp -PathType Container -ErrorAction SilentlyContinue
+      $aclReadable = $false
+      $aclDetail = ''
+      if ($folderExists) {
+        try {
+          $aclObj = Get-Acl -LiteralPath $fp -ErrorAction Stop
+          $null = [System.IO.Directory]::GetDirectories($fp)
+          $aclReadable = $true
+          if ($aclObj -and $aclObj.Owner) {
+            $aclDetail = ("소유자: " + "$($aclObj.Owner)")
+          }
+        } catch {
+          $aclReadable = $false
+          $aclDetail = "$($_.Exception.Message)"
+        }
+      } elseif ($driveExists) {
+        $probe = $fp
+        while ($probe -and -not (Test-Path -LiteralPath $probe -PathType Container -ErrorAction SilentlyContinue)) {
+          $parentProbe = Split-Path -Path $probe -Parent
+          if (-not $parentProbe -or $parentProbe -eq $probe) { break }
+          $probe = $parentProbe
+        }
+        if ($probe -and (Test-Path -LiteralPath $probe -PathType Container -ErrorAction SilentlyContinue)) {
+          try {
+            $aclParent = Get-Acl -LiteralPath $probe -ErrorAction Stop
+            $aclReadable = -not $isReadOnlyDrive
+            if ($aclParent -and $aclParent.Owner) {
+              $aclDetail = ("상위 경로(" + $probe + ") 소유자: " + "$($aclParent.Owner)")
+            }
+          } catch {
+            $aclReadable = $false
+            $aclDetail = "$($_.Exception.Message)"
+          }
+        }
+      }
+      $existingPath = if ($existingShares.ContainsKey($snLower)) { $existingShares[$snLower] } else { $null }
+      $shareResults += @{
+        idx = $sh.idx
+        driveExists = $driveExists
+        isReadOnlyDrive = $isReadOnlyDrive
+        folderExists = $folderExists
+        isFileConflict = $isFileConflict
+        aclReadable = $aclReadable
+        aclDetail = $aclDetail
+        existingSharePath = $existingPath
+      }
+    }
+
+    $driveInputs = @(${driveLiterals.join(', ')})
+    $driveResults = @()
+    foreach ($dl in $driveInputs) {
+      $dlUp = "$dl".Trim().ToUpper()
+      $localType = if ($localDrives.ContainsKey($dlUp)) { $localDrives[$dlUp] } else { $null }
+      $mappedUnc = if ($mappedDrives.ContainsKey($dlUp)) { $mappedDrives[$dlUp] } else { $null }
+      $driveResults += @{
+        driveLetter = $dlUp
+        localDriveType = $localType
+        mappedUnc = $mappedUnc
+      }
+    }
+
+    @{
+      isAdmin = $isAdmin
+      lanmanServerRunning = $srvRunning
+      lanmanWorkstationRunning = $wrkRunning
+      shares = $shareResults
+      drives = $driveResults
+    } | ConvertTo-AhBiJson -Depth 5
+  `.trim();
+}
+
 

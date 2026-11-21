@@ -2142,8 +2142,8 @@ export function deriveRawRegistrySnapshotFromHostSnap(
     {
       srvRequireSig: snap.smbServerSigningRequired ? 1 : 0,
       srvEnableSig: 1,
-      cliRequireSig: snap.smbServerSigningRequired ? 1 : 0,
-      cliEnableSig: 1,
+      cliRequireSig: isPreset ? (snap.smbServerSigningRequired ? 1 : 0) : null,
+      cliEnableSig: isPreset ? 1 : null,
       cliGuestSvc: snap.allowInsecureGuestAuth ? 1 : 0,
       cliGuestPol: snap.allowInsecureGuestAuth ? 1 : 0,
       guest501Disabled:
@@ -2156,7 +2156,7 @@ export function deriveRawRegistrySnapshotFromHostSnap(
           : null,
       limitBlankPwd:
         typeof snap.limitBlankPasswordUse === 'boolean' ? (snap.limitBlankPasswordUse ? 1 : 0) : null,
-      everyAnon: snap.allowInsecureGuestAuth ? 1 : 0,
+      everyAnon: isPreset ? (snap.allowInsecureGuestAuth ? 1 : 0) : null,
       restrictAnon:
         typeof snap.restrictAnonymous === 'boolean' ? (snap.restrictAnonymous ? 1 : 0) : null,
       restrictNullSess:

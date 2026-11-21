@@ -75,7 +75,7 @@ interface NetworkMatrixPanelProps {
   onInspectPolicy: () => Promise<void>;
   onApplyPatch: (mode: PolicyPatchMode) => Promise<void>;
   onSyncMatchedPolicies: (modes: PolicyPatchMode[]) => Promise<void>;
-  onFullSecurityRollback?: () => Promise<void>;
+  onFullSecurityRollback?: () => Promise<{ success: boolean; message: string } | void>;
   onProbeRemoteHost?: (target: string) => Promise<PingHostResult>;
   onSavePendingHostTask?: (task: Omit<PendingHostPolicyTask, 'taskId' | 'createdAt'>) => Promise<void>;
   onDeletePendingHostTask?: (targetHostName: string) => Promise<void>;

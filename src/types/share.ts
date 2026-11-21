@@ -196,6 +196,7 @@ export interface LegacyRollbackSnapshot {
   smbClientSigningRequired: boolean;
   allowInsecureGuestAuth: boolean;
   enableInsecureGuestLogons?: boolean;
+  guestAccountEnabled?: boolean;
   guestNetworkLogonDenied?: boolean;
   localAccountTokenFilterEnabled?: boolean;
   smbEncryptData: boolean;
@@ -584,6 +585,40 @@ export interface ExpertRegistryFetchResult {
   remoteRpcSucceeded: boolean;
   remoteRpcNote?: string;
   fetchedAt: string;
+}
+
+export type LocationPreflightItemStatus = 'pass' | 'warning' | 'fail';
+
+export interface LocationPreflightSubCheck {
+  key: string;
+  label: string;
+  status: LocationPreflightItemStatus;
+  detail: string;
+}
+
+export interface LocationPreflightItemResult {
+  kind: 'environment' | 'share' | 'mount';
+  index: number;
+  label: string;
+  targetDesc: string;
+  status: LocationPreflightItemStatus;
+  summary: string;
+  canAutoProvisionFolder?: boolean;
+  checks: LocationPreflightSubCheck[];
+}
+
+export interface LocationPreflightReport {
+  profileId: string;
+  locationName: string;
+  checkedAt: string;
+  overallStatus: LocationPreflightItemStatus;
+  isAdmin: boolean;
+  totalItems: number;
+  passCount: number;
+  warningCount: number;
+  failCount: number;
+  hasBlockingErrors: boolean;
+  items: LocationPreflightItemResult[];
 }
 
 

@@ -365,7 +365,7 @@ function hydrateRuntimeDocument(diskDoc) {
       if (raw.encryptedCredentials) {
         const dec = decryptCredentials(raw.encryptedCredentials);
         if (dec.ok) {
-          username = dec.username || username;
+          username = username || dec.username;
           password = dec.password;
         } else {
           decryptionFailed = true;
@@ -517,7 +517,7 @@ function hydrateLocationClientTargets(rawTargets) {
       if (item.encryptedCredentials) {
         const dec = decryptCredentials(item.encryptedCredentials);
         if (dec.ok) {
-          username = dec.username || username;
+          username = username || dec.username;
           password = dec.password;
         }
       } else if (item.password) {
@@ -573,7 +573,7 @@ function hydrateLocationHostPreset(rawPreset) {
     if (rawPreset.encryptedCredentials) {
       const dec = decryptCredentials(rawPreset.encryptedCredentials);
       if (dec.ok) {
-        username = dec.username || username;
+        username = username || dec.username;
         password = dec.password;
       }
     } else if (rawPreset.password) {

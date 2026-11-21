@@ -321,6 +321,23 @@ try {
   assert.strictEqual(locLoaded.profile.clientTargets[0].password, 'LocClientSecret!3');
   assert.strictEqual(locLoaded.profile.clientTargets[0].driveLetter, 'Z:');
 
+  // Verify edited top-level username overrides stale encryptedCredentials.username when password is not re-entered
+  const locEditedUserOnly = {
+    ...locLoaded.profile,
+    hostPreset: { ...locLoaded.profile.hostPreset, username: 'UpdatedHostUser', password: '' },
+    savedShares: [{ ...locLoaded.profile.savedShares[0], username: 'UpdatedShareUser', password: '' }],
+    clientTargets: [{ ...locLoaded.profile.clientTargets[0], username: 'UpdatedClientUser', password: '' }],
+  };
+  assert.strictEqual(store.saveLocationProfile(locEditedUserOnly).success, true);
+  const locReloadedUserOnly = store.loadLocationProfile(locSaveRes.profile.profileId);
+  assert.strictEqual(locReloadedUserOnly.success, true);
+  assert.strictEqual(locReloadedUserOnly.profile.hostPreset?.username, 'UpdatedHostUser');
+  assert.strictEqual(locReloadedUserOnly.profile.hostPreset?.password, 'LocHostSecret!1');
+  assert.strictEqual(locReloadedUserOnly.profile.savedShares[0].username, 'UpdatedShareUser');
+  assert.strictEqual(locReloadedUserOnly.profile.savedShares[0].password, 'LocShareSecret!2');
+  assert.strictEqual(locReloadedUserOnly.profile.clientTargets[0].username, 'UpdatedClientUser');
+  assert.strictEqual(locReloadedUserOnly.profile.clientTargets[0].password, 'LocClientSecret!3');
+
   const locDel = store.deleteLocationProfile(locSaveRes.profile.profileId);
   assert.strictEqual(locDel.success, true);
   assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
@@ -805,12 +822,14 @@ assert(
 // 8. Verify per-location UI components, bridge methods, and App.tsx wiring
 const locBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationProfileBar.tsx'), 'utf8');
 const locModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationManagerModal.tsx'), 'utf8');
+const locEditViewSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationProfileEditView.tsx'), 'utf8');
 for (const uiId of [
   'location-profile-bar',
   'select-location-profile',
   'btn-open-save-location',
   'btn-quick-import-location',
   'btn-open-location-manager',
+  'btn-edit-active-location',
   'btn-batch-apply-location',
   'location-batch-result',
 ]) {
@@ -820,15 +839,42 @@ assert(
   locModalSrc.includes('role="dialog"') &&
     locModalSrc.includes('aria-modal="true"') &&
     locModalSrc.includes("e.key === 'Escape'") &&
+    locModalSrc.includes('!loadingEditId') &&
     locModalSrc.includes('btn-save-new-location') &&
     locModalSrc.includes('btn-modal-import-json') &&
-    locModalSrc.includes('wasOpenRef'),
-  'LocationManagerModal.tsx missing accessible dialog, Escape handler, wasOpenRef open-edge init, or save/import controls'
+    locModalSrc.includes('LocationProfileEditView') &&
+    locModalSrc.includes('onUpdateProfile') &&
+    locModalSrc.includes('wasOpenRef') &&
+    locModalSrc.includes('loadingEditId ?'),
+  'LocationManagerModal.tsx missing accessible dialog, Escape/loadingEditId guard, wasOpenRef open-edge init, edit loading state, edit view, or save/import controls'
+);
+for (const editUiId of [
+  'edit-loc-name',
+  'edit-loc-desc',
+  'edit-loc-patch-mode',
+  'btn-edit-add-share',
+  'btn-edit-add-client',
+  'btn-cancel-location-edit',
+  'btn-save-location-edit',
+]) {
+  assert(locEditViewSrc.includes(editUiId), `LocationProfileEditView.tsx missing edit control: ${editUiId}`);
+}
+assert(
+  locEditViewSrc.includes("k.startsWith('share-')") &&
+    locEditViewSrc.includes("k.startsWith('client-')") &&
+    locEditViewSrc.includes('nextTtl ? {} : { autoRevokeOnExpiry: false }') &&
+    locEditViewSrc.includes("mode === 'guest' ? { password: '', encryptedCredentials: undefined } : {}"),
+  'LocationProfileEditView.tsx must re-index visiblePasswords on row deletion, clear autoRevokeOnExpiry when hostPreset TTL is cleared, and clear stale credentials when switching to guest mode'
+);
+assert(
+  psEngineSrc.includes('Wait-Job -Job $job -Timeout 6'),
+  'powershellEngine.ts buildRawSecurityRegistryScript must allow at least 6s for remote registry Wait-Job'
 );
 const hostPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'HostPanel.tsx'), 'utf8');
 assert(
-  hostPanelSrc.includes("pendingHostPreset.config.shareName !== 'AhBiShared'"),
-  'HostPanel.tsx must only set shareNameCustomized when preset uses a non-default share name'
+  hostPanelSrc.includes("pendingHostPreset.config.shareName !== 'AhBiShared'") &&
+    !hostPanelSrc.includes('pendingHostPreset.config.password || prev.password'),
+  'HostPanel.tsx must only set shareNameCustomized for non-default share name and must not carry over prev.password across profile presets'
 );
 assert(
   clientPanelSrc.includes('driveLetterOptions'),
@@ -839,6 +885,7 @@ for (const fnMarker of [
   'buildLocationProfileSnapshot',
   'listLocationProfiles',
   'saveLocationProfile',
+  'saveEditedLocationProfile',
   'loadLocationProfile',
   'deleteLocationProfile',
   'exportLocationProfileFile',
@@ -851,13 +898,37 @@ for (const fnMarker of [
   assert(bridgeSrc.includes(fnMarker), `shareBridge.ts missing location/credential guard: ${fnMarker}`);
 }
 assert(
+  bridgeSrc.includes('username = username || dec.username;') &&
+    !bridgeSrc.includes('username = dec.username || username;') &&
+    bridgeSrc.includes('const res = await window.ahbiShareElectron.saveLocationProfile(profile);') &&
+    bridgeSrc.includes('if (res.success && res.profile) {\n        this.cacheLocationProfileCredentials(res.profile);'),
+  'shareBridge.ts must prioritize explicit username in loadWebPreviewPortable and re-cache decrypted res.profile after Electron saveLocationProfile'
+);
+assert(
+  rollbackPanelSrc.includes('const res = await onFullSecurityRollback();') &&
+    rollbackPanelSrc.includes("setFeedback({ scope: 'full', ...res });") &&
+    appSrc.includes('return { success: allOk, message: msg };') &&
+    appSrc.includes("if (!jobKey) {\n      return { success: false, message: '다른 작업이 진행 중입니다.' };"),
+  'App.tsx handleFullSecurityRollback & RollbackPanel.tsx must propagate exact full rollback success/failure state instead of hardcoding success: true'
+);
+assert(
+  modMain.includes("let stagingDir = '';") &&
+    modMain.includes('if (!stagingDir) return;') &&
+    modMain.includes("stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-portable-update-'));"),
+  'main.js install-portable-update must create stagingDir inside try/catch with null-guarded cleanupStaging'
+);
+assert(
   appSrc.includes('LocationProfileBar') &&
     appSrc.includes('LocationManagerModal') &&
     appSrc.includes('WorkProgressModal') &&
     appSrc.includes('startProgressJob') &&
     appSrc.includes('applyLocationProfileToWorkspace') &&
+    appSrc.includes('handleLoadLocationProfileForEdit') &&
+    appSrc.includes('handleUpdateLocationProfile') &&
+    appSrc.includes("firstShare.authMode === 'account' ? firstShare.password || '' : ''") &&
+    appSrc.includes("preset.authMode === 'account' ? preset.password || '' : ''") &&
     appSrc.includes('Copyright © 1998-2026 AhBiYout. All rights reserved.'),
-  'App.tsx missing LocationProfileBar / LocationManagerModal / WorkProgressModal wiring or AhBiYout copyright'
+  'App.tsx missing LocationProfileBar / LocationManagerModal / WorkProgressModal wiring, profile edit handlers, cross-profile password isolation, or AhBiYout copyright'
 );
   const validSharesBridgeCheck =
     bridgeSrc.includes('const validShares = profile.savedShares.filter') &&
@@ -882,6 +953,47 @@ assert(
       indexCssSrc.includes('@keyframes ahbi-ring-ccw') &&
       indexCssSrc.includes('animation-iteration-count: 1 !important'),
     'WorkProgressModal.tsx / src/index.css missing dual-ring animation, running lock, focus trap, scroll lock, reduced-motion iteration limit, or 1.5s success auto-close guard'
+  );
+  const netEvoAuditSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'networkEvolution.ts'), 'utf8');
+  const connCodeAuditSrc = fs.readFileSync(path.join(rootDir, 'src', 'utils', 'connectionCode.ts'), 'utf8');
+  assert(
+    typesShareSrc.includes('guestAccountEnabled?: boolean;') &&
+      psEngineSrc.includes('const shouldDisableGuest501 = !rollbackSnapshot?.guestAccountEnabled;') &&
+      psEngineSrc.includes('$guestLegacyWmi') &&
+      bridgeSrc.includes('guestAccountEnabled: Boolean(current.guestAccountEnabled)') &&
+      bridgeSrc.includes('everyoneIncludesAnonymous: restoredGuestAllow') &&
+      bridgeSrc.includes('let diskHostPreset: LocationHostPreset | undefined;') &&
+      bridgeSrc.includes('encryptWebSimCredentials(hpUser, hpPass)') &&
+      bridgeSrc.includes('decryptWebSimCredentials(hp.encryptedCredentials)') &&
+      netEvoAuditSrc.includes('cliRequireSig: isPreset ? (snap.smbServerSigningRequired ? 1 : 0) : null') &&
+      netEvoAuditSrc.includes('everyAnon: isPreset ? (snap.allowInsecureGuestAuth ? 1 : 0) : null') &&
+      locEditViewSrc.includes('validateShareName') &&
+      locEditViewSrc.includes('validateFolderPath') &&
+      locEditViewSrc.includes('validateTargetHost') &&
+      locEditViewSrc.includes('호스트 폼 프리셋의 보안 계정 비밀번호를 입력하세요.') &&
+      mainJsSrc.includes("cleanTarget.startsWith('-')") &&
+      connCodeAuditSrc.includes('/^-/.test(trimmed)') &&
+      updateCheckerSrc.includes('/^https?:\\/\\//i.test(rawTarget)') &&
+      !updateCheckerSrc.includes('window.open('),
+    '11th audit regressions failed: legacy_bridge_rollback *-501 Guest disable, web sim symmetry, Web Preview location encryption, non-preset snapshot guard, LocationProfileEditView validation, leading-hyphen guard, or openExternalReleaseUrl safety'
+  );
+  const locPreflightModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LocationPreflightModal.tsx'), 'utf8');
+  assert(
+    typesShareSrc.includes('LocationPreflightReport') &&
+      typesShareSrc.includes('LocationPreflightItemResult') &&
+      psEngineSrc.includes('buildLocationPreflightScript') &&
+      bridgeSrc.includes('preflightLocationProfileBatch') &&
+      bridgeSrc.includes('buildLocationPreflightScript(') &&
+      locPreflightModalSrc.includes('role="dialog"') &&
+      locPreflightModalSrc.includes('aria-modal="true"') &&
+      locPreflightModalSrc.includes('preflight-summary-banner') &&
+      locPreflightModalSrc.includes('btn-preflight-rerun') &&
+      locPreflightModalSrc.includes('btn-preflight-edit-profile') &&
+      locPreflightModalSrc.includes('btn-preflight-confirm-apply') &&
+      appSrc.includes('LocationPreflightModal') &&
+      appSrc.includes('runPreflightCheckForProfile') &&
+      appSrc.includes('executeBatchApplyLocation'),
+    'Location batch Pre-flight Check (types, PowerShell engine, shareBridge, LocationPreflightModal UI & App wiring) check failed'
   );
   pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 

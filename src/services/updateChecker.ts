@@ -203,21 +203,19 @@ export function subscribeUpdateProgress(callback: (progress: PortableUpdateProgr
 }
 
 export async function openExternalReleaseUrl(url: string): Promise<void> {
-  const target = String(url || '').trim() || GITHUB_RELEASES_URL;
+  const rawTarget = String(url || '').trim();
+  const target = /^https?:\/\//i.test(rawTarget) ? rawTarget : GITHUB_RELEASES_URL;
   if (window.ahbiShareElectron?.openExternalUrl) {
     const res = await window.ahbiShareElectron.openExternalUrl(target);
     if (res.success) return;
   }
-  const win = window.open(target, '_blank', 'noopener,noreferrer');
-  if (!win) {
-    const a = document.createElement('a');
-    a.href = target;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
+  const a = document.createElement('a');
+  a.href = target;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 export async function checkForUpdates(currentVersion: string = APP_VERSION): Promise<UpdateCheckResult> {

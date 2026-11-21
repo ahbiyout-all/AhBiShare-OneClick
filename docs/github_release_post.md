@@ -4,7 +4,7 @@
 
 ---
 
-## 📦 배포 파일 안내 (`v1.1.5` · GitHub Releases)
+## 📦 배포 파일 안내 (`v1.2.1` · GitHub Releases)
 
 | 파일명 | 권장 대상 | 특징 |
 | :--- | :--- | :--- |
@@ -13,13 +13,20 @@
 | **`AhBiShare_OneClick_Win7_v1.2.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
 | **`AhBiShare_OneClick-Setup_v1.2.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (시작 메뉴·바탕 화면·방화벽 자동 등록) |
 
-👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.1.5`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
+👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.2.1`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
 
 ---
 
-## ✨ v1.2.x 주요 변경 내역 (최신 `v1.2.0` · Semantic Versioning: `MINOR` + `PATCH`)
+## ✨ v1.2.x 주요 변경 내역 (최신 `v1.2.1` · Semantic Versioning: `MINOR` + `PATCH`)
 
-### 🟢 신규 기능 (`MINOR`)
+### 🟢 신규 기능 및 고도화 (`v1.2.0` ~ `v1.2.1`)
+- **10대 보안 원복 심층 감사 보고서 · 호스트 불일치 색상 배지 · 전문가 레지스트리 원시 값 비교 뷰 (`v1.2.1`)**:
+  - 보안 원복 직후 SMB 서명·게스트 차단·NTLM·LSA 등 10개 핵심 항목의 기본값 복구 상태를 정밀 검증하는 **보안 원복 심층 감사 보고서(`SecurityRollbackReport`)** 와 대상 호스트 기대 정책과의 **항목별 색상 배지(`일치`·`주의`·`충돌`)** 를 제공합니다.
+  - **전문가 비교 뷰(`ExpertComparisonView`)** 를 통해 로컬 PC와 대상 호스트의 10대 보안 정책 원시 레지스트리 경로·키·실측 값을 좌우 나란히 비교할 수 있습니다.
+- **저장된 사용장소별 프로필(`.location.json`) 내용 직접 수정 에디터 (`v1.2.1`)**:
+  - 저장된 사용장소 파일의 기본 정보·참고 네트워크 대역·선호 호환 모드·호스트 공유폴더(TTL/계정 암호)·클라이언트 드라이브·호스트 프리셋을 앱 내에서 직접 편집(`내용 수정`)하고 AES-256-GCM 재암호화 저장을 지원합니다.
+- **사용장소 일괄 적용 사전 검증(Pre-flight Check) 단계 및 결과 모달 (`v1.2.1`)**:
+  - 사용장소 1클릭 일괄 적용 직전 `LocationPreflightModal`을 통해 관리자 권한·SMB 서비스·참고 네트워크 대역, 호스트 공유폴더 경로 존재·NTFS ACL 권한·기존 공유 충돌·자격증명, 클라이언트 드라이브 문자 충돌·대상 호스트 TCP 445 포트 연결 가능 여부를 읽기 전용으로 사전 점검(`buildLocationPreflightScript` · `preflightLocationProfileBatch`)하고 `통과`·`주의`·`오류` 배지 및 `다시 검사`·`프로필 내용 수정`·`일괄 적용 실행` 액션을 제공합니다.
 - **실시간 작업 진행 모션창 (`WorkProgressModal`) — 주요 작업 11종 전면 적용 (`v1.2.0`)**:
   - 공유 개설·해제, 네트워크 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS(Win 7/8) 통합 개설·접속, 사용장소 일괄 적용, 호스트·클라이언트·만료 보안 원복까지 모든 주요 작업 시 **듀얼 링 SVG 회전 모션 + 실시간 단계 진행 타임라인 + 경과 시간 표시창**을 제공합니다.
   - 실행 중에는 닫기·ESC·배경 클릭·키보드(`Enter`/`Space`/`Tab`) 재실행을 차단하는 중앙 잠금 및 본문 스크롤 잠금을 적용하며, 작업 성공 시 **1.5초 카운트다운 자동 닫힘**, 오류 발생 시 원인 안내와 함께 수동 확인 시까지 창을 유지합니다.
@@ -30,7 +37,10 @@
   - 실행 중인 포터블 에디션(`Standard` / `Lite` / `Win7`)을 파일명(`basename`)과 앱 식별자로 정확히 판별해 동일 에디션의 최신 `.exe`를 내려받고, 공식 GitHub URL 허용 목록 및 Windows PE 실행 헤더(`MZ`) 무결성 검증을 거친 뒤 **기존 포터블 프로세스를 종료·삭제하고 새 파일로 교체·재실행**합니다.
   - 기존 공유 데이터(`.portable.json`) 및 사용장소 프로필(`locations/`)은 안전하게 보존됩니다.
 
-### 🔧 24H2/25H2 공유 오류 해결 & 심층 점검(Deep Audit) (`v1.1.1` ~ `v1.2.0`)
+### 🔧 24H2/25H2 공유 오류 해결 & 심층 점검(Deep Audit) (`v1.1.1` ~ `v1.2.1`)
+- **7~11차 자아성찰 심층 점검 — 레거시 `*-501` Guest 원복 · 웹 프리뷰 암호화 · 프로필 검증 & 원격 레지스트리 안정화 (`v1.2.1`)**:
+  - IPv4 주소 점(`.5`, `.86` 등) 에러코드 오분류 차단, HTTPS 리다이렉트 `settled` · 업데이터 `mkdtempSync` 가드, 전체 보안 원복(`handleFullSecurityRollback` · `RollbackPanel`) 실제 판정 배너 전파, `legacy_bridge_rollback` `*-501` Guest 비활성화 및 웹 프리뷰 시뮬레이션 정책 대칭 정렬을 반영했습니다.
+  - `LocationProfileEditView` 내 11종 정책 모드·공유명/경로/호스트/`hostPreset` 암호 검증·행 삭제 가시성·`guest` 초기화 및 `LocationManagerModal` `Escape` 가드를 보완하고, `portableStore.js` 및 `shareBridge.ts` 내 `username` 우선 보존·웹 프리뷰 프로필 AES-GCM 암호화 저장/복호화·Electron 저장 후 캐시 재보관·프로필 전환 시 `prev.password` 누출 차단·실측 누락 스냅샷(`<미측정>`) 처리·하이픈(`-`) 호스트 차단·`openExternalReleaseUrl` HTTPS 검증을 적용했습니다.
 - **6차 자아성찰 심층 점검 — 진행 모션창 포커스·모션 접근성 & 만료 원복·장소 일괄 적용 오류 수정 (`v1.2.0`)**:
   - `WorkProgressModal.tsx` · `index.css`: 실행 중 배경 버튼 키보드 재호출(`Enter`/`Space`/`Tab`) 차단 포커스 트랩·이전 포커스 복원·본문 스크롤 잠금을 구현하고, `prefers-reduced-motion: reduce` 환경에 `animation-iteration-count: 1 !important`를 추가해 무한 회전 깜빡임(Strobing)을 제거했습니다.
   - `App.tsx` (`handleExpirySecurityRollback` · `handleApplyOsPatch`): 만료 공유 보안 원복 시 `rollbackPolicies`·`strict_26h2_default` 양측 성공 여부를 검증해 실패 시 만료 알림 유지·오류 단계 추적(`failProgressJob`)을 적용하고, 정책 적용 실패 토스트가 완료 문구를 표시하던 버그를 수정했습니다.
@@ -83,6 +93,7 @@ npm run version:bump -- patch --summary "패치 요약" --note "세부 기록"
 ---
 
 ## 📜 릴리즈 이력 요약
+- **`v1.2.1` (2026-11-21 · `PATCH`)**: 10대 보안 원복 심층 감사 보고서·호스트 불일치 색상 배지·전문가 레지스트리 원시 값 비교 뷰(`ExpertComparisonView`)·저장된 `.location.json` 프로필 내용 직접 수정 에디터·사용장소 일괄 적용 사전 검증(`LocationPreflightModal` · `preflightLocationProfileBatch`) 추가 및 7~11차 자아성찰 심층 점검(레거시 `*-501` Guest 원복, 웹 프리뷰 프로필 AES-GCM 암호화·정책 시뮬레이션 대칭, 미측정 스냅샷 `null` 처리, 프로필 편집기 전체 필드 검증, IPv4·하이픈 호스트·리다이렉트/임시폴더 가드, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선)
 - **`v1.2.0` (2026-11-19 · `MINOR`)**: 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·실시간 단계 목록·경과 시간·1.5초 자동 닫힘/오류 유지·포커스/스크롤 잠금) 주요 작업 11종 도입 및 6차 자아성찰 심층 점검(`handleExpirySecurityRollback`·`handleApplyOsPatch` 오류 검증, `applyLocationProfileBatch` `validShares` 인덱스 정렬, `prefers-reduced-motion` 개선)
 - **`v1.1.5` (2026-11-19 · `PATCH`)**: 5차 자아성찰 심층 점검 — `secedit` INF `[System.Text.Encoding]::Unicode` 명시 & `SeDenyNetworkLogonRight` 비게스트 따옴표 보존, `c_mount` `/`·`*` 암호 `net.exe` 충돌 회피 및 Guest Win32 Null 세션(`''`/`''`) 폴백 추가, `syncLiveState` 공유 `folderPath`·드라이브 UNC 변경 감지 강화
 - **`v1.1.4` (2026-11-19 · `PATCH`)**: 4차 심층 점검 — 무비밀번호(Guest) 마운트 `Guest: 시스템 오류 86`·`1223` 근본 해결 (`WNetAddConnection2` · `ProcessStartInfo` 원시 빈 암호 전달, 호스트 `*-501` 빈 암호(`/passwordreq:no`)·`S-1-5-7` 공유 권한, `LimitBlankPasswordUse=0` 정렬, `secedit` UTF-16LE INF `ReadAllLines` 보강)

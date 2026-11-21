@@ -55,7 +55,7 @@ export function validateFolderPath(folderPath: string): string | null {
 export function validateTargetHost(host: string): string | null {
   const trimmed = host.trim();
   if (!trimmed) return '대상 메인 PC의 IP 주소 또는 호스트 이름을 입력하세요.';
-  if (/[\x00-\x1f\\/:*?"<>|\s;&$`'(){}[\]!]/.test(trimmed)) {
+  if (/^-/.test(trimmed) || /[\x00-\x1f\\/:*?"<>|\s;&$`'(){}[\]!]/.test(trimmed)) {
     return 'IP 주소 또는 호스트 이름에 공백이나 허용되지 않는 특수문자를 포함할 수 없습니다.';
   }
   return null;

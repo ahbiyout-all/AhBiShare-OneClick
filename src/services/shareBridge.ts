@@ -30,10 +30,20 @@ import {
   LocationProfileSummary,
   LocationBatchApplyResult,
   LocationBatchApplyItemResult,
+  LocationPreflightItemResult,
+  LocationPreflightItemStatus,
+  LocationPreflightReport,
+  LocationPreflightSubCheck,
   ExpertRegistryFetchResult,
   RawSecurityRegistrySnapshot,
 } from '@/types/share';
-import { decodeConnectionCode, encodeConnectionCode, validateTargetHost } from '@/utils/connectionCode';
+import {
+  decodeConnectionCode,
+  encodeConnectionCode,
+  validateFolderPath,
+  validateShareName,
+  validateTargetHost,
+} from '@/utils/connectionCode';
 import { APP_VERSION } from '@/version';
 import {
   buildHostStepScripts,
@@ -45,6 +55,7 @@ import {
   buildOsCompatibilityPatchScript,
   buildHostGuestUnlockPsScript,
   buildRawSecurityRegistryScript,
+  buildLocationPreflightScript,
 } from '@/services/powershellEngine';
 import {
   classifyOsEra,
@@ -454,7 +465,7 @@ async function loadWebPreviewPortable(): Promise<PortableLoadResult> {
       if (item.authMode === 'account' && item.encryptedCredentials) {
         const dec = await decryptWebSimCredentials(item.encryptedCredentials);
         if (dec.ok) {
-          username = dec.username || username;
+          username = username || dec.username;
           password = dec.password;
         } else {
           decryptionFailed = true;
@@ -1517,6 +1528,8 @@ export const shareBridge = {
         everyoneIncludesAnonymous: false,
         guestNetworkLogonDenied: true,
         guestAccountEnabled: false,
+        smbEncryptData: false,
+        smbRejectUnencryptedAccess: false,
         ahbiFirewallRulePresent: false,
       };
       writeStore(STORAGE_SHARES_KEY, []);
@@ -1912,6 +1925,7 @@ export const shareBridge = {
           smbClientSigningRequired: current.smbClientSigningRequired,
           allowInsecureGuestAuth: current.allowInsecureGuestAuth,
           enableInsecureGuestLogons: current.enableInsecureGuestLogons,
+          guestAccountEnabled: Boolean(current.guestAccountEnabled),
           guestNetworkLogonDenied: Boolean(current.guestNetworkLogonDenied),
           localAccountTokenFilterEnabled: Boolean(current.localAccountTokenFilterEnabled),
           smbEncryptData: current.smbEncryptData,
@@ -2113,8 +2127,10 @@ export const shareBridge = {
         limitBlankPasswordUse: false,
         restrictNullSessAccess: false,
         restrictAnonymous: false,
+        everyoneIncludesAnonymous: true,
         guestAccountEnabled: true,
         firewall445Allowed: true,
+        ahbiFirewallRulePresent: true,
         lmCompatibilityLevel: 3,
         netbiosEnabled: true,
         lanmanServerRunning: true,
@@ -2147,18 +2163,24 @@ export const shareBridge = {
     } else if (mode === 'legacy_bridge_rollback') {
       const currentlyHasSmb1 = Boolean(webSimPolicyBase.smb1Enabled || webSimPolicyBase.smb1ServerEnabled);
       const restoreSmb1 = rollbackSnapshot ? Boolean(rollbackSnapshot.smb1Enabled) : false;
+      const restoredGuestAllow = rollbackSnapshot ? Boolean(rollbackSnapshot.allowInsecureGuestAuth) : false;
       smb1Changed = currentlyHasSmb1 && !restoreSmb1;
       webSimPolicyBase = {
         ...webSimPolicyBase,
         smbServerSigningRequired: rollbackSnapshot ? rollbackSnapshot.smbServerSigningRequired : true,
         smbClientSigningRequired: rollbackSnapshot ? rollbackSnapshot.smbClientSigningRequired : true,
-        allowInsecureGuestAuth: rollbackSnapshot ? rollbackSnapshot.allowInsecureGuestAuth : false,
+        allowInsecureGuestAuth: restoredGuestAllow,
         enableInsecureGuestLogons: rollbackSnapshot
           ? Boolean(rollbackSnapshot.enableInsecureGuestLogons ?? rollbackSnapshot.allowInsecureGuestAuth)
           : false,
         guestNetworkLogonDenied: rollbackSnapshot
           ? Boolean(rollbackSnapshot.guestNetworkLogonDenied ?? !rollbackSnapshot.allowInsecureGuestAuth)
           : true,
+        limitBlankPasswordUse: !restoredGuestAllow,
+        restrictNullSessAccess: !restoredGuestAllow,
+        restrictAnonymous: !restoredGuestAllow,
+        everyoneIncludesAnonymous: restoredGuestAllow,
+        guestAccountEnabled: rollbackSnapshot ? Boolean(rollbackSnapshot.guestAccountEnabled) : false,
         localAccountTokenFilterEnabled: rollbackSnapshot
           ? Boolean(rollbackSnapshot.localAccountTokenFilterEnabled)
           : false,
@@ -2984,12 +3006,21 @@ export const shareBridge = {
   },
 
   cacheLocationProfileCredentials(profile: LocationProfileFile): void {
+    runtimeLocationHostPasswordCache.delete(profile.profileId);
+    const targetPrefix = `${profile.profileId}::`;
+    for (const key of Array.from(runtimeLocationTargetPasswordCache.keys())) {
+      if (key.startsWith(targetPrefix)) {
+        runtimeLocationTargetPasswordCache.delete(key);
+      }
+    }
     if (profile.hostPreset?.authMode === 'account' && profile.hostPreset.password) {
       runtimeLocationHostPasswordCache.set(profile.profileId, profile.hostPreset.password);
     }
     for (const sh of profile.savedShares || []) {
-      if (sh.password) {
+      if (sh.authMode === 'account' && sh.password) {
         setCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName, sh.password);
+      } else {
+        runtimeSharePasswordCache.delete(cacheKeyForShare(sh.sourceHostName || 'LOCATION', sh.shareName));
       }
     }
     for (const ct of profile.clientTargets || []) {
@@ -3003,6 +3034,140 @@ export const shareBridge = {
     }
   },
 
+  async saveEditedLocationProfile(edited: LocationProfileFile): Promise<{
+    success: boolean;
+    profile?: LocationProfileFile;
+    summary?: LocationProfileSummary;
+    filePath?: string;
+    error?: string;
+  }> {
+    const cleanName = edited.locationName.trim() || '이름 없는 장소';
+    const nowIso = new Date().toISOString();
+
+    const normalizeFolder = (rawPath: string) => {
+      const cleaned = (rawPath.trim() || 'C:\\AhBiShared').replace(/\//g, '\\').replace(/\\+$/, '');
+      return /^[A-Za-z]:$/.test(cleaned) ? `${cleaned}\\` : cleaned;
+    };
+
+    const normalizedHostPreset: LocationHostPreset | undefined = edited.hostPreset
+      ? (() => {
+          const authMode = edited.hostPreset.authMode === 'account' ? 'account' : 'guest';
+          const username = authMode === 'account' ? edited.hostPreset.username.trim() || 'AhBiShare' : '';
+          const password = authMode === 'account' ? edited.hostPreset.password || '' : '';
+          const ttlMinutes =
+            typeof edited.hostPreset.ttlMinutes === 'number' && edited.hostPreset.ttlMinutes > 0
+              ? Math.round(edited.hostPreset.ttlMinutes)
+              : undefined;
+          return {
+            folderPath: normalizeFolder(edited.hostPreset.folderPath),
+            shareName: edited.hostPreset.shareName.trim() || 'AhBiShared',
+            authMode,
+            permission: edited.hostPreset.permission === 'read' ? 'read' : 'full',
+            username,
+            password,
+            ...(authMode === 'account' && !password && edited.hostPreset.encryptedCredentials
+              ? { encryptedCredentials: edited.hostPreset.encryptedCredentials }
+              : {}),
+            ...(ttlMinutes ? { ttlMinutes, autoRevokeOnExpiry: Boolean(edited.hostPreset.autoRevokeOnExpiry) } : {}),
+          };
+        })()
+      : undefined;
+
+    const normalizedShares: PortableHostShareEntry[] = (edited.savedShares || [])
+      .filter((sh) => sh.shareName.trim() && sh.folderPath.trim())
+      .map((sh) => {
+        const authMode = sh.authMode === 'account' ? 'account' : 'guest';
+        const shareName = sh.shareName.trim();
+        const folderPath = normalizeFolder(sh.folderPath);
+        const sourceHostName = (sh.sourceHostName || edited.networkHint?.hostname || '').trim();
+        const sourceIp = (sh.sourceIp || edited.networkHint?.primaryIp || '').trim();
+        const uncHost = sourceIp || sourceHostName || 'localhost';
+        const username = authMode === 'account' ? (sh.username || 'AhBiShare').trim() : undefined;
+        const password = authMode === 'account' ? sh.password || undefined : undefined;
+        const ttlMinutes =
+          typeof sh.ttlMinutes === 'number' && sh.ttlMinutes > 0 ? Math.round(sh.ttlMinutes) : undefined;
+        const createdAt = sh.createdAt || new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        const freshCode = encodeConnectionCode({
+          v: 1,
+          hostName: sourceHostName,
+          ip: sourceIp,
+          shareName,
+          authMode,
+          ...(username ? { username } : {}),
+          ...(password ? { password } : {}),
+          createdAt,
+        });
+        return {
+          sourceHostName,
+          sourceIp,
+          shareName,
+          folderPath,
+          uncPath: `\\\\${uncHost}\\${shareName}`,
+          authMode,
+          permission: sh.permission === 'read' ? 'read' : 'full',
+          ...(username ? { username } : {}),
+          ...(password ? { password } : {}),
+          ...(authMode === 'account' && !password && sh.encryptedCredentials
+            ? { encryptedCredentials: sh.encryptedCredentials }
+            : {}),
+          createdAt,
+          updatedAt: nowIso,
+          ...(ttlMinutes
+            ? {
+                ttlMinutes,
+                ...(sh.expiresAt ? { expiresAt: sh.expiresAt } : {}),
+                autoRevokeOnExpiry: Boolean(sh.autoRevokeOnExpiry),
+              }
+            : {}),
+          connectionCode: freshCode,
+        };
+      });
+
+    const normalizedClientTargets: LocationClientTargetEntry[] = (edited.clientTargets || [])
+      .filter((ct) => ct.targetHost.trim() && ct.shareName.trim())
+      .map((ct) => {
+        const authMode = ct.authMode === 'account' ? 'account' : 'guest';
+        const driveLetter = (ct.driveLetter.trim() || 'Z:').replace(/:?$/, ':').toUpperCase();
+        const username = authMode === 'account' ? (ct.username || '').trim() : '';
+        const password = authMode === 'account' ? ct.password || '' : '';
+        return {
+          targetHost: ct.targetHost.trim(),
+          shareName: ct.shareName.trim(),
+          driveLetter,
+          authMode,
+          ...(username ? { username } : {}),
+          ...(password ? { password } : {}),
+          ...(authMode === 'account' && !password && ct.encryptedCredentials
+            ? { encryptedCredentials: ct.encryptedCredentials }
+            : {}),
+          persistent: ct.persistent !== false,
+        };
+      });
+
+    const normalizedProfile: LocationProfileFile = {
+      schemaVersion: 1,
+      profileId: normalizeLocationProfileId(edited.profileId, cleanName),
+      locationName: cleanName,
+      description: (edited.description || '').trim(),
+      networkHint: {
+        subnetPrefix: (edited.networkHint?.subnetPrefix || '').trim(),
+        primaryIp: (edited.networkHint?.primaryIp || '').trim(),
+        hostname: (edited.networkHint?.hostname || '').trim(),
+        ...(edited.networkHint?.adapterName?.trim()
+          ? { adapterName: edited.networkHint.adapterName.trim() }
+          : {}),
+      },
+      createdAt: edited.createdAt || nowIso,
+      updatedAt: nowIso,
+      ...(normalizedHostPreset ? { hostPreset: normalizedHostPreset } : {}),
+      savedShares: normalizedShares,
+      clientTargets: normalizedClientTargets,
+      ...(edited.preferredPatchMode ? { preferredPatchMode: edited.preferredPatchMode } : {}),
+    };
+
+    return await this.saveLocationProfile(normalizedProfile);
+  },
+
   async saveLocationProfile(profile: LocationProfileFile): Promise<{
     success: boolean;
     profile?: LocationProfileFile;
@@ -3010,33 +3175,143 @@ export const shareBridge = {
     filePath?: string;
     error?: string;
   }> {
-    // Keep runtime secrets in memory cache and sanitize any browser localStorage copy
-    this.cacheLocationProfileCredentials(profile);
-
     if (window.ahbiShareElectron?.saveLocationProfile) {
-      return await window.ahbiShareElectron.saveLocationProfile(profile);
+      const res = await window.ahbiShareElectron.saveLocationProfile(profile);
+      if (res.success && res.profile) {
+        this.cacheLocationProfileCredentials(res.profile);
+      }
+      return res;
     }
 
     const existing = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+
+    let diskHostPreset: LocationHostPreset | undefined;
+    let runtimeHostPreset: LocationHostPreset | undefined;
+    if (profile.hostPreset) {
+      const hp = profile.hostPreset;
+      const hpUser = hp.username || '';
+      let hpPass = hp.authMode === 'account' ? hp.password || '' : '';
+      let hpEnc = hp.authMode === 'account' ? hp.encryptedCredentials : undefined;
+      if (hp.authMode === 'account' && !hpPass && hpEnc) {
+        const dec = await decryptWebSimCredentials(hpEnc);
+        if (dec.ok) {
+          hpPass = dec.password;
+        }
+      }
+      if (hp.authMode === 'account' && !hpPass) {
+        hpPass = runtimeLocationHostPasswordCache.get(profile.profileId) || '';
+      }
+      if (hp.authMode === 'account' && hpPass) {
+        hpEnc = (await encryptWebSimCredentials(hpUser, hpPass)) || hpEnc;
+      } else if (hp.authMode !== 'account') {
+        hpEnc = undefined;
+      }
+      diskHostPreset = {
+        ...hp,
+        password: '',
+        ...(hpEnc ? { encryptedCredentials: hpEnc } : {}),
+      };
+      runtimeHostPreset = {
+        ...hp,
+        password: hpPass,
+        ...(hpEnc ? { encryptedCredentials: hpEnc } : {}),
+      };
+    }
+
+    const diskShares: PortableHostShareEntry[] = [];
+    const runtimeShares: PortableHostShareEntry[] = [];
+    for (const sh of profile.savedShares || []) {
+      const shUser = sh.username || '';
+      let shPass = sh.authMode === 'account' ? sh.password || '' : '';
+      let shEnc = sh.authMode === 'account' ? sh.encryptedCredentials : undefined;
+      if (sh.authMode === 'account' && !shPass && shEnc) {
+        const dec = await decryptWebSimCredentials(shEnc);
+        if (dec.ok) {
+          shPass = dec.password;
+        }
+      }
+      if (sh.authMode === 'account' && !shPass) {
+        shPass =
+          getCachedPassword(sh.sourceHostName || 'LOCATION', sh.shareName) ||
+          getCachedPassword('LOCATION', sh.shareName) ||
+          '';
+      }
+      if (sh.authMode === 'account' && shPass) {
+        shEnc = (await encryptWebSimCredentials(shUser, shPass)) || shEnc;
+      } else if (sh.authMode !== 'account') {
+        shEnc = undefined;
+      }
+      const cleanDiskShare = sanitizeLocationShareForSim({
+        ...sh,
+        ...(shEnc ? { encryptedCredentials: shEnc } : { encryptedCredentials: undefined }),
+      });
+      diskShares.push(cleanDiskShare);
+      runtimeShares.push({
+        ...sh,
+        ...(shPass ? { password: shPass } : {}),
+        ...(shEnc ? { encryptedCredentials: shEnc } : {}),
+        connectionCode: shPass ? rehydrateCodeWithPassword(sh, shPass) : sh.connectionCode,
+      });
+    }
+
+    const diskClientTargets: LocationClientTargetEntry[] = [];
+    const runtimeClientTargets: LocationClientTargetEntry[] = [];
+    for (const ct of profile.clientTargets || []) {
+      const ctUser = ct.username || '';
+      const dlUpper = (ct.driveLetter || '').trim().toUpperCase();
+      let ctPass = ct.authMode === 'account' ? ct.password || '' : '';
+      let ctEnc = ct.authMode === 'account' ? ct.encryptedCredentials : undefined;
+      if (ct.authMode === 'account' && !ctPass && ctEnc) {
+        const dec = await decryptWebSimCredentials(ctEnc);
+        if (dec.ok) {
+          ctPass = dec.password;
+        }
+      }
+      if (ct.authMode === 'account' && !ctPass) {
+        ctPass =
+          runtimeLocationTargetPasswordCache.get(`${profile.profileId}::${dlUpper}`) ||
+          getCachedPassword(ct.targetHost, ct.shareName) ||
+          '';
+      }
+      if (ct.authMode === 'account' && ctPass) {
+        ctEnc = (await encryptWebSimCredentials(ctUser, ctPass)) || ctEnc;
+      } else if (ct.authMode !== 'account') {
+        ctEnc = undefined;
+      }
+      diskClientTargets.push({
+        targetHost: ct.targetHost,
+        shareName: ct.shareName,
+        driveLetter: ct.driveLetter,
+        authMode: ct.authMode,
+        ...(ctUser ? { username: ctUser } : {}),
+        ...(ctEnc ? { encryptedCredentials: ctEnc } : {}),
+        persistent: ct.persistent,
+      });
+      runtimeClientTargets.push({
+        ...ct,
+        ...(ctPass ? { password: ctPass } : {}),
+        ...(ctEnc ? { encryptedCredentials: ctEnc } : {}),
+      });
+    }
+
     const sanitizedForSim: LocationProfileFile = {
       ...profile,
-      ...(profile.hostPreset ? { hostPreset: { ...profile.hostPreset, password: '' } } : {}),
-      savedShares: profile.savedShares.map((s) => sanitizeLocationShareForSim(s)),
-      clientTargets: profile.clientTargets.map((t) => ({
-        targetHost: t.targetHost,
-        shareName: t.shareName,
-        driveLetter: t.driveLetter,
-        authMode: t.authMode,
-        ...(t.username ? { username: t.username } : {}),
-        ...(t.encryptedCredentials ? { encryptedCredentials: t.encryptedCredentials } : {}),
-        persistent: t.persistent,
-      })),
+      ...(diskHostPreset ? { hostPreset: diskHostPreset } : {}),
+      savedShares: diskShares,
+      clientTargets: diskClientTargets,
+    };
+    const runtimeProfile: LocationProfileFile = {
+      ...profile,
+      ...(runtimeHostPreset ? { hostPreset: runtimeHostPreset } : {}),
+      savedShares: runtimeShares,
+      clientTargets: runtimeClientTargets,
     };
     const nextList = [sanitizedForSim, ...existing.filter((p) => p.profileId !== profile.profileId)];
     writeStore(STORAGE_LOCATIONS_SIM_KEY, nextList);
+    this.cacheLocationProfileCredentials(runtimeProfile);
     return {
       success: true,
-      profile,
+      profile: runtimeProfile,
       summary: {
         profileId: profile.profileId,
         locationName: profile.locationName,
@@ -3072,36 +3347,81 @@ export const shareBridge = {
       return { success: false, error: '해당 사용장소 프로필을 찾을 수 없습니다.' };
     }
 
-    const hostPwd = runtimeLocationHostPasswordCache.get(found.profileId) || '';
+    let hydratedHostPreset: LocationHostPreset | undefined;
+    if (found.hostPreset) {
+      const hp = found.hostPreset;
+      let hpUser = hp.username || '';
+      let hpPass = hp.authMode === 'account' ? hp.password || '' : '';
+      if (hp.authMode === 'account' && !hpPass && hp.encryptedCredentials) {
+        const dec = await decryptWebSimCredentials(hp.encryptedCredentials);
+        if (dec.ok) {
+          hpUser = hpUser || dec.username;
+          hpPass = dec.password;
+        }
+      }
+      if (hp.authMode === 'account' && !hpPass) {
+        hpPass = runtimeLocationHostPasswordCache.get(found.profileId) || '';
+      }
+      hydratedHostPreset = {
+        ...hp,
+        username: hpUser,
+        password: hp.authMode === 'account' ? hpPass : '',
+      };
+    }
+
+    const hydratedShares: PortableHostShareEntry[] = [];
+    for (const s of found.savedShares || []) {
+      let shUser = s.username || '';
+      let shPass = s.authMode === 'account' ? s.password || '' : '';
+      if (s.authMode === 'account' && !shPass && s.encryptedCredentials) {
+        const dec = await decryptWebSimCredentials(s.encryptedCredentials);
+        if (dec.ok) {
+          shUser = shUser || dec.username;
+          shPass = dec.password;
+        }
+      }
+      if (s.authMode === 'account' && !shPass) {
+        shPass = getCachedPassword(s.sourceHostName || 'LOCATION', s.shareName) || '';
+      }
+      hydratedShares.push({
+        ...s,
+        ...(shUser ? { username: shUser } : {}),
+        ...(s.authMode === 'account' && shPass ? { password: shPass } : {}),
+        connectionCode: shPass ? rehydrateCodeWithPassword({ ...s, username: shUser }, shPass) : s.connectionCode,
+      });
+    }
+
+    const hydratedTargets: LocationClientTargetEntry[] = [];
+    for (const ct of found.clientTargets || []) {
+      let ctUser = ct.username || '';
+      let ctPass = ct.authMode === 'account' ? ct.password || '' : '';
+      if (ct.authMode === 'account' && !ctPass && ct.encryptedCredentials) {
+        const dec = await decryptWebSimCredentials(ct.encryptedCredentials);
+        if (dec.ok) {
+          ctUser = ctUser || dec.username;
+          ctPass = dec.password;
+        }
+      }
+      if (ct.authMode === 'account' && !ctPass) {
+        ctPass =
+          runtimeLocationTargetPasswordCache.get(`${found.profileId}::${ct.driveLetter.toUpperCase()}`) ||
+          getCachedPassword(ct.targetHost, ct.shareName) ||
+          '';
+      }
+      hydratedTargets.push({
+        ...ct,
+        ...(ctUser ? { username: ctUser } : {}),
+        ...(ct.authMode === 'account' && ctPass ? { password: ctPass } : {}),
+      });
+    }
+
     const hydrated: LocationProfileFile = {
       ...found,
-      ...(found.hostPreset
-        ? {
-            hostPreset: {
-              ...found.hostPreset,
-              password: found.hostPreset.authMode === 'account' ? hostPwd : '',
-            },
-          }
-        : {}),
-      savedShares: (found.savedShares || []).map((s) => {
-        const cachedPass = getCachedPassword(s.sourceHostName || 'LOCATION', s.shareName);
-        if (!cachedPass) return s;
-        return {
-          ...s,
-          password: cachedPass,
-          connectionCode: rehydrateCodeWithPassword(s, cachedPass),
-        };
-      }),
-      clientTargets: (found.clientTargets || []).map((ct) => {
-        const targetPass = runtimeLocationTargetPasswordCache.get(
-          `${found.profileId}::${ct.driveLetter.toUpperCase()}`
-        );
-        return {
-          ...ct,
-          ...(ct.authMode === 'account' && targetPass ? { password: targetPass } : {}),
-        };
-      }),
+      ...(hydratedHostPreset ? { hostPreset: hydratedHostPreset } : {}),
+      savedShares: hydratedShares,
+      clientTargets: hydratedTargets,
     };
+    this.cacheLocationProfileCredentials(hydrated);
     return { success: true, profile: hydrated };
   },
 
@@ -3239,6 +3559,522 @@ export const shareBridge = {
     }
   },
 
+  async preflightLocationProfileBatch(
+    profile: LocationProfileFile,
+    netInfo: LocalNetworkInfo
+  ): Promise<LocationPreflightReport> {
+    const worstStatus = (statuses: LocationPreflightItemStatus[]): LocationPreflightItemStatus => {
+      if (statuses.includes('fail')) return 'fail';
+      if (statuses.includes('warning')) return 'warning';
+      return 'pass';
+    };
+
+    const normalizeUnc = (raw: string) => raw.trim().replace(/[\\/]+$/, '').toLowerCase();
+    const normalizeFolder = (raw: string) =>
+      raw.trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+
+    const shares = profile.savedShares || [];
+    const clientTargets = profile.clientTargets || [];
+
+    const psShareInputs = shares
+      .map((sh, idx) => ({
+        idx,
+        shareName: (sh.shareName || '').trim(),
+        folderPath: (sh.folderPath || '').trim(),
+      }))
+      .filter((s) => Boolean(s.shareName && s.folderPath));
+
+    const driveLetters = Array.from(
+      new Set(
+        clientTargets
+          .map((ct) => (ct.driveLetter || '').trim().replace(/:?$/, ':').toUpperCase())
+          .filter((d) => /^[A-Z]:$/.test(d))
+      )
+    );
+
+    const uniqueHosts = Array.from(
+      new Set(
+        clientTargets
+          .map((ct) => (ct.targetHost || '').trim())
+          .filter((h) => Boolean(h) && !validateTargetHost(h))
+      )
+    );
+
+    interface PsShareProbe {
+      idx: number;
+      driveExists?: boolean;
+      isReadOnlyDrive?: boolean;
+      folderExists?: boolean;
+      isFileConflict?: boolean;
+      aclReadable?: boolean;
+      aclDetail?: string;
+      existingSharePath?: string | null;
+    }
+    interface PsDriveProbe {
+      driveLetter: string;
+      localDriveType?: string | null;
+      mappedUnc?: string | null;
+    }
+    interface PsPreflightJson {
+      isAdmin?: boolean;
+      lanmanServerRunning?: boolean;
+      lanmanWorkstationRunning?: boolean;
+      shares?: PsShareProbe[];
+      drives?: PsDriveProbe[];
+    }
+
+    const pingPromise = Promise.all(
+      uniqueHosts.map(async (host) => {
+        try {
+          const res = await this.pingHost(host);
+          return [host.toLowerCase(), res] as const;
+        } catch {
+          return [host.toLowerCase(), null] as const;
+        }
+      })
+    );
+
+    let psData: PsPreflightJson | null = null;
+    if (window.ahbiShareElectron?.runPowerShell) {
+      try {
+        const res = await window.ahbiShareElectron.runPowerShell(
+          buildLocationPreflightScript(psShareInputs, driveLetters)
+        );
+        if (res.success && res.output) {
+          psData = parseLastJsonObject<PsPreflightJson>(res.output);
+        }
+      } catch {}
+    }
+
+    const pingEntries = await pingPromise;
+    const pingMap = new Map<string, PingHostResult | null>(pingEntries);
+
+    const psShareMap = new Map<number, PsShareProbe>(
+      (Array.isArray(psData?.shares) ? psData.shares : []).map((r) => [r.idx, r])
+    );
+    const psDriveMap = new Map<string, PsDriveProbe>(
+      (Array.isArray(psData?.drives) ? psData.drives : []).map((d) => [d.driveLetter.toUpperCase(), d])
+    );
+
+    const simActiveShares = readStore<ActiveShare[]>(STORAGE_SHARES_KEY, []);
+    const simActiveMounts = readStore<MountedDrive[]>(STORAGE_MOUNTS_KEY, []);
+
+    const isAdmin =
+      typeof psData?.isAdmin === 'boolean' ? psData.isAdmin : (netInfo.isAdmin ?? true);
+    const srvRunning =
+      typeof psData?.lanmanServerRunning === 'boolean' ? psData.lanmanServerRunning : true;
+    const wrkRunning =
+      typeof psData?.lanmanWorkstationRunning === 'boolean' ? psData.lanmanWorkstationRunning : true;
+
+    const items: LocationPreflightItemResult[] = [];
+
+    // 1. Environment & network context check
+    const envChecks: LocationPreflightSubCheck[] = [];
+    envChecks.push({
+      key: 'admin',
+      label: '관리자 권한',
+      status: isAdmin ? 'pass' : shares.length > 0 ? 'fail' : 'warning',
+      detail: isAdmin
+        ? '관리자 권한으로 실행 중입니다 (방화벽·SMB 공유·네트워크 드라이브 변경 가능).'
+        : shares.length > 0
+          ? '관리자 권한이 아니어서 호스트 공유폴더 개설 및 방화벽 설정이 거부될 수 있습니다. 앱을 관리자 권한으로 다시 실행하세요.'
+          : '관리자 권한이 아니므로 정책 변경이나 일부 드라이브 매핑이 제한될 수 있습니다.',
+    });
+    envChecks.push({
+      key: 'smb_services',
+      label: 'Windows SMB 서비스',
+      status: srvRunning && wrkRunning ? 'pass' : 'warning',
+      detail:
+        srvRunning && wrkRunning
+          ? 'Server(LanmanServer) 및 Workstation(LanmanWorkstation) 서비스가 정상 실행 중입니다.'
+          : `중지된 서비스 감지 (${!srvRunning ? 'LanmanServer ' : ''}${!wrkRunning ? 'LanmanWorkstation' : ''}) — 적용 시 자동 시작을 시도합니다.`,
+    });
+
+    const profileSubnet = (profile.networkHint?.subnetPrefix || '').trim();
+    const currentSubnet = (netInfo.subnetPrefix || '').trim();
+    if (profileSubnet && currentSubnet) {
+      const sameSubnet = profileSubnet.toLowerCase() === currentSubnet.toLowerCase();
+      envChecks.push({
+        key: 'subnet_match',
+        label: '네트워크 대역 대조',
+        status: sameSubnet ? 'pass' : 'warning',
+        detail: sameSubnet
+          ? `프로필 참고 대역(${profileSubnet}.x)과 현재 PC 대역(${currentSubnet}.x)이 일치합니다.`
+          : `프로필 참고 대역(${profileSubnet}.x)과 현재 PC 대역(${currentSubnet}.x)이 다릅니다. 올바른 사용장소인지 확인하세요.`,
+      });
+    } else {
+      envChecks.push({
+        key: 'subnet_match',
+        label: '네트워크 대역 대조',
+        status: 'pass',
+        detail: `현재 어댑터 ${netInfo.primaryIp} (${netInfo.adapterName}) 환경에서 실행합니다.`,
+      });
+    }
+
+    const envStatus = worstStatus(envChecks.map((c) => c.status));
+    items.push({
+      kind: 'environment',
+      index: 0,
+      label: `실행 환경 · ${netInfo.hostname} (${netInfo.primaryIp})`,
+      targetDesc: `${netInfo.osProductName || 'Windows'} · ${profile.locationName}`,
+      status: envStatus,
+      summary:
+        envStatus === 'pass'
+          ? '관리자 권한·SMB 서비스·네트워크 환경이 정상입니다.'
+          : envStatus === 'warning'
+            ? '네트워크 대역 또는 서비스 상태를 확인하세요.'
+            : '관리자 권한 부족 등 실행 환경 제약이 감지되었습니다.',
+      checks: envChecks,
+    });
+
+    // 2. Host savedShares pre-flight checks
+    for (let i = 0; i < shares.length; i++) {
+      const sh = shares[i];
+      const checks: LocationPreflightSubCheck[] = [];
+      const shareNameErr = validateShareName(sh.shareName || '');
+      const folderPathErr = validateFolderPath(sh.folderPath || '');
+
+      if (shareNameErr || folderPathErr) {
+        checks.push({
+          key: 'syntax',
+          label: '공유명·폴더 경로 형식',
+          status: 'fail',
+          detail: shareNameErr || folderPathErr || '경로 또는 공유 이름이 올바르지 않습니다.',
+        });
+      } else {
+        checks.push({
+          key: 'syntax',
+          label: '공유명·폴더 경로 형식',
+          status: 'pass',
+          detail: `'${sh.shareName.trim()}' · ${sh.folderPath.trim()} (유효한 Windows 공유 형식)`,
+        });
+      }
+
+      const psProbe = psShareMap.get(i);
+      let canAutoProvisionFolder = false;
+
+      if (!folderPathErr) {
+        if (psProbe) {
+          if (psProbe.isFileConflict) {
+            checks.push({
+              key: 'path',
+              label: '로컬 폴더 경로 존재',
+              status: 'fail',
+              detail: `지정 경로(${sh.folderPath})에 폴더가 아닌 일반 파일이 이미 존재하여 공유할 수 없습니다.`,
+            });
+          } else if (!psProbe.driveExists) {
+            checks.push({
+              key: 'path',
+              label: '로컬 폴더 경로 존재',
+              status: 'fail',
+              detail: `대상 드라이브가 현재 PC에 연결되어 있지 않습니다 (${sh.folderPath}). 외장 디스크 연결 또는 경로를 확인하세요.`,
+            });
+          } else if (psProbe.isReadOnlyDrive) {
+            checks.push({
+              key: 'path',
+              label: '로컬 폴더 경로 존재',
+              status: 'fail',
+              detail: `읽기 전용 광학/가상 드라이브(${sh.folderPath})에는 공유 폴더를 생성·권한 구성할 수 없습니다.`,
+            });
+          } else if (!psProbe.folderExists) {
+            canAutoProvisionFolder = true;
+            checks.push({
+              key: 'path',
+              label: '로컬 폴더 경로 존재',
+              status: 'warning',
+              detail: `폴더가 아직 존재하지 않습니다(${sh.folderPath}). 상위 드라이브는 정상이므로 일괄 적용 시 자동 생성됩니다.`,
+            });
+          } else {
+            checks.push({
+              key: 'path',
+              label: '로컬 폴더 경로 존재',
+              status: 'pass',
+              detail: `로컬 폴더 존재 확인됨 (${sh.folderPath}).`,
+            });
+          }
+
+          if (psProbe.driveExists && !psProbe.isFileConflict && !psProbe.isReadOnlyDrive) {
+            checks.push({
+              key: 'acl',
+              label: 'NTFS 접근·권한 부여 가능성',
+              status: psProbe.aclReadable ? 'pass' : 'fail',
+              detail: psProbe.aclReadable
+                ? `폴더 접근 및 ACL 읽기 정상${psProbe.aclDetail ? ` (${psProbe.aclDetail})` : ''}.`
+                : `폴더 접근 권한을 읽을 수 없습니다${psProbe.aclDetail ? `: ${psProbe.aclDetail}` : ''}.`,
+            });
+          }
+
+          if (psProbe.existingSharePath) {
+            const sameTarget = normalizeFolder(psProbe.existingSharePath) === normalizeFolder(sh.folderPath);
+            checks.push({
+              key: 'share_conflict',
+              label: '기존 SMB 공유 이름 충돌',
+              status: sameTarget ? 'pass' : 'warning',
+              detail: sameTarget
+                ? `동일 경로(${psProbe.existingSharePath})로 이미 공유 중입니다 — 권한·방화벽을 최신 상태로 갱신합니다.`
+                : `공유 이름 '${sh.shareName}'이 현재 다른 폴더(${psProbe.existingSharePath})에 연결되어 있어 적용 시 새 경로로 교체됩니다.`,
+            });
+          } else {
+            checks.push({
+              key: 'share_conflict',
+              label: '기존 SMB 공유 이름 충돌',
+              status: 'pass',
+              detail: `공유 이름 '${sh.shareName}' 사용 가능 (충돌 없음).`,
+            });
+          }
+        } else {
+          // Web Preview simulation inspection
+          const normPath = normalizeFolder(sh.folderPath || '');
+          const existingSim = simActiveShares.find(
+            (s) => s.shareName.trim().toLowerCase() === (sh.shareName || '').trim().toLowerCase()
+          );
+          checks.push({
+            key: 'path',
+            label: '로컬 폴더 경로 형식',
+            status: 'pass',
+            detail: `웹 프리뷰 검증: 유효한 Windows 경로 형식 (${sh.folderPath}).`,
+          });
+          if (existingSim) {
+            const sameTarget = normalizeFolder(existingSim.folderPath) === normPath;
+            checks.push({
+              key: 'share_conflict',
+              label: '기존 SMB 공유 이름 충돌',
+              status: sameTarget ? 'pass' : 'warning',
+              detail: sameTarget
+                ? `현재 활성 공유(${existingSim.folderPath})와 동일하여 갱신됩니다.`
+                : `기존 활성 공유(${existingSim.folderPath})가 새 경로(${sh.folderPath})로 교체됩니다.`,
+            });
+          }
+        }
+      }
+
+      const decodedPwd = sh.connectionCode ? decodeConnectionCode(sh.connectionCode)?.password || '' : '';
+      const resolvedSharePwd =
+        sh.password ||
+        decodedPwd ||
+        getCachedPassword(sh.sourceHostName || netInfo.hostname, sh.shareName) ||
+        getCachedPassword(netInfo.hostname, sh.shareName) ||
+        getCachedPassword('LOCATION', sh.shareName) ||
+        '';
+      if (sh.authMode === 'account') {
+        const hasCreds = Boolean((sh.username || '').trim() && resolvedSharePwd);
+        checks.push({
+          key: 'credentials',
+          label: '보안 계정 자격증명',
+          status: hasCreds ? 'pass' : 'fail',
+          detail: hasCreds
+            ? `계정 '${sh.username || 'AhBiShare'}' 및 복호화된 비밀번호 준비됨 (${sh.permission === 'full' ? '읽기/쓰기' : '읽기 전용'}).`
+            : '보안 계정 모드의 비밀번호를 복원할 수 없습니다. 프로필 [내용 수정]에서 비밀번호를 입력하세요.',
+        });
+      } else {
+        checks.push({
+          key: 'credentials',
+          label: '무비밀번호 Guest 정책',
+          status: 'pass',
+          detail: `누구나(Guest/Anonymous) ${sh.permission === 'full' ? '읽기/쓰기' : '읽기 전용'} 공유 개설 준비 완료.`,
+        });
+      }
+
+      const itemStatus = worstStatus(checks.map((c) => c.status));
+      const failItem = checks.find((c) => c.status === 'fail');
+      const warnItem = checks.find((c) => c.status === 'warning');
+      items.push({
+        kind: 'share',
+        index: i,
+        label: `호스트 공유 #${i + 1}: ${sh.shareName || '(이름 없음)'}`,
+        targetDesc: sh.folderPath || '(경로 미지정)',
+        status: itemStatus,
+        summary: failItem?.detail || warnItem?.detail || '경로·권한·자격증명 검증을 모두 통과했습니다.',
+        canAutoProvisionFolder,
+        checks,
+      });
+    }
+
+    // 3. Client mapped drive targets pre-flight checks
+    const seenDriveLetters = new Map<string, number>();
+    for (let i = 0; i < clientTargets.length; i++) {
+      const ct = clientTargets[i];
+      const checks: LocationPreflightSubCheck[] = [];
+      const dl = (ct.driveLetter || '').trim().replace(/:?$/, ':').toUpperCase();
+      const targetUnc = `\\\\${(ct.targetHost || '').trim()}\\${(ct.shareName || '').trim()}`;
+
+      const hostErr = validateTargetHost(ct.targetHost || '');
+      const shareErr = validateShareName(ct.shareName || '');
+      const driveFormatOk = /^[D-Z]:$/.test(dl);
+
+      if (hostErr || shareErr || !driveFormatOk) {
+        checks.push({
+          key: 'syntax',
+          label: '대상 호스트·공유명·드라이브 형식',
+          status: 'fail',
+          detail: hostErr || shareErr || `올바르지 않은 드라이브 문자입니다 (${ct.driveLetter} · 허용: D:~Z:).`,
+        });
+      } else {
+        checks.push({
+          key: 'syntax',
+          label: '대상 호스트·공유명·드라이브 형식',
+          status: 'pass',
+          detail: `${dl} → ${targetUnc} (유효한 UNC 및 드라이브 형식)`,
+        });
+      }
+
+      if (driveFormatOk) {
+        const firstIdx = seenDriveLetters.get(dl);
+        if (firstIdx !== undefined) {
+          checks.push({
+            key: 'duplicate_drive',
+            label: '프로필 내 드라이브 중복',
+            status: 'fail',
+            detail: `프로필 내 #${firstIdx + 1} 항목과 드라이브 문자 '${dl}'가 중복 지정되었습니다.`,
+          });
+        } else {
+          seenDriveLetters.set(dl, i);
+        }
+
+        const psDrive = psDriveMap.get(dl);
+        if (psDrive) {
+          if (psDrive.localDriveType) {
+            checks.push({
+              key: 'drive_letter',
+              label: `로컬 드라이브(${dl}) 점유 상태`,
+              status: 'fail',
+              detail: `${dl} 드라이브는 현재 PC의 로컬 디스크(${psDrive.localDriveType})로 사용 중이어서 네트워크 드라이브로 연결할 수 없습니다.`,
+            });
+          } else if (psDrive.mappedUnc) {
+            const sameUnc = normalizeUnc(psDrive.mappedUnc) === normalizeUnc(targetUnc);
+            checks.push({
+              key: 'drive_letter',
+              label: `네트워크 드라이브(${dl}) 점유 상태`,
+              status: sameUnc ? 'pass' : 'warning',
+              detail: sameUnc
+                ? `${dl}가 이미 동일 경로(${psDrive.mappedUnc})에 연결되어 있습니다 — 자격증명을 갱신해 재연결합니다.`
+                : `${dl}에 다른 공유(${psDrive.mappedUnc})가 연결되어 있어 기존 연결 해제 후 ${targetUnc}로 교체합니다.`,
+            });
+          } else {
+            checks.push({
+              key: 'drive_letter',
+              label: `드라이브 문자(${dl}) 사용 가능`,
+              status: 'pass',
+              detail: `${dl} 드라이브 문자가 비어 있어 즉시 할당할 수 있습니다.`,
+            });
+          }
+        } else {
+          const simMount = simActiveMounts.find((m) => m.driveLetter.toUpperCase() === dl);
+          if (simMount) {
+            const sameUnc = normalizeUnc(simMount.uncPath) === normalizeUnc(targetUnc);
+            checks.push({
+              key: 'drive_letter',
+              label: `네트워크 드라이브(${dl}) 점유 상태`,
+              status: sameUnc ? 'pass' : 'warning',
+              detail: sameUnc
+                ? `${dl}가 이미 ${simMount.uncPath}에 연결되어 있습니다.`
+                : `${dl}의 기존 연결(${simMount.uncPath})을 해제하고 ${targetUnc}로 재연결합니다.`,
+            });
+          } else {
+            checks.push({
+              key: 'drive_letter',
+              label: `드라이브 문자(${dl}) 사용 가능`,
+              status: 'pass',
+              detail: `${dl} 드라이브 문자 사용 가능합니다.`,
+            });
+          }
+        }
+      }
+
+      if (!hostErr) {
+        const pingRes = pingMap.get(ct.targetHost.trim().toLowerCase());
+        if (pingRes) {
+          if (pingRes.smbPortOpen) {
+            checks.push({
+              key: 'smb_port',
+              label: '대상 호스트 · TCP 445 응답',
+              status: 'pass',
+              detail: `${ct.targetHost} SMB TCP 445 포트 개방 확인됨 (${pingRes.avgLatencyMs !== null ? `${pingRes.avgLatencyMs}ms` : '응답 정상'}).`,
+            });
+          } else if (pingRes.reachable) {
+            checks.push({
+              key: 'smb_port',
+              label: '대상 호스트 · TCP 445 응답',
+              status: 'warning',
+              detail: `${ct.targetHost} ICMP 핑은 응답하나 TCP 445(SMB) 포트가 닫혀 있거나 방화벽에 차단되었습니다.`,
+            });
+          } else {
+            checks.push({
+              key: 'smb_port',
+              label: '대상 호스트 · TCP 445 응답',
+              status: 'warning',
+              detail: `${ct.targetHost}에 네트워크 응답이 없습니다 (PC 전원 꺼짐 · 다른 서브넷 · 방화벽 차단 가능).`,
+            });
+          }
+        } else {
+          checks.push({
+            key: 'smb_port',
+            label: '대상 호스트 · TCP 445 응답',
+            status: 'warning',
+            detail: `${ct.targetHost} 연결 상태 확인을 완료하지 못했습니다.`,
+          });
+        }
+      }
+
+      const resolvedClientPwd =
+        ct.password ||
+        runtimeLocationTargetPasswordCache.get(`${profile.profileId}::${dl}`) ||
+        getCachedPassword(ct.targetHost, ct.shareName) ||
+        '';
+      if (ct.authMode === 'account') {
+        const hasClientCreds = Boolean((ct.username || '').trim() && resolvedClientPwd);
+        checks.push({
+          key: 'credentials',
+          label: '접속 계정 자격증명',
+          status: hasClientCreds ? 'pass' : 'fail',
+          detail: hasClientCreds
+            ? `접속 계정 '${ct.username}' 및 비밀번호가 준비되었습니다 (${ct.persistent ? '재부팅 유지' : '임시 연결'}).`
+            : `보안 계정 모드의 접속 비밀번호가 비어 있습니다. 프로필 [내용 수정]에서 비밀번호를 입력하세요.`,
+        });
+      } else {
+        checks.push({
+          key: 'credentials',
+          label: '접속 인증 모드',
+          status: 'pass',
+          detail: `무비밀번호 Guest 모드로 ${ct.persistent ? '영구' : '세션'} 연결을 시도합니다.`,
+        });
+      }
+
+      const itemStatus = worstStatus(checks.map((c) => c.status));
+      const failItem = checks.find((c) => c.status === 'fail');
+      const warnItem = checks.find((c) => c.status === 'warning');
+      items.push({
+        kind: 'mount',
+        index: i,
+        label: `네트워크 드라이브 #${i + 1}: ${dl || '(미지정)'}`,
+        targetDesc: targetUnc,
+        status: itemStatus,
+        summary: failItem?.detail || warnItem?.detail || '드라이브·포트 445·자격증명 검증을 통과했습니다.',
+        checks,
+      });
+    }
+
+    const passCount = items.filter((it) => it.status === 'pass').length;
+    const warningCount = items.filter((it) => it.status === 'warning').length;
+    const failCount = items.filter((it) => it.status === 'fail').length;
+    const overallStatus: LocationPreflightItemStatus =
+      failCount > 0 ? 'fail' : warningCount > 0 ? 'warning' : 'pass';
+
+    return {
+      profileId: profile.profileId,
+      locationName: profile.locationName,
+      checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      overallStatus,
+      isAdmin,
+      totalItems: items.length,
+      passCount,
+      warningCount,
+      failCount,
+      hasBlockingErrors: failCount > 0,
+      items,
+    };
+  },
+
   async applyLocationProfileBatch(
     profile: LocationProfileFile,
     netInfo: LocalNetworkInfo,
@@ -3265,6 +4101,7 @@ export const shareBridge = {
         decodedCodePwd ||
         getCachedPassword(sh.sourceHostName || netInfo.hostname, sh.shareName) ||
         getCachedPassword(netInfo.hostname, sh.shareName) ||
+        getCachedPassword('LOCATION', sh.shareName) ||
         '';
       if (sh.authMode === 'account' && !resolvedSharePwd) {
         failedShares++;

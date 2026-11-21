@@ -14,9 +14,9 @@
   - Scans `/24` local subnet SMB `445` / NetBIOS hosts and auto-fills portable credentials stored in `AhBiShare_OneClick.portable.json` (AES-256-GCM encrypted).
   - Automatically diagnoses and mitigates Windows `0x80070035`, `1272`, `5`, and `1219` SMB errors before mounting drives.
 - **Per-Location Profiles & 1-Click Batch Apply (`v1.2.1`)**:
-  - Saves separate AES-256-GCM encrypted profiles (`locations/*.location.json`) per site (Office, Home, Field), supports `.json` export/import, auto-fills workspace fields, and applies host shares & client drives together in **1 click**.
+  - Saves separate AES-256-GCM encrypted profiles (`locations/*.location.json`) per site (Office, Home, Field), supports `.json` export/import, **in-app profile content editing** (metadata, network hint, host shares, client drives, host preset), auto-fills workspace fields, and applies host shares & client drives together in **1 click**.
 - **OS Compatibility Matrix (Win 10 ~ Win 11 26H2)**:
-  - Detects host-client policy mismatches in real time (SMB signing, insecure guest auth, RPC privacy, UAC token filtering, NTLM), provides **1-click batch auto-alignment**, and evaluates reboot requirements.
+  - Detects host-client policy mismatches in real time with **color-coded discrepancy badges**, provides a **10-point Security Rollback Audit Report**, includes an **Expert Raw Registry Comparison View** (local vs. target host side-by-side), offers **1-click batch auto-alignment**, and evaluates reboot requirements.
 - **Legacy OS Sharing & Bidirectional Bridge (Win 7 · 8 · 8.1 ⇄ Win 10 · 11)**:
   - Provides a guided 2-step flow (**Step 1: Main Host PC** / **Step 2: Client PC**) with 1-click SMB 2.1/3.0 unencrypted compatibility bridging, 2-step acknowledged SMB 1.0 safety control, and pre-change registry snapshot rollback (`Backup_Before_Apply`).
   - Generates pure Windows 7 `cmd.exe`-compatible `.bat` + UTF-16LE BOM `.reg` 4-file offline USB kits and supports **Win 10/11 ⇄ Win 7/8 bidirectional JSON data bridging**.

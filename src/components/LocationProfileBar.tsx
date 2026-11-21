@@ -1,5 +1,5 @@
 import React from 'react';
-import { MapPin, Save, FolderCog, Play, CheckCircle2, AlertCircle, Loader2, Upload, X } from 'lucide-react';
+import { MapPin, Save, FolderCog, Play, CheckCircle2, AlertCircle, Loader2, Upload, X, Pencil } from 'lucide-react';
 import {
   LocationBatchApplyResult,
   LocationProfileFile,
@@ -15,6 +15,7 @@ interface LocationProfileBarProps {
   onSelectProfile: (profileId: string) => void;
   onOpenSaveModal: () => void;
   onOpenManagerModal: () => void;
+  onEditActiveProfile: () => void;
   onQuickImportJson: () => void;
   onBatchApply: () => void;
   onDismissBatchResult: () => void;
@@ -37,6 +38,7 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
   onSelectProfile,
   onOpenSaveModal,
   onOpenManagerModal,
+  onEditActiveProfile,
   onQuickImportJson,
   onBatchApply,
   onDismissBatchResult,
@@ -131,30 +133,43 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
           </button>
 
           {activeProfile && (
-            <button
-              id="btn-batch-apply-location"
-              type="button"
-              onClick={onBatchApply}
-              disabled={isBatchApplying || !hasApplicableItems}
-              title={
-                hasApplicableItems
-                  ? '저장된 공유폴더 개설 및 네트워크 드라이브 연결을 한 번에 실행합니다'
-                  : '이 장소에는 실행할 공유폴더 또는 드라이브 연결 항목이 없습니다 (입력 폼은 자동 채워짐)'
-              }
-              className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-            >
-              {isBatchApplying ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  일괄 적용 중...
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5" />
-                  이 장소 일괄 적용
-                </>
-              )}
-            </button>
+            <>
+              <button
+                id="btn-edit-active-location"
+                type="button"
+                onClick={onEditActiveProfile}
+                disabled={isBatchApplying}
+                title="선택된 사용장소 프로필 파일의 세부 내용을 직접 수정합니다"
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                내용 수정
+              </button>
+              <button
+                id="btn-batch-apply-location"
+                type="button"
+                onClick={onBatchApply}
+                disabled={isBatchApplying || !hasApplicableItems}
+                title={
+                  hasApplicableItems
+                    ? '사전 검증(경로·권한·TCP 445·자격증명) 후 공유폴더 개설 및 네트워크 드라이브 연결을 일괄 실행합니다'
+                    : '이 장소에는 실행할 공유폴더 또는 드라이브 연결 항목이 없습니다 (입력 폼은 자동 채워짐)'
+                }
+                className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                {isBatchApplying ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    일괄 적용 중...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    이 장소 일괄 적용
+                  </>
+                )}
+              </button>
+            </>
           )}
         </div>
       </div>

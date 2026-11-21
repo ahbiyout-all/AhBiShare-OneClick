@@ -10,7 +10,7 @@ interface RollbackPanelProps {
   activeMountCount: number;
   isInspecting: boolean;
   onRollback: (scope: 'host' | 'client') => Promise<{ success: boolean; message: string }>;
-  onFullSecurityRollback: () => Promise<void>;
+  onFullSecurityRollback: () => Promise<{ success: boolean; message: string }>;
   onInspectPolicy: () => Promise<void>;
   onRestoreDefaults: (modes: PolicyPatchMode[]) => Promise<void>;
   onNotify?: (message: string) => void;
@@ -48,12 +48,8 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
   const handleRunFull = async () => {
     setBusyScope('full');
     try {
-      await onFullSecurityRollback();
-      setFeedback({
-        scope: 'full',
-        success: true,
-        message: '호스트·클라이언트 세션 정리 및 10개 핵심 보안 기본값(SMB 서명·게스트·LSA·UAC·프린터 RPC) 일괄 복원 및 검증을 완료했습니다.',
-      });
+      const res = await onFullSecurityRollback();
+      setFeedback({ scope: 'full', ...res });
     } finally {
       setBusyScope(null);
     }

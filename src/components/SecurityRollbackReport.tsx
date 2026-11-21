@@ -34,7 +34,7 @@ interface SecurityRollbackReportProps {
   isInspecting?: boolean;
   onInspectPolicy: () => Promise<void>;
   onRestoreDefaults?: (modes: PolicyPatchMode[]) => Promise<void>;
-  onFullSecurityRollback?: () => Promise<void>;
+  onFullSecurityRollback?: () => Promise<{ success: boolean; message: string } | void>;
   onNotify?: (message: string) => void;
 }
 
