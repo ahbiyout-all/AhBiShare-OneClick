@@ -438,7 +438,7 @@ pass('Windows 7 SP1 ~ 11 26H2 PowerShell 2.0/5.1 fallbacks, Win32 WNetAddConnect
 
 // 5. Verify NetworkMatrixPanel host-client mismatch detection, 1-click batch auto-align & 10-point rollback audit wiring
 const netEvoSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'networkEvolution.ts'), 'utf8');
-const bridgeSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'shareBridge.ts'), 'utf8');
+const bridgeSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'shareBridge.ts'), 'utf8').replace(/\r\n/g, '\n');
 const matrixPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
 const rollbackReportSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'SecurityRollbackReport.tsx'), 'utf8');
 const rollbackPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'RollbackPanel.tsx'), 'utf8');
@@ -728,7 +728,7 @@ assert(
   'powershellEngine.ts must use PowerShell 2.0 compatible -notcontains, guard $nbtIfaces, and clear RejectUnencryptedAccess across guest & legacy compat flows'
 );
 
-const appSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8');
+const appSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8').replace(/\r\n/g, '\n');
 assert(
   appSrc.includes('checkForUpdates(APP_VERSION)') &&
     appSrc.includes('currentVersion={APP_VERSION}') &&
@@ -901,14 +901,14 @@ assert(
   bridgeSrc.includes('username = username || dec.username;') &&
     !bridgeSrc.includes('username = dec.username || username;') &&
     bridgeSrc.includes('const res = await window.ahbiShareElectron.saveLocationProfile(profile);') &&
-    bridgeSrc.includes('if (res.success && res.profile) {\n        this.cacheLocationProfileCredentials(res.profile);'),
+    /if \(res\.success && res\.profile\) \{\r?\n\s+this\.cacheLocationProfileCredentials\(res\.profile\);/.test(bridgeSrc),
   'shareBridge.ts must prioritize explicit username in loadWebPreviewPortable and re-cache decrypted res.profile after Electron saveLocationProfile'
 );
 assert(
   rollbackPanelSrc.includes('const res = await onFullSecurityRollback();') &&
     rollbackPanelSrc.includes("setFeedback({ scope: 'full', ...res });") &&
     appSrc.includes('return { success: allOk, message: msg };') &&
-    appSrc.includes("if (!jobKey) {\n      return { success: false, message: '다른 작업이 진행 중입니다.' };"),
+    /if \(!jobKey\) \{\r?\n\s+return \{ success: false, message: '다른 작업이 진행 중입니다\.' \};/.test(appSrc),
   'App.tsx handleFullSecurityRollback & RollbackPanel.tsx must propagate exact full rollback success/failure state instead of hardcoding success: true'
 );
 assert(
