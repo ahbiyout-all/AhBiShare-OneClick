@@ -1108,6 +1108,7 @@ export function buildOsNetworkPolicyInspectScript(): string {
     if ($smb1State -eq 'Unknown') { $smb1State = if ($smb1Final) { 'Enabled' } else { 'Disabled' } }
 
     $guestNetDenied = $false
+    $rawSeDenyVal = ''
     $tmpSecInf = Join-Path $env:TEMP ("ahbi_chk_" + $PID + "_" + (Get-Random) + ".inf")
     try {
       & secedit.exe /export /cfg $tmpSecInf /areas USER_RIGHTS 2>$null | Out-Null
@@ -1121,6 +1122,7 @@ export function buildOsNetworkPolicyInspectScript(): string {
         } catch {}
         foreach ($sLn in ([System.IO.File]::ReadAllLines($tmpSecInf, [System.Text.Encoding]::Unicode))) {
           if ($sLn -match '^\\s*SeDenyNetworkLogonRight\\s*=\\s*(.*)$') {
+            $rawSeDenyVal = $matches[1].Trim()
             foreach ($sTok in ($matches[1] -split ',')) {
               $st = $sTok.Trim().Trim('"')
               if (-not $st) { continue }
@@ -1139,17 +1141,21 @@ export function buildOsNetworkPolicyInspectScript(): string {
     $limitBlankPwd = if ($lsa -and $null -ne $lsa.LimitBlankPasswordUse) { [int]$lsa.LimitBlankPasswordUse -ne 0 } else { $true }
     $restrictNullSess = if ($lsParams -and $null -ne $lsParams.RestrictNullSessAccess) { [int]$lsParams.RestrictNullSessAccess -ne 0 } else { $true }
     $restrictAnon = if ($lsa -and $null -ne $lsa.restrictanonymous) { [int]$lsa.restrictanonymous -ne 0 } else { $false }
+    $everyAnon = if ($lsa -and $null -ne $lsa.everyoneincludesanonymous) { [int]$lsa.everyoneincludesanonymous -ne 0 } else { $false }
     $guestEnabled = $false
     try {
       $gAccStat = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
       if ($gAccStat) { $guestEnabled = -not [bool]$gAccStat.Disabled }
     } catch {}
     $fw445Ok = $false
+    $ahbiFwPresent = $false
     try {
       if (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) {
-        $ahbiRule = Get-NetFirewallRule -DisplayName 'AhBiShare-SMB-445' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }
-        if ($ahbiRule) { $fw445Ok = $true }
-        else {
+        $ahbiRule = @(Get-NetFirewallRule -DisplayName 'AhBiShare-SMB-445' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' })
+        if ($ahbiRule.Count -gt 0) {
+          $ahbiFwPresent = $true
+          $fw445Ok = $true
+        } else {
           $fpsNamed = @(Get-NetFirewallRule -Name 'FPS-SMB-In-TCP' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' })
           if ($fpsNamed.Count -gt 0) { $fw445Ok = $true }
           else {
@@ -1163,8 +1169,10 @@ export function buildOsNetworkPolicyInspectScript(): string {
         } catch {}
         try {
           $nsOut = (& netsh.exe advfirewall firewall show rule name="AhBiShare-SMB-445" 2>$null) -join ' '
-          if ($nsOut -match 'Enabled:\\s*Yes|사용:\\s*예') { $fw445Ok = $true }
-          else {
+          if ($nsOut -match 'Enabled:\\s*Yes|사용:\\s*예') {
+            $ahbiFwPresent = $true
+            $fw445Ok = $true
+          } else {
             $nsFps = (& netsh.exe advfirewall firewall show rule name="FPS-SMB-In-TCP" 2>$null) -join ' '
             if ($nsFps -match 'Enabled:\\s*Yes|사용:\\s*예') { $fw445Ok = $true }
           }
@@ -1175,6 +1183,52 @@ export function buildOsNetworkPolicyInspectScript(): string {
         }
       }
     } catch {}
+
+    function Get-AhBiRegRawInt([string]$subPath, [string]$valName) {
+      try {
+        $openedCustom = $false
+        $base = $null
+        try {
+          $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Default)
+          $openedCustom = $true
+        } catch {
+          $base = [Microsoft.Win32.Registry]::LocalMachine
+        }
+        $sub = $base.OpenSubKey($subPath, $false)
+        if (-not $sub) { if ($openedCustom) { $base.Close() }; return $null }
+        $v = $sub.GetValue($valName, $null)
+        $sub.Close()
+        if ($openedCustom) { $base.Close() }
+        if ($null -eq $v) { return $null }
+        [int]$parsed = 0
+        if ([int]::TryParse("$v", [ref]$parsed)) { return $parsed }
+        return $null
+      } catch { return $null }
+    }
+
+    $rawReg = @{
+      srvRequireSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RequireSecuritySignature'
+      srvEnableSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'EnableSecuritySignature'
+      cliRequireSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'RequireSecuritySignature'
+      cliEnableSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'EnableSecuritySignature'
+      cliGuestSvc = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'AllowInsecureGuestAuth'
+      cliGuestPol = Get-AhBiRegRawInt 'SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' 'AllowInsecureGuestAuth'
+      guest501Disabled = if ($guestEnabled) { 0 } else { 1 }
+      seDenyNetworkLogon = $rawSeDenyVal
+      limitBlankPwd = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LimitBlankPasswordUse'
+      everyAnon = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'everyoneincludesanonymous'
+      restrictAnon = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'restrictanonymous'
+      restrictNullSess = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RestrictNullSessAccess'
+      lmCompatLevel = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LmCompatibilityLevel'
+      ntlmRestrictOutbound = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0' 'RestrictSendingNTLMTraffic'
+      uacTokenFilter = Get-AhBiRegRawInt 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' 'LocalAccountTokenFilterPolicy'
+      uacLinkedConn = Get-AhBiRegRawInt 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' 'EnableLinkedConnections'
+      rpcPrivacy = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Print' 'RpcAuthnLevelPrivacyEnabled'
+      rpcNamedPipe = Get-AhBiRegRawInt 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcUseNamedPipeProtocol'
+      rpcProtocols = Get-AhBiRegRawInt 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcProtocols'
+      srvSmb1 = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'SMB1'
+      ahbiFw445 = if ($ahbiFwPresent) { 1 } else { 0 }
+    }
 
     @{
       osProductName = $prodName
@@ -1196,8 +1250,10 @@ export function buildOsNetworkPolicyInspectScript(): string {
       limitBlankPasswordUse = $limitBlankPwd
       restrictNullSessAccess = $restrictNullSess
       restrictAnonymous = $restrictAnon
+      everyoneIncludesAnonymous = $everyAnon
       guestAccountEnabled = $guestEnabled
       firewall445Allowed = $fw445Ok
+      ahbiFirewallRulePresent = $ahbiFwPresent
       lmCompatibilityLevel = $lmLevel
       ntlmRestrictOutbound = $ntlmOut
       netbiosEnabled = $netbiosEnabled
@@ -1214,7 +1270,173 @@ export function buildOsNetworkPolicyInspectScript(): string {
       pointAndPrintRelaxed = $papRelaxed
       printSpoolerRunning = $spoolerRunning
       pendingRebootFlag = $pendingReboot
-    } | ConvertTo-AhBiJson
+      rawReg = $rawReg
+    } | ConvertTo-AhBiJson -Depth 4
+  `.trim();
+}
+
+export function buildRawSecurityRegistryScript(remoteHostTarget?: string): string {
+  const safeRemote = (remoteHostTarget || '').trim();
+  const validRemote = /^[A-Za-z0-9._-]{1,64}$/.test(safeRemote) ? safeRemote : '';
+
+  return `
+    ${PS_JSON_HELPER}
+    $remoteTarget = '${validRemote}'
+
+    function Read-AhBiHiveMap([Microsoft.Win32.RegistryKey]$rootBase) {
+      function ReadVal([string]$subPath, [string]$valName) {
+        try {
+          $k = $rootBase.OpenSubKey($subPath, $false)
+          if (-not $k) { return $null }
+          $v = $k.GetValue($valName, $null)
+          $k.Close()
+          if ($null -eq $v) { return $null }
+          [int]$parsed = 0
+          if ([int]::TryParse("$v", [ref]$parsed)) { return $parsed }
+          return $null
+        } catch { return $null }
+      }
+      return @{
+        srvRequireSig = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RequireSecuritySignature'
+        srvEnableSig = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'EnableSecuritySignature'
+        cliRequireSig = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'RequireSecuritySignature'
+        cliEnableSig = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'EnableSecuritySignature'
+        cliGuestSvc = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'AllowInsecureGuestAuth'
+        cliGuestPol = ReadVal 'SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' 'AllowInsecureGuestAuth'
+        limitBlankPwd = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LimitBlankPasswordUse'
+        everyAnon = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'everyoneincludesanonymous'
+        restrictAnon = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'restrictanonymous'
+        restrictNullSess = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RestrictNullSessAccess'
+        lmCompatLevel = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LmCompatibilityLevel'
+        ntlmRestrictOutbound = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0' 'RestrictSendingNTLMTraffic'
+        uacTokenFilter = ReadVal 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' 'LocalAccountTokenFilterPolicy'
+        uacLinkedConn = ReadVal 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' 'EnableLinkedConnections'
+        rpcPrivacy = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Print' 'RpcAuthnLevelPrivacyEnabled'
+        rpcNamedPipe = ReadVal 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcUseNamedPipeProtocol'
+        rpcProtocols = ReadVal 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcProtocols'
+        srvSmb1 = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'SMB1'
+      }
+    }
+
+    $openedCustom = $false
+    try {
+      $localBase = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Default)
+      $openedCustom = $true
+    } catch {
+      $localBase = [Microsoft.Win32.Registry]::LocalMachine
+    }
+    $localRaw = Read-AhBiHiveMap $localBase
+    if ($openedCustom) { try { $localBase.Close() } catch {} }
+
+    $guestDisabled = 1
+    try {
+      $gAcc = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+      if ($gAcc) { $guestDisabled = if ([bool]$gAcc.Disabled) { 1 } else { 0 } }
+    } catch {}
+    $localRaw['guest501Disabled'] = $guestDisabled
+
+    $rawSeDeny = ''
+    $tmpInf = Join-Path $env:TEMP ("ahbi_rawsec_" + $PID + "_" + (Get-Random) + ".inf")
+    try {
+      & secedit.exe /export /cfg $tmpInf /areas USER_RIGHTS 2>$null | Out-Null
+      if (Test-Path -LiteralPath $tmpInf) {
+        foreach ($ln in ([System.IO.File]::ReadAllLines($tmpInf, [System.Text.Encoding]::Unicode))) {
+          if ($ln -match '^\\s*SeDenyNetworkLogonRight\\s*=\\s*(.*)$') {
+            $rawSeDeny = $matches[1].Trim()
+            break
+          }
+        }
+      }
+    } catch {} finally {
+      try { if (Test-Path -LiteralPath $tmpInf) { Remove-Item -LiteralPath $tmpInf -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+    $localRaw['seDenyNetworkLogon'] = $rawSeDeny
+
+    $ahbiFw = 0
+    try {
+      if (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) {
+        $rFw = @(Get-NetFirewallRule -DisplayName 'AhBiShare-SMB-445' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' })
+        if ($rFw.Count -gt 0) { $ahbiFw = 1 }
+      } else {
+        $nsFw = (& netsh.exe advfirewall firewall show rule name="AhBiShare-SMB-445" 2>$null) -join ' '
+        if ($nsFw -match 'Enabled:\\s*Yes|사용:\\s*예') { $ahbiFw = 1 }
+      }
+    } catch {}
+    $localRaw['ahbiFw445'] = $ahbiFw
+
+    $remoteAttempted = $false
+    $remoteReachable = $false
+    $remoteError = ''
+    $remoteRaw = $null
+
+    if ($remoteTarget) {
+      $remoteAttempted = $true
+      try {
+        $job = Start-Job -ScriptBlock {
+          param($tgt)
+          $rk = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $tgt)
+          function ReadRem([string]$subPath, [string]$valName) {
+            try {
+              $k = $rk.OpenSubKey($subPath, $false)
+              if (-not $k) { return $null }
+              $v = $k.GetValue($valName, $null)
+              $k.Close()
+              if ($null -eq $v) { return $null }
+              [int]$parsed = 0
+              if ([int]::TryParse("$v", [ref]$parsed)) { return $parsed }
+              return $null
+            } catch { return $null }
+          }
+          $map = @{
+            srvRequireSig = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RequireSecuritySignature'
+            srvEnableSig = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'EnableSecuritySignature'
+            cliRequireSig = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'RequireSecuritySignature'
+            cliEnableSig = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'EnableSecuritySignature'
+            cliGuestSvc = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'AllowInsecureGuestAuth'
+            cliGuestPol = ReadRem 'SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' 'AllowInsecureGuestAuth'
+            limitBlankPwd = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LimitBlankPasswordUse'
+            everyAnon = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'everyoneincludesanonymous'
+            restrictAnon = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'restrictanonymous'
+            restrictNullSess = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RestrictNullSessAccess'
+            lmCompatLevel = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LmCompatibilityLevel'
+            ntlmRestrictOutbound = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0' 'RestrictSendingNTLMTraffic'
+            uacTokenFilter = ReadRem 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' 'LocalAccountTokenFilterPolicy'
+            uacLinkedConn = ReadRem 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' 'EnableLinkedConnections'
+            rpcPrivacy = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Print' 'RpcAuthnLevelPrivacyEnabled'
+            rpcNamedPipe = ReadRem 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcUseNamedPipeProtocol'
+            rpcProtocols = ReadRem 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcProtocols'
+            srvSmb1 = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'SMB1'
+          }
+          try { $rk.Close() } catch {}
+          return $map
+        } -ArgumentList $remoteTarget
+
+        $done = Wait-Job -Job $job -Timeout 3
+        if ($done) {
+          $resObj = Receive-Job -Job $job -ErrorAction Stop
+          if ($resObj) {
+            $remoteReachable = $true
+            $remoteRaw = $resObj
+          } else {
+            $remoteError = '원격 레지스트리 응답 없음'
+          }
+        } else {
+          $remoteError = '원격 RPC 레지스트리(TCP 135/445 · RemoteRegistry) 응답 시간 초과'
+        }
+        Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+      } catch {
+        $remoteError = $_.Exception.Message
+      }
+    }
+
+    @{
+      localRaw = $localRaw
+      remoteAttempted = $remoteAttempted
+      remoteReachable = $remoteReachable
+      remoteError = $remoteError
+      remoteRaw = $remoteRaw
+    } | ConvertTo-AhBiJson -Depth 4
   `.trim();
 }
 
@@ -1675,7 +1897,15 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
-      $actions += 'LSA 익명 접근 차단 및 빈 암호 제한 복원'
+      if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+        $guestStrict = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
+        if ($guestStrict) { Disable-LocalUser -Name $guestStrict.Name -ErrorAction SilentlyContinue }
+      } else {
+        $guestStrictWmi = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+        $guestStrictName = if ($guestStrictWmi) { $guestStrictWmi.Name } else { 'Guest' }
+        & net.exe user $guestStrictName /active:no 2>$null | Out-Null
+      }
+      $actions += 'LSA 익명 접근 차단, 빈 암호 제한 및 Guest(*-501) 계정 비활성 복원'
       foreach ($svc in @('LanmanWorkstation', 'LanmanServer')) {
         Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue | Out-Null
         $restarted += $svc

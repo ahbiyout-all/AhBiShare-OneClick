@@ -28,8 +28,10 @@ import {
 } from 'lucide-react';
 import {
   AutoAlignBatchResult,
+  ExpertRegistryFetchResult,
   HostPolicySnapshot,
   LocalNetworkInfo,
+  MountedDrive,
   OsNetworkPolicyStatus,
   PendingHostPolicyTask,
   PingHostResult,
@@ -51,6 +53,9 @@ import {
   formatSnapshotTimestamp,
   getPolicyPatchLabel,
 } from '@/services/networkEvolution';
+import { shareBridge } from '@/services/shareBridge';
+import { SecurityRollbackReport } from '@/components/SecurityRollbackReport';
+import { ExpertComparisonView } from '@/components/ExpertComparisonView';
 
 interface NetworkMatrixPanelProps {
   netInfo: LocalNetworkInfo;
@@ -58,6 +63,9 @@ interface NetworkMatrixPanelProps {
   hostPolicySnapshots: Record<string, HostPolicySnapshot>;
   pendingHostActions?: Record<string, PendingHostPolicyTask>;
   portableShares?: PortableHostShareEntry[];
+  mountedDrives?: MountedDrive[];
+  activeShareCount?: number;
+  activeMountCount?: number;
   lastPatchResult: PolicyApplyResult | null;
   lastAutoAlignResult?: AutoAlignBatchResult | null;
   isInspecting: boolean;
@@ -67,6 +75,7 @@ interface NetworkMatrixPanelProps {
   onInspectPolicy: () => Promise<void>;
   onApplyPatch: (mode: PolicyPatchMode) => Promise<void>;
   onSyncMatchedPolicies: (modes: PolicyPatchMode[]) => Promise<void>;
+  onFullSecurityRollback?: () => Promise<void>;
   onProbeRemoteHost?: (target: string) => Promise<PingHostResult>;
   onSavePendingHostTask?: (task: Omit<PendingHostPolicyTask, 'taskId' | 'createdAt'>) => Promise<void>;
   onDeletePendingHostTask?: (targetHostName: string) => Promise<void>;
@@ -124,6 +133,9 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   hostPolicySnapshots,
   pendingHostActions = {},
   portableShares = [],
+  mountedDrives = [],
+  activeShareCount = 0,
+  activeMountCount = 0,
   lastPatchResult,
   lastAutoAlignResult = null,
   isInspecting,
@@ -133,6 +145,7 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   onInspectPolicy,
   onApplyPatch,
   onSyncMatchedPolicies,
+  onFullSecurityRollback,
   onProbeRemoteHost,
   onSavePendingHostTask,
   onDeletePendingHostTask,
@@ -165,6 +178,9 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   const [pendingIncludeGuestUnlock, setPendingIncludeGuestUnlock] = useState(true);
   const [isSavingPendingTask, setIsSavingPendingTask] = useState(false);
   const [confirmingDeletePendingKey, setConfirmingDeletePendingKey] = useState<string | null>(null);
+  const [isExpertExpanded, setIsExpertExpanded] = useState(true);
+  const [isFetchingRawRegistry, setIsFetchingRawRegistry] = useState(false);
+  const [expertFetchResult, setExpertFetchResult] = useState<ExpertRegistryFetchResult | null>(null);
   const initializedPendingSourceRef = useRef<string | null>(null);
 
   const isBusy = isInspecting || isApplyingMode !== null || isAutoAligning || isApplyingPendingHostTask;
@@ -246,21 +262,66 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
     );
   }, [selectedHostSnap, isPresetTarget, portableShares]);
 
+  const activeConnectedDrive = useMemo(() => {
+    if (!mountedDrives.length) return null;
+    return mountedDrives.find((m) => m.status === 'connected') || mountedDrives[0] || null;
+  }, [mountedDrives]);
+
+  const connectedHostLabel = useMemo(() => {
+    if (!activeConnectedDrive) return undefined;
+    return `${activeConnectedDrive.driveLetter} (${activeConnectedDrive.targetHost})`;
+  }, [activeConnectedDrive]);
+
   const resolvedHostIpHint = useMemo(() => {
     if (selectedHostSnap?.sourceIp) return selectedHostSnap.sourceIp;
     if (matchingPortableEntry?.sourceIp) return matchingPortableEntry.sourceIp;
     if (!isPresetTarget && selectedHostSnap?.hostName) return selectedHostSnap.hostName;
+    if (activeConnectedDrive?.targetHost) return activeConnectedDrive.targetHost;
     const remoteShare = portableShares.find(
       (s) => (s.sourceHostName || '').trim().toLowerCase() !== netInfo.hostname.trim().toLowerCase()
     );
     return remoteShare?.sourceIp || '';
-  }, [selectedHostSnap, matchingPortableEntry, isPresetTarget, portableShares, netInfo.hostname]);
+  }, [selectedHostSnap, matchingPortableEntry, isPresetTarget, activeConnectedDrive, portableShares, netInfo.hostname]);
 
   useEffect(() => {
     setProbeTargetIp(resolvedHostIpHint);
     setProbeError(null);
     setProbeResult(null);
   }, [effectiveSourceId, resolvedHostIpHint]);
+
+  useEffect(() => {
+    setExpertFetchResult(null);
+  }, [effectiveSourceId, policyStatus?.checkedAt]);
+
+  const handleFetchRawRegistry = async () => {
+    if (isFetchingRawRegistry) return;
+    setIsFetchingRawRegistry(true);
+    try {
+      const targetForRpc =
+        probeTargetIp.trim() ||
+        (!isPresetTarget ? selectedHostSnap?.sourceIp || selectedHostSnap?.hostName : '') ||
+        activeConnectedDrive?.targetHost ||
+        '';
+      const result = await shareBridge.fetchExpertRawRegistryComparison({
+        netInfo,
+        localPolicy: policyStatus,
+        targetHostSnapshot: selectedHostSnap,
+        connectedHostTarget: targetForRpc,
+        isPresetTarget,
+      });
+      setExpertFetchResult(result);
+      onNotify?.(
+        result.remoteRpcSucceeded
+          ? `로컬 PC와 연결 호스트(${result.hostSnapshot.hostName})의 원시 레지스트리를 실시간 조회했습니다.`
+          : '로컬 및 대상 호스트의 10대 보안 정책 원시 레지스트리 비교표를 갱신했습니다.'
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      onNotify?.(`원시 레지스트리 조회 실패: ${msg}`);
+    } finally {
+      setIsFetchingRawRegistry(false);
+    }
+  };
 
   const pendingInitKey = `${effectiveSourceId}::${Boolean(policyStatus)}`;
   useEffect(() => {
@@ -1028,6 +1089,22 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
           </div>
         )}
       </section>
+
+      {/* 10-Point Security Rollback Verification Report */}
+      <SecurityRollbackReport
+        netInfo={netInfo}
+        policyStatus={policyStatus}
+        targetHostSnapshot={selectedHostSnap}
+        targetHostIsPreset={isPresetTarget}
+        activeShareCount={activeShareCount}
+        activeMountCount={activeMountCount}
+        isBusy={isBusy}
+        isInspecting={isInspecting}
+        onInspectPolicy={onInspectPolicy}
+        onRestoreDefaults={onSyncMatchedPolicies}
+        onFullSecurityRollback={onFullSecurityRollback}
+        onNotify={onNotify}
+      />
 
       {/* Separate Windows OS Patch & Optional Feature Diagnostic Panel */}
       <section
@@ -2012,6 +2089,27 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
           </div>
         )}
       </section>
+
+      {/* Expert Comparison View: 10-Policy Raw Registry Side-by-Side Comparison */}
+      <ExpertComparisonView
+        netInfo={netInfo}
+        policyStatus={policyStatus}
+        targetHostSnapshot={selectedHostSnap}
+        isPresetTarget={isPresetTarget}
+        connectedHostLabel={connectedHostLabel}
+        fetchResult={expertFetchResult}
+        isFetching={isFetchingRawRegistry}
+        isExpanded={isExpertExpanded}
+        onToggleExpanded={() => {
+          const next = !isExpertExpanded;
+          setIsExpertExpanded(next);
+          if (next && !expertFetchResult) {
+            void handleFetchRawRegistry();
+          }
+        }}
+        onFetchRawRegistry={handleFetchRawRegistry}
+        onNotify={onNotify}
+      />
 
       {/* Era Summary Timeline */}
       <section className="space-y-4">

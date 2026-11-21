@@ -1,30 +1,86 @@
 import React, { useState } from 'react';
-import { ShieldCheck, RotateCcw } from 'lucide-react';
+import { ShieldCheck, RotateCcw, Lock } from 'lucide-react';
+import { LocalNetworkInfo, OsNetworkPolicyStatus, PolicyPatchMode } from '@/types/share';
+import { SecurityRollbackReport } from '@/components/SecurityRollbackReport';
 
 interface RollbackPanelProps {
+  netInfo: LocalNetworkInfo;
+  policyStatus: OsNetworkPolicyStatus | null;
+  activeShareCount: number;
+  activeMountCount: number;
+  isInspecting: boolean;
   onRollback: (scope: 'host' | 'client') => Promise<{ success: boolean; message: string }>;
+  onFullSecurityRollback: () => Promise<void>;
+  onInspectPolicy: () => Promise<void>;
+  onRestoreDefaults: (modes: PolicyPatchMode[]) => Promise<void>;
+  onNotify?: (message: string) => void;
 }
 
-export const RollbackPanel: React.FC<RollbackPanelProps> = ({ onRollback }) => {
-  const [busyScope, setBusyScope] = useState<'host' | 'client' | null>(null);
-  const [feedback, setFeedback] = useState<{ scope: 'host' | 'client'; success: boolean; message: string } | null>(null);
+export const RollbackPanel: React.FC<RollbackPanelProps> = ({
+  netInfo,
+  policyStatus,
+  activeShareCount,
+  activeMountCount,
+  isInspecting,
+  onRollback,
+  onFullSecurityRollback,
+  onInspectPolicy,
+  onRestoreDefaults,
+  onNotify,
+}) => {
+  const [busyScope, setBusyScope] = useState<'host' | 'client' | 'full' | null>(null);
+  const [feedback, setFeedback] = useState<{
+    scope: 'host' | 'client' | 'full';
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   const handleRun = async (scope: 'host' | 'client') => {
     setBusyScope(scope);
-    const res = await onRollback(scope);
-    setFeedback({ scope, ...res });
-    setBusyScope(null);
+    try {
+      const res = await onRollback(scope);
+      setFeedback({ scope, ...res });
+    } finally {
+      setBusyScope(null);
+    }
+  };
+
+  const handleRunFull = async () => {
+    setBusyScope('full');
+    try {
+      await onFullSecurityRollback();
+      setFeedback({
+        scope: 'full',
+        success: true,
+        message: '호스트·클라이언트 세션 정리 및 10개 핵심 보안 기본값(SMB 서명·게스트·LSA·UAC·프린터 RPC) 일괄 복원 및 검증을 완료했습니다.',
+      });
+    } finally {
+      setBusyScope(null);
+    }
   };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-          공유 정책 보안 원복 (Rollback)
-        </h2>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          파일 공유 작업이 끝난 후 열려 있던 공유폴더·방화벽 포트·무인증 게스트 정책을 Windows 기본 보안 상태로 되돌립니다.
-        </p>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+            공유 정책 보안 원복 (Rollback)
+          </h2>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+            파일 공유 작업이 끝난 후 열려 있던 공유폴더·방화벽 포트·무인증 게스트 정책을 Windows 기본 보안 상태로 되돌리고 10개 핵심 항목을 검증합니다.
+          </p>
+        </div>
+
+        <button
+          id="btn-full-security-rollback"
+          type="button"
+          disabled={busyScope !== null || isInspecting}
+          onClick={() => void handleRunFull()}
+          className="px-4 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+        >
+          <Lock className="w-3.5 h-3.5" />
+          {busyScope === 'full' ? '전체 보안 원복 중...' : '전체(호스트+클라이언트+표준보안) 원복'}
+        </button>
       </div>
 
       {feedback && (
@@ -48,11 +104,12 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({ onRollback }) => {
             </div>
             <ul className="text-sm text-slate-600 dark:text-slate-400 space-y-1.5 pt-2">
               <li>• C$, ADMIN$, IPC$를 제외한 모든 사용자 공유폴더 즉시 해제</li>
-              <li>• 방화벽 TCP 445 인바운드 예외 규칙 삭제</li>
-              <li>• LSA 익명 허용 차단(restrictanonymous=1) 및 SMB 서명 복구</li>
+              <li>• 방화벽 TCP 445 임시 규칙(AhBiShare-SMB-445) 삭제</li>
+              <li>• Guest 계정(*-501) OFF, LSA 빈 암호·익명 차단 및 SMB 서버 서명 복구</li>
             </ul>
           </div>
           <button
+            id="btn-rollback-host"
             type="button"
             disabled={busyScope !== null}
             onClick={() => void handleRun('host')}
@@ -76,6 +133,7 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({ onRollback }) => {
             </ul>
           </div>
           <button
+            id="btn-rollback-client"
             type="button"
             disabled={busyScope !== null}
             onClick={() => void handleRun('client')}
@@ -86,6 +144,21 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({ onRollback }) => {
           </button>
         </div>
       </div>
+
+      {/* Live 10-Point Security Rollback Verification Report */}
+      <SecurityRollbackReport
+        netInfo={netInfo}
+        policyStatus={policyStatus}
+        activeShareCount={activeShareCount}
+        activeMountCount={activeMountCount}
+        isBusy={busyScope !== null}
+        isInspecting={isInspecting}
+        onInspectPolicy={onInspectPolicy}
+        onRestoreDefaults={onRestoreDefaults}
+        onFullSecurityRollback={handleRunFull}
+        onNotify={onNotify}
+      />
     </div>
   );
 };
+

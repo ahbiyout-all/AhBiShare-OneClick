@@ -1367,6 +1367,105 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleFullSecurityRollback = async () => {
+    const s1: PipelineStep = {
+      id: 'full-rb-host',
+      title: '호스트 공유폴더 · 임시 방화벽(445) · Guest/LSA 보안 원복',
+      detail: '모든 사용자 공유 해제 및 서버/LSA/Guest 제한 기본값을 복구합니다.',
+      status: 'running',
+    };
+    const s2: PipelineStep = {
+      id: 'full-rb-client',
+      title: '클라이언트 네트워크 드라이브 해제 · 게스트 접속 차단',
+      detail: '열린 드라이브 세션을 끊고 클라이언트 서명·게스트 차단을 복구합니다.',
+      status: 'idle',
+    };
+    const s3: PipelineStep = {
+      id: 'full-rb-strict',
+      title: '26H2 표준 보안 · 프린터 RPC · UAC 원격 보호 최종 복원',
+      detail: '10개 핵심 보안 기본값(SMB 서명, 게스트, LSA, NTLM, UAC, RPC)을 정렬합니다.',
+      status: 'idle',
+    };
+    const jobKey = startProgressJob(
+      '전체(호스트+클라이언트+표준보안) 원복',
+      '10개 핵심 보안 기본값 일괄 복원 및 검증',
+      [s1, s2, s3]
+    );
+    if (!jobKey) return;
+
+    const t0 = performance.now();
+    try {
+      const hostRes = await shareBridge.rollbackPolicies('host', netInfo);
+      const d1 = Math.round(performance.now() - t0);
+      updateProgressSteps(jobKey, [
+        { ...s1, status: hostRes.success ? 'success' : 'error', durationMs: d1, ...(hostRes.success ? {} : { error: hostRes.message }) },
+        { ...s2, status: 'running' },
+        s3,
+      ]);
+
+      const t1 = performance.now();
+      const clientRes = await shareBridge.rollbackPolicies('client', netInfo);
+      const d2 = Math.round(performance.now() - t1);
+      updateProgressSteps(jobKey, [
+        { ...s1, status: hostRes.success ? 'success' : 'error', durationMs: d1 },
+        { ...s2, status: clientRes.success ? 'success' : 'error', durationMs: d2, ...(clientRes.success ? {} : { error: clientRes.message }) },
+        { ...s3, status: 'running' },
+      ]);
+
+      const t2 = performance.now();
+      const hardenBatch = await shareBridge.autoAlignHostClientPolicies(
+        ['strict_26h2_default', 'rpc_printer_default', 'disable_uac_token_filter'],
+        netInfo
+      );
+      const d3 = Math.round(performance.now() - t2);
+
+      setShares(shareBridge.getSavedShares());
+      setMounts(shareBridge.getSavedMounts());
+      setExpiryAlerts([]);
+      setPolicyStatus(hardenBatch.updatedPolicy);
+      setLastPatchResult({
+        success: hardenBatch.success,
+        mode: 'strict_26h2_default',
+        summary: hardenBatch.summary,
+        appliedActions: hardenBatch.appliedActions,
+        rebootJudgment: hardenBatch.rebootJudgment,
+        updatedPolicy: hardenBatch.updatedPolicy,
+      });
+      setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+      refreshPortableSnapshot(netInfo.hostname);
+      try {
+        const updatedPeers = await shareBridge.scanLanPeers(netInfo);
+        setPeers(updatedPeers);
+      } catch {}
+
+      const allOk = hostRes.success && clientRes.success && hardenBatch.success;
+      const msg = allOk
+        ? '호스트·클라이언트 세션 정리 및 10개 핵심 보안 기본값 일괄 원복을 완료했습니다.'
+        : '일부 보안 원복 단계에 확인이 필요합니다. 10개 핵심 항목 검증 보고서를 확인하세요.';
+      appendLog('전체 보안 원복', msg, allOk ? 'success' : 'error');
+      showToast(msg);
+      const finalSteps: PipelineStep[] = [
+        { ...s1, status: hostRes.success ? 'success' : 'error', durationMs: d1 },
+        { ...s2, status: clientRes.success ? 'success' : 'error', durationMs: d2 },
+        { ...s3, status: hardenBatch.success ? 'success' : 'error', durationMs: d3 },
+      ];
+      if (allOk) {
+        completeProgressJob(jobKey, msg, finalSteps);
+      } else {
+        failProgressJob(jobKey, msg, finalSteps);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : '전체 보안 원복 중 오류가 발생했습니다.';
+      appendLog('전체 보안 원복', errMsg, 'error');
+      showToast(errMsg);
+      failProgressJob(jobKey, errMsg, [
+        { ...s1, status: 'error', durationMs: Math.round(performance.now() - t0), error: errMsg },
+        s2,
+        s3,
+      ]);
+    }
+  };
+
   const handleExpirySecurityRollback = async () => {
     const s1: PipelineStep = {
       id: 'exp-cleanup',
@@ -2289,6 +2388,9 @@ export const App: React.FC = () => {
             hostPolicySnapshots={hostPolicySnapshots}
             pendingHostActions={pendingHostActions}
             portableShares={portableShares}
+            mountedDrives={mounts}
+            activeShareCount={shares.length}
+            activeMountCount={mounts.length}
             lastPatchResult={lastPatchResult}
             lastAutoAlignResult={lastAutoAlignResult}
             isInspecting={isPolicyInspecting}
@@ -2298,6 +2400,7 @@ export const App: React.FC = () => {
             onInspectPolicy={handleInspectOsPolicy}
             onApplyPatch={handleApplyOsPatch}
             onSyncMatchedPolicies={handleSyncMatchedPolicies}
+            onFullSecurityRollback={handleFullSecurityRollback}
             onProbeRemoteHost={handlePingHost}
             onSavePendingHostTask={handleSavePendingHostTask}
             onDeletePendingHostTask={handleDeletePendingHostTask}
@@ -2391,7 +2494,20 @@ export const App: React.FC = () => {
           </section>
         )}
 
-        {activeSection === 'rollback' && <RollbackPanel onRollback={handleRollback} />}
+        {activeSection === 'rollback' && (
+          <RollbackPanel
+            netInfo={netInfo}
+            policyStatus={policyStatus}
+            activeShareCount={shares.length}
+            activeMountCount={mounts.length}
+            isInspecting={isPolicyInspecting}
+            onRollback={handleRollback}
+            onFullSecurityRollback={handleFullSecurityRollback}
+            onInspectPolicy={handleInspectOsPolicy}
+            onRestoreDefaults={handleSyncMatchedPolicies}
+            onNotify={showToast}
+          />
+        )}
       </main>
 
       {toastMessage && (

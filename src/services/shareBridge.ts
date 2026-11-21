@@ -30,6 +30,8 @@ import {
   LocationProfileSummary,
   LocationBatchApplyResult,
   LocationBatchApplyItemResult,
+  ExpertRegistryFetchResult,
+  RawSecurityRegistrySnapshot,
 } from '@/types/share';
 import { decodeConnectionCode, encodeConnectionCode, validateTargetHost } from '@/utils/connectionCode';
 import { APP_VERSION } from '@/version';
@@ -42,14 +44,19 @@ import {
   buildOsNetworkPolicyInspectScript,
   buildOsCompatibilityPatchScript,
   buildHostGuestUnlockPsScript,
+  buildRawSecurityRegistryScript,
 } from '@/services/powershellEngine';
 import {
   classifyOsEra,
   combineRebootJudgments,
   computeCompatibilityScoreAndIssues,
+  deriveRawRegistrySnapshotFromHostSnap,
+  deriveRawRegistrySnapshotFromStatus,
   evaluateRebootJudgment,
   formatSnapshotTimestamp,
   getPolicyPatchLabel,
+  rawRegistryRecordToSnapshot,
+  RawRegistryMapInput,
   toHostPolicySnapshot,
 } from '@/services/networkEvolution';
 
@@ -196,8 +203,10 @@ let webSimPolicyBase: Omit<OsNetworkPolicyStatus, 'compatibilityScore' | 'detect
   limitBlankPasswordUse: true,
   restrictNullSessAccess: true,
   restrictAnonymous: false,
+  everyoneIncludesAnonymous: false,
   guestAccountEnabled: false,
   firewall445Allowed: true,
+  ahbiFirewallRulePresent: false,
   lmCompatibilityLevel: 3,
   ntlmRestrictOutbound: 0,
   netbiosEnabled: true,
@@ -1242,6 +1251,25 @@ export const shareBridge = {
         steps[i].durationMs = Math.round(performance.now() - t0);
         steps[i].status = 'success';
         steps[i].output = `[시뮬레이션 완료] ${definitions[i].title}`;
+        if (i === definitions.length - 1) {
+          webSimPolicyBase = {
+            ...webSimPolicyBase,
+            networkProfile: 'Private',
+            firewall445Allowed: true,
+            ahbiFirewallRulePresent: true,
+            ...(config.authMode === 'guest'
+              ? {
+                  guestAccountEnabled: true,
+                  guestNetworkLogonDenied: false,
+                  limitBlankPasswordUse: false,
+                  restrictNullSessAccess: false,
+                  restrictAnonymous: false,
+                  everyoneIncludesAnonymous: true,
+                  smbServerSigningRequired: false,
+                }
+              : {}),
+          };
+        }
       }
       onProgress([...steps]);
     }
@@ -1486,8 +1514,10 @@ export const shareBridge = {
         limitBlankPasswordUse: true,
         restrictNullSessAccess: true,
         restrictAnonymous: true,
+        everyoneIncludesAnonymous: false,
         guestNetworkLogonDenied: true,
         guestAccountEnabled: false,
+        ahbiFirewallRulePresent: false,
       };
       writeStore(STORAGE_SHARES_KEY, []);
       if (netInfo) await this.persistPortableHostShares([], netInfo);
@@ -1632,10 +1662,16 @@ export const shareBridge = {
               typeof parsed.restrictNullSessAccess === 'boolean' ? parsed.restrictNullSessAccess : undefined,
             restrictAnonymous:
               typeof parsed.restrictAnonymous === 'boolean' ? parsed.restrictAnonymous : undefined,
+            everyoneIncludesAnonymous:
+              typeof parsed.everyoneIncludesAnonymous === 'boolean'
+                ? parsed.everyoneIncludesAnonymous
+                : undefined,
             guestAccountEnabled:
               typeof parsed.guestAccountEnabled === 'boolean' ? parsed.guestAccountEnabled : undefined,
             firewall445Allowed:
               typeof parsed.firewall445Allowed === 'boolean' ? parsed.firewall445Allowed : undefined,
+            ahbiFirewallRulePresent:
+              typeof parsed.ahbiFirewallRulePresent === 'boolean' ? parsed.ahbiFirewallRulePresent : undefined,
             lmCompatibilityLevel: parsed.lmCompatibilityLevel ?? null,
             ntlmRestrictOutbound: parsed.ntlmRestrictOutbound ?? null,
             netbiosEnabled: Boolean(parsed.netbiosEnabled),
@@ -1654,8 +1690,23 @@ export const shareBridge = {
             pendingRebootFlag: Boolean(parsed.pendingRebootFlag),
             checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
           };
+          const parsedRawReg = (parsed as { rawReg?: RawRegistryMapInput }).rawReg;
+          const rawRegistrySnapshot = parsedRawReg
+            ? rawRegistryRecordToSnapshot(
+                netInfo?.hostname || 'LOCAL-PC',
+                parsedRawReg,
+                'local_live',
+                '로컬 레지스트리 실시간 조회',
+                base.checkedAt
+              )
+            : undefined;
           const { compatibilityScore, detectedIssues } = computeCompatibilityScoreAndIssues(base);
-          const fullStatus = { ...base, compatibilityScore, detectedIssues };
+          const fullStatus: OsNetworkPolicyStatus = {
+            ...base,
+            compatibilityScore,
+            detectedIssues,
+            ...(rawRegistrySnapshot ? { rawRegistrySnapshot } : {}),
+          };
           if (netInfo?.hostname) {
             await this.persistHostPolicySnapshot(netInfo.hostname, fullStatus, netInfo.primaryIp);
           }
@@ -1665,16 +1716,189 @@ export const shareBridge = {
     }
 
     await new Promise((r) => setTimeout(r, 240));
-    const baseWithTime = {
+    const checkedAtSim = formatSnapshotTimestamp(new Date().toISOString());
+    const simBaseWithTime = {
       ...webSimPolicyBase,
-      checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
+      checkedAt: checkedAtSim,
     };
-    const { compatibilityScore, detectedIssues } = computeCompatibilityScoreAndIssues(baseWithTime);
-    const fullStatus = { ...baseWithTime, compatibilityScore, detectedIssues };
+    const simRawSnap = rawRegistryRecordToSnapshot(
+      netInfo?.hostname || 'LOCAL-PC',
+      {
+        srvRequireSig: simBaseWithTime.smbServerSigningRequired ? 1 : 0,
+        srvEnableSig: 1,
+        cliRequireSig: simBaseWithTime.smbClientSigningRequired ? 1 : 0,
+        cliEnableSig: 1,
+        cliGuestSvc: simBaseWithTime.allowInsecureGuestAuth ? 1 : 0,
+        cliGuestPol: simBaseWithTime.allowInsecureGuestAuth ? 1 : 0,
+        guest501Disabled: simBaseWithTime.guestAccountEnabled ? 0 : 1,
+        seDenyNetworkLogon: simBaseWithTime.guestNetworkLogonDenied ? '*S-1-5-32-546,*S-1-5-7' : '',
+        limitBlankPwd: simBaseWithTime.limitBlankPasswordUse ? 1 : 0,
+        everyAnon: simBaseWithTime.everyoneIncludesAnonymous ? 1 : 0,
+        restrictAnon: simBaseWithTime.restrictAnonymous ? 1 : 0,
+        restrictNullSess: simBaseWithTime.restrictNullSessAccess ? 1 : 0,
+        lmCompatLevel: simBaseWithTime.lmCompatibilityLevel,
+        ntlmRestrictOutbound: simBaseWithTime.ntlmRestrictOutbound,
+        uacTokenFilter: simBaseWithTime.localAccountTokenFilterEnabled ? 1 : 0,
+        uacLinkedConn: null,
+        rpcPrivacy: simBaseWithTime.rpcAuthnLevelPrivacyDisabled ? 0 : 1,
+        rpcNamedPipe: simBaseWithTime.rpcUseNamedPipeProtocol ? 1 : 0,
+        rpcProtocols: simBaseWithTime.rpcProtocols,
+        srvSmb1: simBaseWithTime.smb1Enabled ? 1 : 0,
+        ahbiFw445: simBaseWithTime.ahbiFirewallRulePresent ? 1 : 0,
+      },
+      'local_live',
+      '로컬 레지스트리 조회 (시뮬레이션)',
+      checkedAtSim
+    );
+    const { compatibilityScore, detectedIssues } = computeCompatibilityScoreAndIssues(simBaseWithTime);
+    const fullStatus: OsNetworkPolicyStatus = {
+      ...simBaseWithTime,
+      compatibilityScore,
+      detectedIssues,
+      rawRegistrySnapshot: simRawSnap,
+    };
     if (netInfo?.hostname) {
       await this.persistHostPolicySnapshot(netInfo.hostname, fullStatus, netInfo.primaryIp);
     }
     return fullStatus;
+  },
+
+  async fetchExpertRawRegistryComparison(options: {
+    netInfo: LocalNetworkInfo;
+    localPolicy: OsNetworkPolicyStatus | null;
+    targetHostSnapshot: HostPolicySnapshot | null;
+    connectedHostTarget?: string;
+    isPresetTarget?: boolean;
+  }): Promise<ExpertRegistryFetchResult> {
+    const { netInfo, localPolicy, targetHostSnapshot, connectedHostTarget, isPresetTarget } = options;
+    const fetchedAt = formatSnapshotTimestamp(new Date().toISOString());
+
+    const remoteCandidate =
+      !isPresetTarget &&
+      targetHostSnapshot &&
+      targetHostSnapshot.hostName.trim().toLowerCase() !== netInfo.hostname.trim().toLowerCase()
+        ? (connectedHostTarget || targetHostSnapshot.sourceIp || targetHostSnapshot.hostName || '').trim()
+        : '';
+
+    let localSnapshot: RawSecurityRegistrySnapshot | null = null;
+    let hostSnapshot: RawSecurityRegistrySnapshot | null = null;
+    let remoteRpcAttempted = false;
+    let remoteRpcSucceeded = false;
+    let remoteRpcNote: string | undefined;
+
+    if (window.ahbiShareElectron?.runPowerShell) {
+      try {
+        const res = await window.ahbiShareElectron.runPowerShell(
+          buildRawSecurityRegistryScript(remoteCandidate)
+        );
+        if (res.success && res.output) {
+          const parsed = parseLastJsonObject<{
+            localRaw?: RawRegistryMapInput;
+            remoteAttempted?: boolean;
+            remoteReachable?: boolean;
+            remoteError?: string;
+            remoteRaw?: RawRegistryMapInput | null;
+          }>(res.output);
+
+          if (parsed?.localRaw) {
+            localSnapshot = rawRegistryRecordToSnapshot(
+              netInfo.hostname,
+              parsed.localRaw,
+              'local_live',
+              '로컬 레지스트리 실시간 조회',
+              fetchedAt
+            );
+          }
+
+          remoteRpcAttempted = Boolean(parsed?.remoteAttempted);
+          if (parsed?.remoteReachable && parsed.remoteRaw && targetHostSnapshot) {
+            remoteRpcSucceeded = true;
+            const usbCapturedEntries = targetHostSnapshot.rawRegistrySnapshot?.entries;
+            const usbGuest501 =
+              usbCapturedEntries?.audit_guest_account_501?.[0]?.rawValue ??
+              (typeof targetHostSnapshot.guestAccountEnabled === 'boolean'
+                ? targetHostSnapshot.guestAccountEnabled
+                  ? 0
+                  : 1
+                : null);
+            const usbSeDeny =
+              usbCapturedEntries?.audit_se_deny_guest_logon?.[0]?.rawValue ??
+              (typeof targetHostSnapshot.guestNetworkLogonDenied === 'boolean'
+                ? targetHostSnapshot.guestNetworkLogonDenied
+                  ? '*S-1-5-32-546,*S-1-5-7'
+                  : '(Guest 제외됨)'
+                : null);
+            const usbAhbiFw =
+              usbCapturedEntries?.audit_rpc_fw_smb1?.find((e) => e.valueName === 'AhBiShare-SMB-445')?.rawValue ??
+              (typeof targetHostSnapshot.firewall445Allowed === 'boolean'
+                ? targetHostSnapshot.firewall445Allowed
+                  ? 1
+                  : 0
+                : null);
+
+            hostSnapshot = rawRegistryRecordToSnapshot(
+              targetHostSnapshot.hostName,
+              {
+                ...parsed.remoteRaw,
+                guest501Disabled: typeof usbGuest501 === 'number' ? usbGuest501 : null,
+                seDenyNetworkLogon: typeof usbSeDeny === 'string' ? usbSeDeny : null,
+                ahbiFw445: typeof usbAhbiFw === 'number' ? usbAhbiFw : null,
+              },
+              'remote_live_rpc',
+              '원격 RPC 레지스트리 실시간 조회',
+              fetchedAt,
+              {
+                targetIp: remoteCandidate || targetHostSnapshot.sourceIp,
+                remoteRpcNote: `연결된 호스트(${remoteCandidate})의 HKLM 원격 레지스트리를 실시간으로 직접 조회했습니다.`,
+              }
+            );
+            remoteRpcNote = hostSnapshot.remoteRpcNote;
+          } else if (parsed?.remoteAttempted) {
+            const errReason = parsed.remoteError || 'RemoteRegistry 서비스 비활성 또는 방화벽 차단';
+            remoteRpcNote = targetHostSnapshot?.rawRegistrySnapshot
+              ? `원격 RPC 직접 조회(${remoteCandidate}) 불가(${errReason}) → 호스트 실행 시 USB에 실측 캡처된 원시 레지스트리 값을 표시합니다.`
+              : `원격 RPC 직접 조회(${remoteCandidate}) 불가(${errReason}) → USB 호스트 정책 스냅샷에서 역산한 레지스트리 기대값을 표시합니다.`;
+          }
+        }
+      } catch {
+        // Fallback smoothly below
+      }
+    }
+
+    if (!localSnapshot) {
+      if (localPolicy) {
+        localSnapshot = deriveRawRegistrySnapshotFromStatus(netInfo.hostname, localPolicy);
+      } else {
+        const inspected = await this.inspectOsNetworkPolicy(netInfo);
+        localSnapshot = deriveRawRegistrySnapshotFromStatus(netInfo.hostname, inspected);
+      }
+    }
+
+    if (!hostSnapshot) {
+      if (targetHostSnapshot) {
+        hostSnapshot = deriveRawRegistrySnapshotFromHostSnap(targetHostSnapshot, Boolean(isPresetTarget));
+        if (remoteRpcNote) {
+          hostSnapshot = { ...hostSnapshot, remoteRpcNote };
+        }
+      } else {
+        hostSnapshot = {
+          hostName: '선택된 호스트 없음',
+          sourceType: 'preset_reference',
+          sourceLabel: '대상 호스트 미선택',
+          fetchedAt,
+          entries: {},
+        };
+      }
+    }
+
+    return {
+      localSnapshot,
+      hostSnapshot,
+      remoteRpcAttempted,
+      remoteRpcSucceeded,
+      ...(remoteRpcNote ? { remoteRpcNote } : {}),
+      fetchedAt,
+    };
   },
 
   async applyOsCompatibilityPatch(mode: PolicyPatchMode, netInfo?: LocalNetworkInfo): Promise<PolicyApplyResult> {
@@ -1802,7 +2026,9 @@ export const shareBridge = {
         limitBlankPasswordUse: false,
         restrictNullSessAccess: false,
         restrictAnonymous: false,
+        everyoneIncludesAnonymous: true,
         firewall445Allowed: true,
+        ahbiFirewallRulePresent: true,
         lmCompatibilityLevel: 3,
         netbiosEnabled: true,
         lanmanServerRunning: true,
@@ -1960,9 +2186,11 @@ export const shareBridge = {
         allowInsecureGuestAuth: false,
         enableInsecureGuestLogons: false,
         guestNetworkLogonDenied: true,
+        guestAccountEnabled: false,
         limitBlankPasswordUse: true,
         restrictNullSessAccess: true,
         restrictAnonymous: true,
+        everyoneIncludesAnonymous: false,
         localAccountTokenFilterEnabled: false,
       };
       appliedActions = [

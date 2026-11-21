@@ -1,9 +1,17 @@
 import {
+  ExpertRegistryPolicyRow,
+  ExpertRegistrySubRow,
+  HostDiscrepancyLevel,
+  HostPolicyComparison,
   HostPolicySnapshot,
   OsNetworkPolicyStatus,
   PolicyDiffItem,
   PolicyPatchMode,
+  RawRegistryEntry,
+  RawSecurityRegistrySnapshot,
   RebootJudgment,
+  SecurityRollbackAuditItem,
+  SecurityRollbackAuditReport,
   WindowsNetworkChangeItem,
   WindowsNetworkEra,
 } from '@/types/share';
@@ -719,6 +727,7 @@ export function toHostPolicySnapshot(
     ...(typeof status.firewall445Allowed === 'boolean'
       ? { firewall445Allowed: status.firewall445Allowed }
       : {}),
+    ...(status.rawRegistrySnapshot ? { rawRegistrySnapshot: status.rawRegistrySnapshot } : {}),
     capturedAt: new Date().toISOString(),
   };
 }
@@ -1128,3 +1137,1186 @@ export function combineRebootJudgments(judgments: RebootJudgment[]): RebootJudgm
     canRebootNow: false,
   };
 }
+
+function buildHostItemComparison(
+  itemId: string,
+  localStatus: OsNetworkPolicyStatus,
+  hostSnap: HostPolicySnapshot
+): HostPolicyComparison {
+  switch (itemId) {
+    case 'audit_smb_server_signing': {
+      const hostVal = hostSnap.smbServerSigningRequired;
+      const localVal = localStatus.smbServerSigningRequired;
+      if (localVal === hostVal) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: hostVal ? '강제됨 (1)' : '완화됨 (0)',
+          discrepancyDetail: '대상 호스트와 서버 SMB 서명 정책이 동일합니다.',
+        };
+      }
+      return {
+        status: 'warning',
+        badgeLabel: hostVal ? '호스트 강제 · 로컬 완화' : '로컬 강제 · 호스트 완화',
+        expectedHostValue: hostVal ? '강제됨 (1)' : '완화됨 (0)',
+        discrepancyDetail: hostVal
+          ? '대상 호스트는 서버 서명을 강제하고 있으나 현재 PC 서버 서명은 완화되어 있습니다.'
+          : '대상 호스트는 서버 서명이 완화되어 있으나 현재 PC 서버 서명은 강제 상태입니다.',
+      };
+    }
+
+    case 'audit_smb_client_signing': {
+      const hostServerStrict = hostSnap.smbServerSigningRequired;
+      const localClientStrict = localStatus.smbClientSigningRequired;
+      if (localClientStrict && !hostServerStrict) {
+        return {
+          status: 'conflict',
+          badgeLabel: '연결 차단 · 서명 불일치',
+          expectedHostValue: '완화 호환 (0)',
+          discrepancyDetail:
+            '대상 호스트는 서명을 요구하지 않으나 현재 PC 클라이언트가 서명을 강제해 SMB 연결이 차단될 수 있습니다.',
+        };
+      }
+      if (!localClientStrict && hostServerStrict) {
+        return {
+          status: 'aligned',
+          badgeLabel: '서명 협상 호환',
+          expectedHostValue: '강제됨 (1)',
+          discrepancyDetail:
+            '클라이언트 서명 완화 상태에서도 호스트의 서명 요구에 맞춰 SMB 3.x 서명이 정상 협상됩니다.',
+        };
+      }
+      return {
+        status: 'aligned',
+        badgeLabel: '호스트 일치',
+        expectedHostValue: hostServerStrict ? '강제됨 (1)' : '완화 호환 (0)',
+        discrepancyDetail: '대상 호스트의 서명 정책과 현재 PC 클라이언트 서명 설정이 호환됩니다.',
+      };
+    }
+
+    case 'audit_insecure_guest_auth': {
+      const hostGuestOpen = hostSnap.allowInsecureGuestAuth;
+      const localGuestOpen = localStatus.allowInsecureGuestAuth;
+      if (!localGuestOpen && hostGuestOpen) {
+        return {
+          status: 'conflict',
+          badgeLabel: '0x80070035 차단 충돌',
+          expectedHostValue: '허용 (1)',
+          discrepancyDetail:
+            '대상 호스트가 무비밀번호 게스트를 개방했으나 현재 PC가 차단 중이어서 접속 시 0x80070035 오류가 발생합니다.',
+        };
+      }
+      if (localGuestOpen && !hostGuestOpen) {
+        return {
+          status: 'warning',
+          badgeLabel: '호스트 차단 · 로컬 허용',
+          expectedHostValue: '차단 (0)',
+          discrepancyDetail:
+            '대상 호스트는 게스트 차단을 유지 중이나 현재 PC는 허용되어 있습니다. 보안 계정 모드 또는 호스트 개방을 맞추세요.',
+        };
+      }
+      return {
+        status: 'aligned',
+        badgeLabel: '호스트 일치',
+        expectedHostValue: hostGuestOpen ? '허용 (1)' : '차단 (0)',
+        discrepancyDetail: '비인증 게스트 로그온 허용 정책이 양단 모두 일치합니다.',
+      };
+    }
+
+    case 'audit_guest_account_501': {
+      if (typeof hostSnap.guestAccountEnabled !== 'boolean' || typeof localStatus.guestAccountEnabled !== 'boolean') {
+        return {
+          status: 'unmeasured',
+          badgeLabel: '호스트 미측정',
+          expectedHostValue: hostSnap.allowInsecureGuestAuth ? '활성 추정 (ON)' : '미측정',
+          discrepancyDetail: '대상 호스트 스냅샷에 Guest 계정(*-501) 활성 여부가 포함되지 않았습니다.',
+        };
+      }
+      const hostOn = hostSnap.guestAccountEnabled;
+      const localOn = localStatus.guestAccountEnabled;
+      if (hostOn === localOn) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: hostOn ? '활성 (ON)' : '비활성 (OFF)',
+          discrepancyDetail: '양단 PC의 내장 Guest(*-501) 계정 상태가 동일합니다.',
+        };
+      }
+      return {
+        status: !hostOn && hostSnap.allowInsecureGuestAuth ? 'conflict' : 'warning',
+        badgeLabel: hostOn ? '호스트 활성 · 로컬 OFF' : '호스트 OFF · 로컬 활성',
+        expectedHostValue: hostOn ? '활성 (ON)' : '비활성 (OFF)',
+        discrepancyDetail: hostOn
+          ? '대상 호스트는 무비밀번호 공유를 위해 Guest 계정이 켜져 있으나 현재 PC는 비활성(OFF)입니다.'
+          : '대상 호스트의 Guest 계정은 꺼져 있으나 현재 PC Guest 계정이 활성화되어 있습니다.',
+      };
+    }
+
+    case 'audit_se_deny_guest_logon': {
+      if (typeof hostSnap.guestNetworkLogonDenied !== 'boolean') {
+        return {
+          status: 'unmeasured',
+          badgeLabel: '호스트 미측정',
+          expectedHostValue: '미측정',
+          discrepancyDetail: '대상 호스트 스냅샷에 SeDenyNetworkLogonRight 측정값이 없습니다.',
+        };
+      }
+      const hostDenied = hostSnap.guestNetworkLogonDenied;
+      const localDenied = Boolean(localStatus.guestNetworkLogonDenied);
+      if (hostDenied && hostSnap.allowInsecureGuestAuth) {
+        return {
+          status: 'conflict',
+          badgeLabel: '호스트 1385 차단 충돌',
+          expectedHostValue: '차단 해제 (허용)',
+          discrepancyDetail:
+            '대상 호스트가 Guest 로그온을 허용하면서도 SeDenyNetworkLogonRight에 거부가 남아 있어 오류 1385가 발생합니다.',
+        };
+      }
+      if (hostDenied === localDenied) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: hostDenied ? '거부 적용' : '차단 해제 (허용)',
+          discrepancyDetail: '양단 PC의 SeDenyNetworkLogonRight 정책이 동일합니다.',
+        };
+      }
+      return {
+        status: 'warning',
+        badgeLabel: hostDenied ? '호스트 거부 · 로컬 허용' : '호스트 허용 · 로컬 거부',
+        expectedHostValue: hostDenied ? '거부 적용' : '차단 해제 (허용)',
+        discrepancyDetail: hostDenied
+          ? '대상 호스트는 Guest 네트워크 로그온을 거부 중입니다(무비밀번호 연결 시 Error 1385 주의).'
+          : '대상 호스트는 Guest 로그온을 허용 중이나 현재 PC는 보안 원복으로 거부 상태입니다.',
+      };
+    }
+
+    case 'audit_lsa_blank_password': {
+      if (typeof hostSnap.limitBlankPasswordUse !== 'boolean' || typeof localStatus.limitBlankPasswordUse !== 'boolean') {
+        return {
+          status: 'unmeasured',
+          badgeLabel: '호스트 미측정',
+          expectedHostValue: '미측정',
+          discrepancyDetail: '대상 호스트 스냅샷에 LimitBlankPasswordUse 정보가 없습니다.',
+        };
+      }
+      const hostLimit = hostSnap.limitBlankPasswordUse;
+      const localLimit = localStatus.limitBlankPasswordUse;
+      if (hostLimit && hostSnap.allowInsecureGuestAuth) {
+        return {
+          status: 'conflict',
+          badgeLabel: '호스트 Error 86 제한',
+          expectedHostValue: '허용 (0)',
+          discrepancyDetail:
+            '대상 호스트의 빈 암호 제한(LimitBlankPasswordUse=1) 때문에 무비밀번호 공유 연결 시 오류 86이 발생할 수 있습니다.',
+        };
+      }
+      if (hostLimit === localLimit) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: hostLimit ? '제한됨 (1)' : '허용 (0)',
+          discrepancyDetail: 'LSA 빈 암호 네트워크 로그온 제한 정책이 양단 동일합니다.',
+        };
+      }
+      return {
+        status: 'warning',
+        badgeLabel: hostLimit ? '호스트 제한 · 로컬 허용' : '호스트 허용 · 로컬 제한',
+        expectedHostValue: hostLimit ? '제한됨 (1)' : '허용 (0)',
+        discrepancyDetail: hostLimit
+          ? '대상 호스트는 빈 암호 로그온을 제한 중이며 현재 PC는 허용 상태입니다.'
+          : '대상 호스트는 빈 암호 로그온을 허용(0) 중이나 현재 PC는 제한(1) 상태입니다.',
+      };
+    }
+
+    case 'audit_lsa_anonymous_null': {
+      if (typeof hostSnap.restrictNullSessAccess !== 'boolean' && typeof hostSnap.restrictAnonymous !== 'boolean') {
+        return {
+          status: 'unmeasured',
+          badgeLabel: '호스트 미측정',
+          expectedHostValue: '미측정',
+          discrepancyDetail: '대상 호스트 스냅샷에 LSA 익명/Null 세션 값이 없습니다.',
+        };
+      }
+      const hostBlocked = Boolean(hostSnap.restrictNullSessAccess || hostSnap.restrictAnonymous);
+      const localBlocked = Boolean(
+        localStatus.everyoneIncludesAnonymous !== true &&
+          (localStatus.restrictNullSessAccess !== false || localStatus.restrictAnonymous)
+      );
+      if (hostBlocked === localBlocked) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: hostBlocked ? '차단됨' : '완화됨 (Null 허용)',
+          discrepancyDetail: 'LSA 익명 및 Null 세션 차단 자세가 양단 호환됩니다.',
+        };
+      }
+      return {
+        status: hostBlocked && hostSnap.allowInsecureGuestAuth ? 'conflict' : 'warning',
+        badgeLabel: hostBlocked ? '호스트 1223 차단 · 로컬 완화' : '호스트 완화 · 로컬 차단',
+        expectedHostValue: hostBlocked ? '차단됨' : '완화됨 (Null 허용)',
+        discrepancyDetail: hostBlocked
+          ? '대상 호스트는 익명/Null 세션을 차단 중입니다(무비밀번호 연결 시 오류 1223 가능).'
+          : '대상 호스트는 Null 세션을 완화해 두었으나 현재 PC는 보안 원복 차단 상태입니다.',
+      };
+    }
+
+    case 'audit_ntlm_level': {
+      const hostLm = typeof hostSnap.lmCompatibilityLevel === 'number' ? hostSnap.lmCompatibilityLevel : null;
+      const localLm = localStatus.lmCompatibilityLevel;
+      if (hostLm === null || localLm === null) {
+        return {
+          status: 'aligned',
+          badgeLabel: 'OS 기본 NTLM 호환',
+          expectedHostValue: hostLm !== null ? `Lm=${hostLm}` : 'OS 기본값',
+          discrepancyDetail: 'Windows 기본 NTLMv2 협상 범위 내에서 동작합니다.',
+        };
+      }
+      if (hostLm === localLm) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: `LmCompatibilityLevel=${hostLm}`,
+          discrepancyDetail: `양단 PC 모두 LmCompatibilityLevel=${hostLm}으로 일치합니다.`,
+        };
+      }
+      if (Math.abs(hostLm - localLm) >= 2 || hostLm < 3 || localLm < 3) {
+        return {
+          status: 'conflict',
+          badgeLabel: `NTLM 충돌 (호스트 ${hostLm} ↔ 로컬 ${localLm})`,
+          expectedHostValue: `LmCompatibilityLevel=${hostLm}`,
+          discrepancyDetail: 'NTLM 인증 수준 차이가 커서 자격 증명 협상 오류가 발생할 수 있습니다.',
+        };
+      }
+      return {
+        status: 'warning',
+        badgeLabel: `NTLM 차이 (호스트 ${hostLm} ↔ 로컬 ${localLm})`,
+        expectedHostValue: `LmCompatibilityLevel=${hostLm}`,
+        discrepancyDetail: '대상 호스트와 NTLM 호환성 레벨 숫자가 다릅니다(NTLMv2 협상 가능).',
+      };
+    }
+
+    case 'audit_uac_token_filter': {
+      if (typeof hostSnap.localAccountTokenFilterEnabled !== 'boolean') {
+        return {
+          status: 'unmeasured',
+          badgeLabel: '호스트 미측정',
+          expectedHostValue: '미측정',
+          discrepancyDetail: '대상 호스트의 UAC 원격 토큰 필터 정보가 없습니다.',
+        };
+      }
+      const hostUac = hostSnap.localAccountTokenFilterEnabled;
+      const localUac = Boolean(localStatus.localAccountTokenFilterEnabled);
+      if (hostUac === localUac) {
+        return {
+          status: 'aligned',
+          badgeLabel: '호스트 일치',
+          expectedHostValue: hostUac ? '필터 완화 (1)' : '기본 보호 (0)',
+          discrepancyDetail: '양단 PC의 UAC 원격 토큰 필터 설정이 동일합니다.',
+        };
+      }
+      return {
+        status: 'warning',
+        badgeLabel: hostUac ? '호스트 완화(1) · 로컬 보호(0)' : '호스트 보호(0) · 로컬 완화(1)',
+        expectedHostValue: hostUac ? '필터 완화 (1)' : '기본 보호 (0)',
+        discrepancyDetail: hostUac
+          ? '대상 호스트는 UAC 원격 토큰 필터가 완화(1)되어 있으나 현재 PC는 기본 보호(0) 상태입니다.'
+          : '대상 호스트는 기본 보호(0) 상태이나 현재 PC는 필터 완화(1)가 켜져 있습니다.',
+      };
+    }
+
+    case 'audit_rpc_fw_smb1':
+    default: {
+      const hostRpcRelaxed = hostSnap.rpcAuthnLevelPrivacyDisabled;
+      const localRpcRelaxed = localStatus.rpcAuthnLevelPrivacyDisabled;
+      const hostFwBlocked = hostSnap.firewall445Allowed === false;
+      const localFwBlocked = localStatus.firewall445Allowed === false;
+
+      if (hostFwBlocked || localFwBlocked) {
+        return {
+          status: 'conflict',
+          badgeLabel: '방화벽 445 차단 충돌',
+          expectedHostValue: 'TCP 445 개방',
+          discrepancyDetail: hostFwBlocked
+            ? '대상 호스트의 TCP 445 방화벽 규칙이 닫혀 있어 연결 시 오류 53이 발생합니다.'
+            : '현재 PC의 TCP 445 방화벽 규칙이 닫혀 있습니다.',
+        };
+      }
+      if (hostRpcRelaxed !== localRpcRelaxed) {
+        return {
+          status: hostRpcRelaxed && !localRpcRelaxed ? 'conflict' : 'warning',
+          badgeLabel: hostRpcRelaxed ? '프린터 RPC 불일치 (0x11b)' : 'RPC 정책 차이',
+          expectedHostValue: hostRpcRelaxed ? 'RPC 완화 · 445 개방' : '엄격 RPC · 445 개방',
+          discrepancyDetail: hostRpcRelaxed
+            ? '대상 호스트는 프린터 RPC 호환 완화 상태이나 현재 PC는 엄격 RPC 상태입니다(프린터 공유 시 0x0000011b 주의).'
+            : '대상 호스트는 엄격 RPC 상태이나 현재 PC는 프린터 RPC 완화가 적용되어 있습니다.',
+        };
+      }
+      return {
+        status: 'aligned',
+        badgeLabel: '호스트 일치 (RPC·445)',
+        expectedHostValue: hostRpcRelaxed ? 'RPC 완화 · 445 개방' : '엄격 RPC · 445 개방',
+        discrepancyDetail: '프린터 RPC 보안 및 TCP 445 방화벽 기준이 대상 호스트와 일치합니다.',
+      };
+    }
+  }
+}
+
+export function evaluateSecurityRollbackAudit(
+  status: OsNetworkPolicyStatus,
+  context?: {
+    activeShareCount?: number;
+    activeMountCount?: number;
+    targetHostSnapshot?: HostPolicySnapshot | null;
+  }
+): SecurityRollbackAuditReport {
+  const activeShareCount = Math.max(0, context?.activeShareCount ?? 0);
+  const activeMountCount = Math.max(0, context?.activeMountCount ?? 0);
+  const targetHostSnapshot = context?.targetHostSnapshot ?? null;
+  const hasAhbiFirewallRule = status.ahbiFirewallRulePresent === true;
+
+  const items: SecurityRollbackAuditItem[] = [];
+
+  // 1. SMB Server Security Signing
+  items.push({
+    id: 'audit_smb_server_signing',
+    index: 1,
+    category: 'SMB 서명',
+    label: 'SMB 서버 보안 서명 강제',
+    registryOrPolicy: 'LanmanServer\\Parameters\\RequireSecuritySignature',
+    currentValue: status.smbServerSigningRequired ? '강제됨 (1)' : '완화됨 (0)',
+    expectedDefault: '강제됨 (1)',
+    status: status.smbServerSigningRequired ? 'restored' : 'relaxed',
+    detail: status.smbServerSigningRequired
+      ? '호스트 SMB 서버가 패킷 서명을 강제하여 중간자 변조를 차단합니다.'
+      : '서버 SMB 서명이 완화되어 있습니다. 표준 보안 복원 시 강제됨(1)으로 잠깁니다.',
+    ...(status.smbServerSigningRequired ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 2. SMB Client Security Signing
+  items.push({
+    id: 'audit_smb_client_signing',
+    index: 2,
+    category: 'SMB 서명',
+    label: 'SMB 클라이언트 보안 서명 강제',
+    registryOrPolicy: 'LanmanWorkstation\\Parameters\\RequireSecuritySignature',
+    currentValue: status.smbClientSigningRequired ? '강제됨 (1)' : '완화됨 (0)',
+    expectedDefault: '강제됨 (1)',
+    status: status.smbClientSigningRequired ? 'restored' : 'relaxed',
+    detail: status.smbClientSigningRequired
+      ? '클라이언트가 서명 없는 서버 연결을 거부하는 Win 11 24H2+ 기본 보안 상태입니다.'
+      : '클라이언트 SMB 서명 강제가 해제되어 있습니다. 보안 원복 시 강제됨(1)으로 복구됩니다.',
+    ...(status.smbClientSigningRequired ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 3. Insecure Guest Logon Disabled
+  const guestAuthBlocked = !status.allowInsecureGuestAuth && !status.enableInsecureGuestLogons;
+  items.push({
+    id: 'audit_insecure_guest_auth',
+    index: 3,
+    category: '게스트 제한',
+    label: '비인증 게스트 로그온 차단',
+    registryOrPolicy: 'LanmanWorkstation (서비스 · 정책 AllowInsecureGuestAuth)',
+    currentValue: guestAuthBlocked ? '차단됨 (0)' : '허용됨 (1)',
+    expectedDefault: '차단됨 (0)',
+    status: guestAuthBlocked ? 'restored' : 'relaxed',
+    detail: guestAuthBlocked
+      ? '비인증 게스트 로그온(서비스 및 정책 GPO 키)이 모두 차단 상태로 복구되었습니다.'
+      : '비인증 게스트 로그온이 허용되어 있습니다. 공유 종료 후 차단(0)으로 원복해야 합니다.',
+    ...(guestAuthBlocked ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 4. Built-in Guest Account (*-501) Disabled
+  const guestAccUnknown = typeof status.guestAccountEnabled !== 'boolean';
+  const guestAccOff = status.guestAccountEnabled === false;
+  items.push({
+    id: 'audit_guest_account_501',
+    index: 4,
+    category: '게스트 제한',
+    label: '내장 Guest 계정 (SID *-501) 비활성',
+    registryOrPolicy: 'LocalUser SID *-501 (Disabled)',
+    currentValue: guestAccUnknown ? '미측정' : guestAccOff ? '비활성 (OFF)' : '활성 (ON)',
+    expectedDefault: '비활성 (OFF)',
+    status: guestAccUnknown ? 'unknown' : guestAccOff ? 'restored' : 'relaxed',
+    detail: guestAccUnknown
+      ? 'Guest 계정 상태를 직접 확인하지 못했습니다. 재검사 또는 호스트 보안 원복을 권장합니다.'
+      : guestAccOff
+        ? 'Windows 내장 Guest 계정이 비활성(Disabled)으로 안전하게 잠겨 있습니다.'
+        : '무비밀번호 공유용 Guest 계정이 아직 활성화되어 있습니다. 표준 보안 복원으로 비활성화하세요.',
+    ...(guestAccUnknown || guestAccOff ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 5. SeDenyNetworkLogonRight (Guest Network Logon Denied)
+  const guestNetDenied = status.guestNetworkLogonDenied === true;
+  items.push({
+    id: 'audit_se_deny_guest_logon',
+    index: 5,
+    category: '게스트 제한',
+    label: '로컬 보안 정책 Guest 네트워크 거부',
+    registryOrPolicy: 'Secedit User Rights (SeDenyNetworkLogonRight)',
+    currentValue: guestNetDenied ? '거부 적용 (1385 방어)' : '거부 해제 (허용)',
+    expectedDefault: '거부 적용 (Guest/Guests)',
+    status: guestNetDenied ? 'restored' : 'relaxed',
+    detail: guestNetDenied
+      ? 'SeDenyNetworkLogonRight에 Guest/Guests 네트워크 로그온 거부가 복구되어 외부 무비밀번호 접근이 차단됩니다.'
+      : '네트워크 로그온 거부 정책에서 Guest/Guests 차단이 풀려 있습니다.',
+    ...(guestNetDenied ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 6. LSA LimitBlankPasswordUse
+  const blankPwdUnknown = typeof status.limitBlankPasswordUse !== 'boolean';
+  const blankPwdLimited = status.limitBlankPasswordUse === true;
+  items.push({
+    id: 'audit_lsa_blank_password',
+    index: 6,
+    category: 'LSA 보안',
+    label: 'LSA 빈 암호 네트워크 로그온 제한',
+    registryOrPolicy: 'Control\\Lsa\\LimitBlankPasswordUse',
+    currentValue: blankPwdUnknown ? '미측정' : blankPwdLimited ? '제한됨 (1)' : '허용됨 (0)',
+    expectedDefault: '제한됨 (1)',
+    status: blankPwdUnknown ? 'unknown' : blankPwdLimited ? 'restored' : 'relaxed',
+    detail: blankPwdUnknown
+      ? 'LimitBlankPasswordUse 레지스트리 값을 확인하지 못했습니다.'
+      : blankPwdLimited
+        ? '빈 암호 계정의 원격 네트워크 로그온이 차단(1)되어 있습니다.'
+        : '빈 암호 네트워크 로그온 제한이 해제(0)되어 있습니다. 보안 원복으로 제한(1)을 복원하세요.',
+    ...(blankPwdUnknown || blankPwdLimited ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 7. LSA Anonymous & Null Session Restriction
+  const everyAnonOff = status.everyoneIncludesAnonymous !== true;
+  const nullSessRestricted = status.restrictNullSessAccess !== false;
+  const anonRestricted = status.restrictAnonymous === true;
+  const lsaAnonFullyLocked = everyAnonOff && nullSessRestricted && anonRestricted;
+  const lsaAnonPartial = everyAnonOff && nullSessRestricted && !anonRestricted;
+  items.push({
+    id: 'audit_lsa_anonymous_null',
+    index: 7,
+    category: 'LSA 보안',
+    label: 'LSA 익명 · Null 세션 차단',
+    registryOrPolicy: 'everyoneincludesanonymous=0 · restrictanonymous=1 · RestrictNullSessAccess=1',
+    currentValue: lsaAnonFullyLocked
+      ? '3종 완전 차단 (0/1/1)'
+      : lsaAnonPartial
+        ? `부분 차단 (Anon=${status.restrictAnonymous ? 1 : 0})`
+        : `완화됨 (Every=${status.everyoneIncludesAnonymous ? 1 : 0}, Null=${status.restrictNullSessAccess === false ? 0 : 1})`,
+    expectedDefault: '3종 완전 차단 (0/1/1)',
+    status: lsaAnonFullyLocked ? 'restored' : lsaAnonPartial ? 'partial' : 'relaxed',
+    detail: lsaAnonFullyLocked
+      ? 'everyoneincludesanonymous=0, restrictanonymous=1, RestrictNullSessAccess=1 모두 보안 원복 기준과 일치합니다.'
+      : lsaAnonPartial
+        ? 'everyoneincludesanonymous=0 및 Null 세션 차단은 잠겼으나 restrictanonymous=0 상태입니다(표준 원복 실행 시 1로 강화).'
+        : 'LSA 익명 또는 Null 세션 허용 키가 완화 상태입니다. 표준 보안 복원이 필요합니다.',
+    ...(lsaAnonFullyLocked ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 8. NTLM Compatibility Level
+  const lmLevel = status.lmCompatibilityLevel;
+  const lmSafe = typeof lmLevel === 'number' && lmLevel >= 3;
+  const lmDefaultUnset = lmLevel === null;
+  items.push({
+    id: 'audit_ntlm_level',
+    index: 8,
+    category: 'NTLM 인증',
+    label: 'NTLM 인증 협상 수준 (NTLMv2)',
+    registryOrPolicy: 'Control\\Lsa\\LmCompatibilityLevel',
+    currentValue: lmDefaultUnset ? 'OS 기본값 (NTLMv2)' : `LmCompatibilityLevel=${lmLevel}`,
+    expectedDefault: '3 이상 (NTLMv2 전용)',
+    status: lmSafe ? 'restored' : lmDefaultUnset ? 'partial' : 'relaxed',
+    detail: lmSafe
+      ? `LmCompatibilityLevel=${lmLevel}으로 취약한 LM/NTLMv1 응답을 거부하고 NTLMv2만 협상합니다.`
+      : lmDefaultUnset
+        ? '명시적 레지스트리 값 없이 OS 기본(Win 10/11 기본 NTLMv2)으로 동작 중입니다.'
+        : `LmCompatibilityLevel=${lmLevel}으로 낮아져 있습니다. 보안 원복(3 이상) 정렬을 권장합니다.`,
+    ...(lmSafe || lmDefaultUnset ? {} : { remediationMode: 'strict_26h2_default' }),
+  });
+
+  // 9. UAC Remote Token Filter Protection
+  const uacProtected = !status.localAccountTokenFilterEnabled;
+  items.push({
+    id: 'audit_uac_token_filter',
+    index: 9,
+    category: 'UAC 원격 보호',
+    label: 'UAC 원격 토큰 필터 보호',
+    registryOrPolicy: 'Policies\\System\\LocalAccountTokenFilterPolicy',
+    currentValue: uacProtected ? '기본 보호 (0)' : '필터 완화 (1)',
+    expectedDefault: '기본 보호 (0)',
+    status: uacProtected ? 'restored' : 'relaxed',
+    detail: uacProtected
+      ? '워크그룹 원격 접속 시 로컬 관리자 상승 토큰 필터링이 기본 보안(0)으로 유지됩니다.'
+      : 'LocalAccountTokenFilterPolicy=1이 활성화되어 원격 관리자 토큰 접근이 열려 있습니다.',
+    ...(uacProtected ? {} : { remediationMode: 'disable_uac_token_filter' }),
+  });
+
+  // 10. Printer RPC Privacy + Temporary Firewall (AhBiShare-SMB-445) + SMBv1 Disabled
+  const rpcStrict = !status.rpcAuthnLevelPrivacyDisabled;
+  const smb1Off = !status.smb1Enabled && !status.smb1ServerEnabled;
+  const fwClean = !hasAhbiFirewallRule;
+  const clean10Ok = rpcStrict && smb1Off && fwClean;
+  const issues10: string[] = [];
+  if (!rpcStrict) issues10.push('프린터 RPC 개인정보 인증 완화됨');
+  if (!fwClean) issues10.push('임시 방화벽(AhBiShare-SMB-445) 잔존');
+  if (!smb1Off) issues10.push('레거시 SMB 1.0 활성 상태');
+
+  items.push({
+    id: 'audit_rpc_fw_smb1',
+    index: 10,
+    category: 'RPC · 방화벽 · SMBv1',
+    label: '프린터 RPC · 임시 방화벽 · SMBv1 정리',
+    registryOrPolicy: 'RpcAuthnLevelPrivacyEnabled=1 · AhBiShare-SMB-445 · SMB1',
+    currentValue: clean10Ok
+      ? '엄격 RPC · 임시규칙 삭제 · SMBv1 OFF'
+      : [
+          rpcStrict ? '엄격 RPC' : 'RPC 완화',
+          fwClean ? '임시규칙 없음' : '445 규칙 잔존',
+          smb1Off ? 'SMBv1 OFF' : 'SMBv1 ON',
+        ].join(' · '),
+    expectedDefault: '엄격 RPC · 임시규칙 삭제 · SMBv1 OFF',
+    status: clean10Ok ? 'restored' : !rpcStrict ? 'relaxed' : 'partial',
+    detail: clean10Ok
+      ? '프린터 RPC 엄격 인증(1)이 유지되고, AhBiShare-SMB-445 임시 방화벽 규칙 및 SMBv1이 모두 비활성화되었습니다.'
+      : `추가 확인 필요: ${issues10.join(', ')}${!fwClean ? ' (호스트 보안 원복으로 임시 규칙 삭제 가능)' : ''}`,
+    ...(!rpcStrict ? { remediationMode: 'rpc_printer_default' as PolicyPatchMode } : {}),
+  });
+
+  if (targetHostSnapshot) {
+    for (const item of items) {
+      item.hostComparison = buildHostItemComparison(item.id, status, targetHostSnapshot);
+    }
+  }
+
+  const passedCount = items.filter((i) => i.status === 'restored').length;
+  const partialCount = items.filter((i) => i.status === 'partial' || i.status === 'unknown').length;
+  const failedCount = items.filter((i) => i.status === 'relaxed').length;
+
+  const targetConflictCount = targetHostSnapshot
+    ? items.filter((i) => i.hostComparison?.status === 'conflict').length
+    : undefined;
+  const targetDiscrepancyCount = targetHostSnapshot
+    ? items.filter((i) => i.hostComparison?.status === 'conflict' || i.hostComparison?.status === 'warning').length
+    : undefined;
+
+  const modeSet = new Set<PolicyPatchMode>();
+  for (const item of items) {
+    if (item.status !== 'restored' && item.remediationMode) {
+      modeSet.add(item.remediationMode);
+    }
+  }
+  const recommendedModes = Array.from(modeSet).sort((a, b) => {
+    const ia = PATCH_EXECUTION_ORDER.indexOf(a);
+    const ib = PATCH_EXECUTION_ORDER.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+
+  const hasResidualSharesOrMounts = activeShareCount > 0 || activeMountCount > 0 || hasAhbiFirewallRule;
+
+  let verdict: SecurityRollbackAuditReport['verdict'] = 'fully_restored';
+  let headline = `보안 원복 완벽 검증 · ${passedCount} / 10개 핵심 항목 기본값 일치`;
+  let summary = hasResidualSharesOrMounts
+    ? `핵심 OS 정책 ${passedCount}건이 보안 기본값입니다. (참고: 활성 공유 ${activeShareCount}건 · 연결 드라이브 ${activeMountCount}건${hasAhbiFirewallRule ? ' · 임시 방화벽 규칙' : ''} 확인됨)`
+    : 'SMB 서명, 게스트·빈 암호 차단, LSA 익명 제한, NTLMv2, UAC 보호 및 프린터 RPC까지 모든 보안 정책이 의도한 기본값으로 복구되었습니다.';
+
+  if (failedCount > 0) {
+    verdict = 'incomplete';
+    headline = `일부 정책 완화 상태 감지 · ${passedCount} / 10개 복구 (${failedCount}건 미복구)`;
+    summary = `${failedCount}개 핵심 항목이 아직 공유 호환(완화) 상태에 남아 있습니다. 아래 미복구 항목을 확인한 뒤 표준 보안 복원 또는 전체 보안 원복을 실행하세요.`;
+  } else if (partialCount > 0) {
+    verdict = 'mostly_restored';
+    headline = `보안 기본값 대체로 복구됨 · ${passedCount} / 10개 완전 일치 (${partialCount}건 세부 확인)`;
+    summary = `위험 완화 항목은 없으나 ${partialCount}개 항목이 OS 기본값 또는 부분 잠금 상태입니다. 필요 시 일괄 복원을 실행해 10/10 완전 잠금으로 맞출 수 있습니다.`;
+  }
+
+  return {
+    verdict,
+    headline,
+    summary,
+    passedCount,
+    partialCount,
+    failedCount,
+    totalCount: items.length,
+    activeShareCount,
+    activeMountCount,
+    recommendedModes,
+    hasResidualSharesOrMounts,
+    hasAhbiFirewallRule,
+    ...(targetHostSnapshot
+      ? {
+          targetHostName: targetHostSnapshot.hostName,
+          targetDiscrepancyCount,
+          targetConflictCount,
+        }
+      : {}),
+    evaluatedAt: status.checkedAt || formatSnapshotTimestamp(new Date().toISOString()),
+    items,
+  };
+}
+
+export function formatSecurityRollbackReportText(
+  report: SecurityRollbackAuditReport,
+  hostname: string,
+  osLabel: string
+): string {
+  const statusKor = (s: SecurityRollbackAuditItem['status']) =>
+    s === 'restored' ? '복구 완료' : s === 'partial' ? '부분/기본값' : s === 'unknown' ? '미측정' : '미복구(완화)';
+  const lines = [
+    `[AhBiShare OneClick 보안 원복 10개 핵심 항목 검증 보고서]`,
+    `대상 PC: ${hostname} · OS: ${osLabel}`,
+    `점검 일시: ${report.evaluatedAt}`,
+    `종합 판정: ${report.headline}`,
+    ...(report.targetHostName
+      ? [
+          `호스트 기대 정책 비교: ${report.targetHostName} (불일치/차이 ${report.targetDiscrepancyCount ?? 0}건 · 충돌 ${report.targetConflictCount ?? 0}건)`,
+        ]
+      : []),
+    `활성 공유: ${report.activeShareCount}건 · 연결 드라이브: ${report.activeMountCount}건 · AhBiShare-SMB-445 규칙: ${report.hasAhbiFirewallRule ? '존재' : '삭제됨'}`,
+    '',
+    ...report.items.map((item) => {
+      const base = `${String(item.index).padStart(2, '0')}. [${statusKor(item.status)}] ${item.label} | 현재: ${item.currentValue} | 보안기본값: ${item.expectedDefault}`;
+      return item.hostComparison
+        ? `${base} | 대상호스트(${item.hostComparison.badgeLabel}: ${item.hostComparison.expectedHostValue})`
+        : base;
+    }),
+  ];
+  return lines.join('\n');
+}
+
+export interface RawRegistryMapInput {
+  srvRequireSig?: number | null;
+  srvEnableSig?: number | null;
+  cliRequireSig?: number | null;
+  cliEnableSig?: number | null;
+  cliGuestSvc?: number | null;
+  cliGuestPol?: number | null;
+  guest501Disabled?: number | null;
+  seDenyNetworkLogon?: string | null;
+  limitBlankPwd?: number | null;
+  everyAnon?: number | null;
+  restrictAnon?: number | null;
+  restrictNullSess?: number | null;
+  lmCompatLevel?: number | null;
+  ntlmRestrictOutbound?: number | null;
+  uacTokenFilter?: number | null;
+  uacLinkedConn?: number | null;
+  rpcPrivacy?: number | null;
+  rpcNamedPipe?: number | null;
+  rpcProtocols?: number | null;
+  srvSmb1?: number | null;
+  ahbiFw445?: number | null;
+}
+
+export function formatRawDword(val: number | null | undefined, unsetHint?: string): string {
+  if (typeof val === 'number' && !Number.isNaN(val)) {
+    const unsigned = val >>> 0;
+    return `0x${unsigned.toString(16).padStart(8, '0').toUpperCase()} (${val})`;
+  }
+  return unsetHint ? `<미설정 · ${unsetHint}>` : '<미설정>';
+}
+
+function makeDwordEntry(
+  policyId: string,
+  registryPath: string,
+  valueName: string,
+  rawValue: number | null | undefined,
+  expectedDefaultDisplay: string,
+  unsetHint?: string
+): RawRegistryEntry {
+  const normalized = typeof rawValue === 'number' && !Number.isNaN(rawValue) ? rawValue : null;
+  return {
+    policyId,
+    registryPath,
+    valueName,
+    valueType: 'REG_DWORD',
+    rawValue: normalized,
+    displayValue: formatRawDword(normalized, unsetHint),
+    expectedDefaultDisplay,
+  };
+}
+
+export function rawRegistryRecordToSnapshot(
+  hostName: string,
+  rawMap: RawRegistryMapInput,
+  sourceType: RawSecurityRegistrySnapshot['sourceType'],
+  sourceLabel: string,
+  fetchedAt?: string,
+  options?: { targetIp?: string; remoteRpcNote?: string }
+): RawSecurityRegistrySnapshot {
+  const ts = fetchedAt || formatSnapshotTimestamp(new Date().toISOString());
+
+  const guestDisabledNum =
+    typeof rawMap.guest501Disabled === 'number' && !Number.isNaN(rawMap.guest501Disabled)
+      ? rawMap.guest501Disabled
+      : null;
+
+  const seDenyText =
+    typeof rawMap.seDenyNetworkLogon === 'string' && rawMap.seDenyNetworkLogon.trim().length > 0
+      ? rawMap.seDenyNetworkLogon.trim()
+      : rawMap.seDenyNetworkLogon === ''
+        ? '<미설정 / 비어 있음>'
+        : '<미측정>';
+
+  const ahbiFwNum =
+    typeof rawMap.ahbiFw445 === 'number' && !Number.isNaN(rawMap.ahbiFw445) ? rawMap.ahbiFw445 : null;
+
+  const entries: Record<string, RawRegistryEntry[]> = {
+    audit_smb_server_signing: [
+      makeDwordEntry(
+        'audit_smb_server_signing',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters',
+        'RequireSecuritySignature',
+        rawMap.srvRequireSig,
+        '0x00000001 (1)',
+        '기본 0 또는 1'
+      ),
+      makeDwordEntry(
+        'audit_smb_server_signing',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters',
+        'EnableSecuritySignature',
+        rawMap.srvEnableSig,
+        '0x00000001 (1)',
+        '기본 1'
+      ),
+    ],
+    audit_smb_client_signing: [
+      makeDwordEntry(
+        'audit_smb_client_signing',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters',
+        'RequireSecuritySignature',
+        rawMap.cliRequireSig,
+        '0x00000001 (1)',
+        '24H2+ 기본 1'
+      ),
+      makeDwordEntry(
+        'audit_smb_client_signing',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters',
+        'EnableSecuritySignature',
+        rawMap.cliEnableSig,
+        '0x00000001 (1)',
+        '기본 1'
+      ),
+    ],
+    audit_insecure_guest_auth: [
+      makeDwordEntry(
+        'audit_insecure_guest_auth',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters',
+        'AllowInsecureGuestAuth',
+        rawMap.cliGuestSvc,
+        '0x00000000 (0)',
+        '기본 0 (차단)'
+      ),
+      makeDwordEntry(
+        'audit_insecure_guest_auth',
+        'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation',
+        'AllowInsecureGuestAuth',
+        rawMap.cliGuestPol,
+        '0x00000000 (0) 또는 <미설정>',
+        'GPO 미구성'
+      ),
+    ],
+    audit_guest_account_501: [
+      {
+        policyId: 'audit_guest_account_501',
+        registryPath: 'HKLM\\SAM\\SAM\\Domains\\Account\\Users\\000001F5 (SID *-501)',
+        valueName: 'AccountDisabled (SAM UserFlags)',
+        valueType: 'SAM',
+        rawValue: guestDisabledNum,
+        displayValue:
+          guestDisabledNum === 1
+            ? '0x00000001 (Disabled / 잠금)'
+            : guestDisabledNum === 0
+              ? '0x00000000 (Enabled / 활성)'
+              : '<미측정>',
+        expectedDefaultDisplay: '0x00000001 (Disabled)',
+      },
+    ],
+    audit_se_deny_guest_logon: [
+      {
+        policyId: 'audit_se_deny_guest_logon',
+        registryPath: 'Secedit [Privilege Rights] (LSA Policy)',
+        valueName: 'SeDenyNetworkLogonRight',
+        valueType: 'SECEDIT',
+        rawValue: typeof rawMap.seDenyNetworkLogon === 'string' ? rawMap.seDenyNetworkLogon : null,
+        displayValue: seDenyText,
+        expectedDefaultDisplay: '*S-1-5-32-546,*S-1-5-7 (Guest 포함)',
+      },
+    ],
+    audit_lsa_blank_password: [
+      makeDwordEntry(
+        'audit_lsa_blank_password',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
+        'LimitBlankPasswordUse',
+        rawMap.limitBlankPwd,
+        '0x00000001 (1)',
+        '기본 1 (제한)'
+      ),
+    ],
+    audit_lsa_anonymous_null: [
+      makeDwordEntry(
+        'audit_lsa_anonymous_null',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
+        'everyoneincludesanonymous',
+        rawMap.everyAnon,
+        '0x00000000 (0)',
+        '기본 0'
+      ),
+      makeDwordEntry(
+        'audit_lsa_anonymous_null',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
+        'restrictanonymous',
+        rawMap.restrictAnon,
+        '0x00000001 (1)',
+        '기본 0 또는 1'
+      ),
+      makeDwordEntry(
+        'audit_lsa_anonymous_null',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters',
+        'RestrictNullSessAccess',
+        rawMap.restrictNullSess,
+        '0x00000001 (1)',
+        '기본 1 (차단)'
+      ),
+    ],
+    audit_ntlm_level: [
+      makeDwordEntry(
+        'audit_ntlm_level',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
+        'LmCompatibilityLevel',
+        rawMap.lmCompatLevel,
+        '0x00000003 (3) 이상',
+        'OS 기본(NTLMv2)'
+      ),
+      makeDwordEntry(
+        'audit_ntlm_level',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0',
+        'RestrictSendingNTLMTraffic',
+        rawMap.ntlmRestrictOutbound,
+        '<미설정> 또는 0x00000000 (0)',
+        '제한 없음'
+      ),
+    ],
+    audit_uac_token_filter: [
+      makeDwordEntry(
+        'audit_uac_token_filter',
+        'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System',
+        'LocalAccountTokenFilterPolicy',
+        rawMap.uacTokenFilter,
+        '0x00000000 (0) 또는 <미설정>',
+        '기본 0 (필터 보호)'
+      ),
+      makeDwordEntry(
+        'audit_uac_token_filter',
+        'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System',
+        'EnableLinkedConnections',
+        rawMap.uacLinkedConn,
+        '<미설정> 또는 0x00000001 (1)',
+        '기본 미설정'
+      ),
+    ],
+    audit_rpc_fw_smb1: [
+      makeDwordEntry(
+        'audit_rpc_fw_smb1',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Print',
+        'RpcAuthnLevelPrivacyEnabled',
+        rawMap.rpcPrivacy,
+        '0x00000001 (1) 또는 <미설정>',
+        '기본 1 (엄격 RPC)'
+      ),
+      makeDwordEntry(
+        'audit_rpc_fw_smb1',
+        'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC',
+        'RpcUseNamedPipeProtocol',
+        rawMap.rpcNamedPipe,
+        '0x00000000 (0) 또는 <미설정>',
+        '기본 0 (RPC/TCP)'
+      ),
+      makeDwordEntry(
+        'audit_rpc_fw_smb1',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters',
+        'SMB1',
+        rawMap.srvSmb1,
+        '0x00000000 (0) 또는 <미설정>',
+        '기본 미사용'
+      ),
+      {
+        policyId: 'audit_rpc_fw_smb1',
+        registryPath: 'Windows Defender Firewall (Inbound TCP 445)',
+        valueName: 'AhBiShare-SMB-445',
+        valueType: 'FIREWALL',
+        rawValue: ahbiFwNum,
+        displayValue:
+          ahbiFwNum === 1
+            ? 'Rule Present (Allow TCP 445)'
+            : ahbiFwNum === 0
+              ? 'Rule Absent (삭제됨)'
+              : '<미측정>',
+        expectedDefaultDisplay: 'Rule Absent (원복 시 삭제)',
+      },
+    ],
+  };
+
+  return {
+    hostName,
+    ...(options?.targetIp ? { targetIp: options.targetIp } : {}),
+    sourceType,
+    sourceLabel,
+    fetchedAt: ts,
+    ...(options?.remoteRpcNote ? { remoteRpcNote: options.remoteRpcNote } : {}),
+    entries,
+  };
+}
+
+export function deriveRawRegistrySnapshotFromStatus(
+  hostName: string,
+  status: OsNetworkPolicyStatus
+): RawSecurityRegistrySnapshot {
+  if (status.rawRegistrySnapshot) {
+    return status.rawRegistrySnapshot;
+  }
+  return rawRegistryRecordToSnapshot(
+    hostName,
+    {
+      srvRequireSig: status.smbServerSigningRequired ? 1 : 0,
+      srvEnableSig: 1,
+      cliRequireSig: status.smbClientSigningRequired ? 1 : 0,
+      cliEnableSig: 1,
+      cliGuestSvc: status.allowInsecureGuestAuth ? 1 : 0,
+      cliGuestPol: status.allowInsecureGuestAuth ? 1 : 0,
+      guest501Disabled:
+        typeof status.guestAccountEnabled === 'boolean' ? (status.guestAccountEnabled ? 0 : 1) : null,
+      seDenyNetworkLogon:
+        typeof status.guestNetworkLogonDenied === 'boolean'
+          ? status.guestNetworkLogonDenied
+            ? '*S-1-5-32-546,*S-1-5-7'
+            : '(Guest 제외됨)'
+          : null,
+      limitBlankPwd:
+        typeof status.limitBlankPasswordUse === 'boolean' ? (status.limitBlankPasswordUse ? 1 : 0) : null,
+      everyAnon:
+        typeof status.everyoneIncludesAnonymous === 'boolean'
+          ? status.everyoneIncludesAnonymous
+            ? 1
+            : 0
+          : 0,
+      restrictAnon:
+        typeof status.restrictAnonymous === 'boolean' ? (status.restrictAnonymous ? 1 : 0) : null,
+      restrictNullSess:
+        typeof status.restrictNullSessAccess === 'boolean' ? (status.restrictNullSessAccess ? 1 : 0) : null,
+      lmCompatLevel: status.lmCompatibilityLevel,
+      ntlmRestrictOutbound: status.ntlmRestrictOutbound,
+      uacTokenFilter:
+        typeof status.localAccountTokenFilterEnabled === 'boolean'
+          ? status.localAccountTokenFilterEnabled
+            ? 1
+            : 0
+          : null,
+      uacLinkedConn: null,
+      rpcPrivacy: status.rpcAuthnLevelPrivacyDisabled ? 0 : 1,
+      rpcNamedPipe: status.rpcUseNamedPipeProtocol ? 1 : 0,
+      rpcProtocols: status.rpcProtocols,
+      srvSmb1: status.smb1Enabled || status.smb1ServerEnabled ? 1 : 0,
+      ahbiFw445:
+        typeof status.ahbiFirewallRulePresent === 'boolean'
+          ? status.ahbiFirewallRulePresent
+            ? 1
+            : 0
+          : null,
+    },
+    'snapshot_derived',
+    '정책 상태 역산 값',
+    status.checkedAt
+  );
+}
+
+export function deriveRawRegistrySnapshotFromHostSnap(
+  snap: HostPolicySnapshot,
+  isPreset: boolean
+): RawSecurityRegistrySnapshot {
+  if (snap.rawRegistrySnapshot && !isPreset) {
+    return {
+      ...snap.rawRegistrySnapshot,
+      ...(snap.sourceIp ? { targetIp: snap.sourceIp } : {}),
+      sourceType: 'usb_live_capture',
+      sourceLabel: 'USB 호스트 실측 레지스트리',
+    };
+  }
+  return rawRegistryRecordToSnapshot(
+    snap.hostName,
+    {
+      srvRequireSig: snap.smbServerSigningRequired ? 1 : 0,
+      srvEnableSig: 1,
+      cliRequireSig: snap.smbServerSigningRequired ? 1 : 0,
+      cliEnableSig: 1,
+      cliGuestSvc: snap.allowInsecureGuestAuth ? 1 : 0,
+      cliGuestPol: snap.allowInsecureGuestAuth ? 1 : 0,
+      guest501Disabled:
+        typeof snap.guestAccountEnabled === 'boolean' ? (snap.guestAccountEnabled ? 0 : 1) : null,
+      seDenyNetworkLogon:
+        typeof snap.guestNetworkLogonDenied === 'boolean'
+          ? snap.guestNetworkLogonDenied
+            ? '*S-1-5-32-546,*S-1-5-7'
+            : '(Guest 제외됨)'
+          : null,
+      limitBlankPwd:
+        typeof snap.limitBlankPasswordUse === 'boolean' ? (snap.limitBlankPasswordUse ? 1 : 0) : null,
+      everyAnon: snap.allowInsecureGuestAuth ? 1 : 0,
+      restrictAnon:
+        typeof snap.restrictAnonymous === 'boolean' ? (snap.restrictAnonymous ? 1 : 0) : null,
+      restrictNullSess:
+        typeof snap.restrictNullSessAccess === 'boolean' ? (snap.restrictNullSessAccess ? 1 : 0) : null,
+      lmCompatLevel: snap.lmCompatibilityLevel ?? null,
+      ntlmRestrictOutbound: null,
+      uacTokenFilter:
+        typeof snap.localAccountTokenFilterEnabled === 'boolean'
+          ? snap.localAccountTokenFilterEnabled
+            ? 1
+            : 0
+          : null,
+      uacLinkedConn: null,
+      rpcPrivacy: snap.rpcAuthnLevelPrivacyDisabled ? 0 : 1,
+      rpcNamedPipe: snap.rpcUseNamedPipeProtocol ? 1 : 0,
+      rpcProtocols: null,
+      srvSmb1: snap.osBuild < 10240 ? 1 : 0,
+      ahbiFw445: typeof snap.firewall445Allowed === 'boolean' ? (snap.firewall445Allowed ? 1 : 0) : null,
+    },
+    isPreset ? 'preset_reference' : 'snapshot_derived',
+    isPreset ? '권장 기준 프리셋 기대값' : 'USB 스냅샷 역산 추정값',
+    snap.capturedAt ? formatSnapshotTimestamp(snap.capturedAt) : formatSnapshotTimestamp(new Date().toISOString()),
+    snap.sourceIp ? { targetIp: snap.sourceIp } : undefined
+  );
+}
+
+const EXPERT_POLICY_ORDER: Array<{ id: string; index: number; category: string; label: string }> = [
+  { id: 'audit_smb_server_signing', index: 1, category: 'SMB 서명', label: 'SMB 서버 보안 서명 강제' },
+  { id: 'audit_smb_client_signing', index: 2, category: 'SMB 서명', label: 'SMB 클라이언트 보안 서명 강제' },
+  { id: 'audit_insecure_guest_auth', index: 3, category: '게스트 제한', label: '비인증 게스트 로그온 차단' },
+  { id: 'audit_guest_account_501', index: 4, category: '게스트 제한', label: '내장 Guest 계정 (SID *-501) 비활성' },
+  { id: 'audit_se_deny_guest_logon', index: 5, category: '게스트 제한', label: '로컬 보안 정책 Guest 네트워크 거부' },
+  { id: 'audit_lsa_blank_password', index: 6, category: 'LSA 보안', label: 'LSA 빈 암호 네트워크 로그온 제한' },
+  { id: 'audit_lsa_anonymous_null', index: 7, category: 'LSA 보안', label: 'LSA 익명 · Null 세션 차단' },
+  { id: 'audit_ntlm_level', index: 8, category: 'NTLM 인증', label: 'NTLM 인증 협상 수준 (NTLMv2)' },
+  { id: 'audit_uac_token_filter', index: 9, category: 'UAC 원격 보호', label: 'UAC 원격 토큰 필터 보호' },
+  { id: 'audit_rpc_fw_smb1', index: 10, category: 'RPC · 방화벽 · SMBv1', label: '프린터 RPC · 임시 방화벽 · SMBv1 정리' },
+];
+
+function computeRawEntrySubStatus(
+  localEntry: RawRegistryEntry | undefined,
+  hostEntry: RawRegistryEntry | undefined,
+  policyComparison?: HostPolicyComparison
+): HostDiscrepancyLevel {
+  if (!hostEntry || hostEntry.displayValue === '<미측정>') {
+    return 'unmeasured';
+  }
+  if (!localEntry || localEntry.displayValue === '<미측정>') {
+    return 'unmeasured';
+  }
+  const sameRaw =
+    localEntry.rawValue === hostEntry.rawValue && localEntry.rawValue !== undefined;
+  const sameText = localEntry.displayValue === hostEntry.displayValue;
+  if (sameRaw || sameText) {
+    return 'aligned';
+  }
+  if (policyComparison?.status === 'conflict') return 'conflict';
+  return 'warning';
+}
+
+export function buildExpertRegistryComparisonRows(
+  localRaw: RawSecurityRegistrySnapshot,
+  hostRaw: RawSecurityRegistrySnapshot,
+  auditReport?: SecurityRollbackAuditReport | null
+): ExpertRegistryPolicyRow[] {
+  const itemById = new Map<string, SecurityRollbackAuditItem>();
+  for (const item of auditReport?.items || []) {
+    itemById.set(item.id, item);
+  }
+
+  return EXPERT_POLICY_ORDER.map((meta) => {
+    const auditItem = itemById.get(meta.id);
+    const localEntries = localRaw.entries[meta.id] || [];
+    const hostEntries = hostRaw.entries[meta.id] || [];
+
+    const subRows: ExpertRegistrySubRow[] = [];
+    const maxLen = Math.max(localEntries.length, hostEntries.length);
+
+    for (let i = 0; i < maxLen; i++) {
+      const l = localEntries[i];
+      const h =
+        (l &&
+          hostEntries.find(
+            (cand) => cand.registryPath === l.registryPath && cand.valueName === l.valueName
+          )) ||
+        hostEntries[i];
+      const base = l || h;
+      if (!base) continue;
+
+      subRows.push({
+        id: `${meta.id}::${base.valueName}::${i}`,
+        registryPath: base.registryPath,
+        valueName: base.valueName,
+        valueType: base.valueType,
+        localDisplayValue: l ? l.displayValue : '<미측정>',
+        hostDisplayValue: h ? h.displayValue : '<미측정>',
+        expectedDefaultDisplay: base.expectedDefaultDisplay,
+        status: computeRawEntrySubStatus(l, h, auditItem?.hostComparison),
+      });
+    }
+
+    let overallStatus: HostDiscrepancyLevel = auditItem?.hostComparison?.status || 'aligned';
+    if (!auditItem?.hostComparison) {
+      if (subRows.some((s) => s.status === 'conflict')) overallStatus = 'conflict';
+      else if (subRows.some((s) => s.status === 'warning')) overallStatus = 'warning';
+      else if (subRows.every((s) => s.status === 'unmeasured')) overallStatus = 'unmeasured';
+      else overallStatus = 'aligned';
+    }
+
+    const statusBadgeLabel =
+      auditItem?.hostComparison?.badgeLabel ||
+      (overallStatus === 'conflict'
+        ? '원시값 충돌'
+        : overallStatus === 'warning'
+          ? '원시값 차이'
+          : overallStatus === 'unmeasured'
+            ? '호스트 미측정'
+            : '원시값 일치');
+
+    const note =
+      auditItem?.hostComparison?.discrepancyDetail ||
+      (overallStatus === 'aligned'
+        ? '로컬 PC와 대상 호스트의 해당 레지스트리 원시값이 일치합니다.'
+        : '레지스트리 키 원시값 차이가 확인되었습니다.');
+
+    return {
+      index: meta.index,
+      policyId: meta.id,
+      category: meta.category,
+      label: meta.label,
+      overallStatus,
+      statusBadgeLabel,
+      note,
+      subRows,
+    };
+  });
+}
+
+export function formatExpertRegistryComparisonText(
+  rows: ExpertRegistryPolicyRow[],
+  localRaw: RawSecurityRegistrySnapshot,
+  hostRaw: RawSecurityRegistrySnapshot
+): string {
+  const lines: string[] = [
+    `[AhBiShare OneClick 전문가 비교 보기 - 10대 보안 정책 원시 레지스트리 대조]`,
+    `로컬 PC: ${localRaw.hostName} (${localRaw.sourceLabel} · ${localRaw.fetchedAt})`,
+    `대상 호스트: ${hostRaw.hostName}${hostRaw.targetIp ? ` (${hostRaw.targetIp})` : ''} (${hostRaw.sourceLabel} · ${hostRaw.fetchedAt})`,
+    ...(hostRaw.remoteRpcNote ? [`원격 조회 참고: ${hostRaw.remoteRpcNote}`] : []),
+    '',
+  ];
+
+  for (const row of rows) {
+    lines.push(`${String(row.index).padStart(2, '0')}. [${row.statusBadgeLabel}] ${row.label}`);
+    for (const sub of row.subRows) {
+      lines.push(
+        `   - ${sub.registryPath}\\${sub.valueName} (${sub.valueType}): 로컬=${sub.localDisplayValue} | 호스트=${sub.hostDisplayValue} | 기본=${sub.expectedDefaultDisplay}`
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+

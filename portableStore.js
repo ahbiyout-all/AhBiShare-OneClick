@@ -191,6 +191,44 @@ function sanitizeHostPolicySnapshot(snap) {
   if (typeof snap.firewall445Allowed === 'boolean') {
     out.firewall445Allowed = snap.firewall445Allowed;
   }
+  if (snap.rawRegistrySnapshot && typeof snap.rawRegistrySnapshot === 'object') {
+    const rawEntries = snap.rawRegistrySnapshot.entries;
+    if (rawEntries && typeof rawEntries === 'object') {
+      const cleanEntries = {};
+      for (const [policyId, arr] of Object.entries(rawEntries)) {
+        if (!Array.isArray(arr)) continue;
+        cleanEntries[String(policyId)] = arr
+          .filter((item) => item && typeof item === 'object' && item.registryPath && item.valueName)
+          .slice(0, 8)
+          .map((item) => ({
+            policyId: String(item.policyId || policyId),
+            registryPath: String(item.registryPath),
+            valueName: String(item.valueName),
+            valueType: String(item.valueType || 'REG_DWORD'),
+            rawValue:
+              item.rawValue === null ||
+              typeof item.rawValue === 'number' ||
+              typeof item.rawValue === 'boolean' ||
+              typeof item.rawValue === 'string'
+                ? item.rawValue
+                : null,
+            displayValue: String(item.displayValue || ''),
+            expectedDefaultDisplay: String(item.expectedDefaultDisplay || ''),
+          }));
+      }
+      out.rawRegistrySnapshot = {
+        hostName: String(snap.rawRegistrySnapshot.hostName || out.hostName),
+        ...(snap.rawRegistrySnapshot.targetIp ? { targetIp: String(snap.rawRegistrySnapshot.targetIp) } : {}),
+        sourceType: String(snap.rawRegistrySnapshot.sourceType || 'usb_live_capture'),
+        sourceLabel: String(snap.rawRegistrySnapshot.sourceLabel || 'USB 호스트 실측 레지스트리'),
+        fetchedAt: String(snap.rawRegistrySnapshot.fetchedAt || out.capturedAt),
+        ...(snap.rawRegistrySnapshot.remoteRpcNote
+          ? { remoteRpcNote: String(snap.rawRegistrySnapshot.remoteRpcNote) }
+          : {}),
+        entries: cleanEntries,
+      };
+    }
+  }
   return out;
 }
 

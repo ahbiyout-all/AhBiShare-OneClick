@@ -163,8 +163,10 @@ export interface OsNetworkPolicyStatus {
   limitBlankPasswordUse?: boolean;
   restrictNullSessAccess?: boolean;
   restrictAnonymous?: boolean;
+  everyoneIncludesAnonymous?: boolean;
   guestAccountEnabled?: boolean;
   firewall445Allowed?: boolean;
+  ahbiFirewallRulePresent?: boolean;
   lmCompatibilityLevel: number | null;
   ntlmRestrictOutbound: number | null;
   netbiosEnabled: boolean;
@@ -184,6 +186,7 @@ export interface OsNetworkPolicyStatus {
   compatibilityScore: number;
   detectedIssues: string[];
   checkedAt: string;
+  rawRegistrySnapshot?: RawSecurityRegistrySnapshot;
 }
 
 export interface LegacyRollbackSnapshot {
@@ -258,6 +261,7 @@ export interface HostPolicySnapshot {
   guestAccountEnabled?: boolean;
   firewall445Allowed?: boolean;
   capturedAt: string;
+  rawRegistrySnapshot?: RawSecurityRegistrySnapshot;
 }
 
 export interface PendingHostPolicyTask {
@@ -477,4 +481,111 @@ export interface LocationBatchApplyResult {
   summary: string;
   details: LocationBatchApplyItemResult[];
 }
+
+export type SecurityRollbackCheckStatus = 'restored' | 'partial' | 'relaxed' | 'unknown';
+export type HostDiscrepancyLevel = 'aligned' | 'warning' | 'conflict' | 'unmeasured';
+
+export interface HostPolicyComparison {
+  status: HostDiscrepancyLevel;
+  badgeLabel: string;
+  expectedHostValue: string;
+  discrepancyDetail: string;
+}
+
+export interface SecurityRollbackAuditItem {
+  id: string;
+  index: number;
+  category: string;
+  label: string;
+  registryOrPolicy: string;
+  currentValue: string;
+  expectedDefault: string;
+  status: SecurityRollbackCheckStatus;
+  detail: string;
+  remediationMode?: PolicyPatchMode;
+  hostComparison?: HostPolicyComparison;
+}
+
+export interface SecurityRollbackAuditReport {
+  verdict: 'fully_restored' | 'mostly_restored' | 'incomplete';
+  headline: string;
+  summary: string;
+  passedCount: number;
+  partialCount: number;
+  failedCount: number;
+  totalCount: number;
+  activeShareCount: number;
+  activeMountCount: number;
+  recommendedModes: PolicyPatchMode[];
+  hasResidualSharesOrMounts: boolean;
+  hasAhbiFirewallRule: boolean;
+  targetHostName?: string;
+  targetDiscrepancyCount?: number;
+  targetConflictCount?: number;
+  evaluatedAt: string;
+  items: SecurityRollbackAuditItem[];
+}
+
+export type RawRegistryValueKind = 'REG_DWORD' | 'REG_SZ' | 'SECEDIT' | 'SAM' | 'FIREWALL';
+
+export type RawRegistrySourceType =
+  | 'local_live'
+  | 'remote_live_rpc'
+  | 'usb_live_capture'
+  | 'snapshot_derived'
+  | 'preset_reference';
+
+export interface RawRegistryEntry {
+  policyId: string;
+  registryPath: string;
+  valueName: string;
+  valueType: RawRegistryValueKind;
+  rawValue: string | number | boolean | null;
+  displayValue: string;
+  expectedDefaultDisplay: string;
+}
+
+export interface RawSecurityRegistrySnapshot {
+  hostName: string;
+  targetIp?: string;
+  sourceType: RawRegistrySourceType;
+  sourceLabel: string;
+  fetchedAt: string;
+  remoteRpcNote?: string;
+  entries: Record<string, RawRegistryEntry[]>;
+}
+
+export interface ExpertRegistrySubRow {
+  id: string;
+  registryPath: string;
+  valueName: string;
+  valueType: RawRegistryValueKind;
+  localDisplayValue: string;
+  hostDisplayValue: string;
+  expectedDefaultDisplay: string;
+  status: HostDiscrepancyLevel;
+}
+
+export interface ExpertRegistryPolicyRow {
+  index: number;
+  policyId: string;
+  category: string;
+  label: string;
+  overallStatus: HostDiscrepancyLevel;
+  statusBadgeLabel: string;
+  note: string;
+  subRows: ExpertRegistrySubRow[];
+}
+
+export interface ExpertRegistryFetchResult {
+  localSnapshot: RawSecurityRegistrySnapshot;
+  hostSnapshot: RawSecurityRegistrySnapshot;
+  remoteRpcAttempted: boolean;
+  remoteRpcSucceeded: boolean;
+  remoteRpcNote?: string;
+  fetchedAt: string;
+}
+
+
+
 

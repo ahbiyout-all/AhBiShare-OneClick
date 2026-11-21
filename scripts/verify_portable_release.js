@@ -419,30 +419,65 @@ assert(
 );
 pass('Windows 7 SP1 ~ 11 26H2 PowerShell 2.0/5.1 fallbacks, Win32 WNetAddConnection2, Guest blank-password, SeDenyNetworkLogonRight & OS patch safeguards verified');
 
-// 5. Verify NetworkMatrixPanel host-client mismatch detection & 1-click batch auto-align wiring
+// 5. Verify NetworkMatrixPanel host-client mismatch detection, 1-click batch auto-align & 10-point rollback audit wiring
 const netEvoSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'networkEvolution.ts'), 'utf8');
 const bridgeSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'shareBridge.ts'), 'utf8');
 const matrixPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
+const rollbackReportSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'SecurityRollbackReport.tsx'), 'utf8');
+const rollbackPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'RollbackPanel.tsx'), 'utf8');
 
-for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'HOST_POLICY_REFERENCE_TARGETS', 'diff_ntlm', 'diff_uac_token', 'diff_guest_deny', 'Error 1385', 'Error 1223', 'Error 5 / 86 / 1326', 'Win 7${ver']) {
-  assert(netEvoSrc.includes(marker), `networkEvolution.ts missing auto-align / diagnostic / OS label symbol: ${marker}`);
+const typesSrc = fs.readFileSync(path.join(rootDir, 'src', 'types', 'share.ts'), 'utf8');
+const expertViewSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'ExpertComparisonView.tsx'), 'utf8');
+const portableStoreAuditSrc = fs.readFileSync(path.join(rootDir, 'portableStore.js'), 'utf8');
+assert(
+  typesSrc.includes('HostPolicyComparison') &&
+    typesSrc.includes('HostDiscrepancyLevel') &&
+    typesSrc.includes('RawSecurityRegistrySnapshot') &&
+    typesSrc.includes('ExpertRegistryPolicyRow'),
+  'share.ts missing HostPolicyComparison / RawSecurityRegistrySnapshot / ExpertRegistryPolicyRow types'
+);
+assert(
+  portableStoreAuditSrc.includes('rawRegistrySnapshot'),
+  'portableStore.js sanitizeHostPolicySnapshot must preserve rawRegistrySnapshot'
+);
+for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'evaluateSecurityRollbackAudit', 'buildHostItemComparison', 'rawRegistryRecordToSnapshot', 'buildExpertRegistryComparisonRows', 'formatSecurityRollbackReportText', 'HOST_POLICY_REFERENCE_TARGETS', 'diff_ntlm', 'diff_uac_token', 'diff_guest_deny', 'Error 1385', 'Error 1223', 'Error 5 / 86 / 1326', 'Win 7${ver']) {
+  assert(netEvoSrc.includes(marker), `networkEvolution.ts missing auto-align / audit / raw registry / diagnostic / OS label symbol: ${marker}`);
 }
 assert(
   netEvoSrc.indexOf("'Error 1385'") < netEvoSrc.indexOf("'Error 1223'") &&
     netEvoSrc.indexOf("'Error 1223'") < netEvoSrc.indexOf("'0x80070035 / 1272'"),
   'networkEvolution.ts classifyFailureDiagnostics must prioritize Error 1385 and Error 1223 before generic Guest error'
 );
-assert(bridgeSrc.includes('autoAlignHostClientPolicies('), 'shareBridge.ts missing autoAlignHostClientPolicies method');
+assert(
+  psEngineSrc.includes('everyoneIncludesAnonymous') &&
+    psEngineSrc.includes('ahbiFirewallRulePresent') &&
+    psEngineSrc.includes('buildRawSecurityRegistryScript'),
+  'powershellEngine.ts must inspect everyoneIncludesAnonymous, ahbiFirewallRulePresent and export buildRawSecurityRegistryScript'
+);
+assert(
+  bridgeSrc.includes('autoAlignHostClientPolicies(') && bridgeSrc.includes('fetchExpertRawRegistryComparison('),
+  'shareBridge.ts missing autoAlignHostClientPolicies or fetchExpertRawRegistryComparison method'
+);
 assert(bridgeSrc.includes('Get-Command Remove-SmbMapping'), 'shareBridge.ts missing Win 7 Remove-SmbMapping guard in unmountDrive');
 assert(
   bridgeSrc.includes('normalizeUnc(prev.uncPath) === normalizeUnc(live.uncPath)') &&
     bridgeSrc.includes('prev.folderPath === nextFolderPath'),
   'shareBridge.ts syncLiveState must validate UNC & folderPath changes before reusing stored metadata'
 );
-for (const uiId of ['matrix-auto-align-banner', 'btn-auto-align-top', 'btn-sync-cross-pc-policy', 'btn-copy-host-guide']) {
-  assert(matrixPanelSrc.includes(uiId), `NetworkMatrixPanel.tsx missing auto-align UI element: ${uiId}`);
+for (const uiId of ['matrix-auto-align-banner', 'btn-auto-align-top', 'btn-sync-cross-pc-policy', 'btn-copy-host-guide', 'SecurityRollbackReport', 'targetHostSnapshot={selectedHostSnap}', 'ExpertComparisonView']) {
+  assert(matrixPanelSrc.includes(uiId), `NetworkMatrixPanel.tsx missing auto-align / audit / expert view UI element: ${uiId}`);
 }
-pass('NetworkMatrixPanel host-client mismatch detection, Error 1385/1223 priority diagnostics, Win 7/8 labels & 1-click auto-align verified');
+for (const rbId of ['security-rollback-report', 'btn-reverify-security-audit', 'btn-copy-security-audit', 'btn-harden-remaining-policies', 'security-audit-filter-host-diff', 'data-discrepancy={hc.status}']) {
+  assert(rollbackReportSrc.includes(rbId), `SecurityRollbackReport.tsx missing audit UI element: ${rbId}`);
+}
+for (const exId of ['expert-comparison-view', 'btn-fetch-raw-registry', 'btn-copy-expert-registry', 'btn-toggle-expert-comparison', 'data-raw-side="local"', 'data-raw-side="host"']) {
+  assert(expertViewSrc.includes(exId), `ExpertComparisonView.tsx missing Expert Comparison UI element: ${exId}`);
+}
+assert(
+  rollbackPanelSrc.includes('SecurityRollbackReport') && rollbackPanelSrc.includes('btn-full-security-rollback'),
+  'RollbackPanel.tsx must render SecurityRollbackReport and full rollback button'
+);
+pass('NetworkMatrixPanel host-client mismatch detection, 10-point rollback audit, Expert Comparison View raw registry, Error 1385/1223 diagnostics, Win 7/8 labels & 1-click auto-align verified');
 
 // 6. Verify Legacy OS (Win 7/8/8.1 <-> Win 10/11) tab, .bat/.reg generator, and 2-step SMB1 guardrails
 const topBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TopBar.tsx'), 'utf8');
