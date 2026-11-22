@@ -599,16 +599,23 @@ ipcMain.handle('ping-host', async (_event, { target }) => {
   };
 });
 
+let portableStoreOpChain = Promise.resolve();
+function enqueuePortableStoreOp(fn) {
+  const next = portableStoreOpChain.then(() => fn());
+  portableStoreOpChain = next.catch(() => {});
+  return next;
+}
+
 ipcMain.handle('get-portable-status', async () => {
-  return portableStore.getStatus();
+  return enqueuePortableStoreOp(() => portableStore.getStatus());
 });
 
 ipcMain.handle('load-portable-data', async () => {
-  return portableStore.loadPortableData();
+  return enqueuePortableStoreOp(() => portableStore.loadPortableData());
 });
 
 ipcMain.handle('save-portable-data', async (_event, { document }) => {
-  return portableStore.savePortableData(document);
+  return enqueuePortableStoreOp(() => portableStore.savePortableData(document));
 });
 
 ipcMain.handle('trigger-system-reboot', async () => {
@@ -709,19 +716,19 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
 });
 
 ipcMain.handle('list-location-profiles', async () => {
-  return portableStore.listLocationProfiles();
+  return enqueuePortableStoreOp(() => portableStore.listLocationProfiles());
 });
 
 ipcMain.handle('save-location-profile', async (_event, { profile }) => {
-  return portableStore.saveLocationProfile(profile);
+  return enqueuePortableStoreOp(() => portableStore.saveLocationProfile(profile));
 });
 
 ipcMain.handle('load-location-profile', async (_event, { profileId }) => {
-  return portableStore.loadLocationProfile(profileId);
+  return enqueuePortableStoreOp(() => portableStore.loadLocationProfile(profileId));
 });
 
 ipcMain.handle('delete-location-profile', async (_event, { profileId }) => {
-  return portableStore.deleteLocationProfile(profileId);
+  return enqueuePortableStoreOp(() => portableStore.deleteLocationProfile(profileId));
 });
 
 ipcMain.handle('export-location-profile-file', async (_event, { profile }) => {
@@ -780,17 +787,25 @@ ipcMain.handle('import-location-profile-file', async (_event, payload) => {
     const raw = fs.readFileSync(selectedPath, 'utf8').replace(/^\uFEFF/, '');
     const parsed = JSON.parse(raw);
     const hydrated = hydrateLocationProfile(parsed);
+    let resultProfile = hydrated;
     let savedToCatalog = false;
+    let saveError;
     if (saveToCatalog) {
-      const saveRes = portableStore.saveLocationProfile(hydrated);
+      const saveRes = await enqueuePortableStoreOp(() => portableStore.saveLocationProfile(hydrated));
       savedToCatalog = Boolean(saveRes.success);
+      if (saveRes.success && saveRes.profile) {
+        resultProfile = saveRes.profile;
+      } else if (!saveRes.success && saveRes.error) {
+        saveError = saveRes.error;
+      }
     }
     return {
       success: true,
-      profile: hydrated,
+      profile: resultProfile,
       filePath: selectedPath,
       savedToCatalog,
-      message: `사용장소 '${hydrated.locationName}' 프로필을 가져왔습니다.`,
+      ...(saveError ? { saveError } : {}),
+      message: `사용장소 '${resultProfile.locationName}' 프로필을 가져왔습니다.`,
     };
   } catch (err) {
     return {

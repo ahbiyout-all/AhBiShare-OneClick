@@ -9,6 +9,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileCode2,
   FolderOpen,
   FolderOutput,
@@ -59,6 +61,7 @@ import { classifyFailureDiagnostics, formatEraShortLabel } from '@/services/netw
 import {
   decodeConnectionCode,
   generateSecureSharePassword,
+  resolveClientAccountCredentials,
   validateFolderPath,
   validateShareName,
   validateTargetHost,
@@ -304,6 +307,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   const [selectedPortableIdx, setSelectedPortableIdx] = useState(0);
   const [portableAppliedKey, setPortableAppliedKey] = useState<string | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [showLegacyClientPass, setShowLegacyClientPass] = useState(false);
   const [clientConfig, setClientConfig] = useState<ClientTargetConfig>({
     targetHost: '192.168.0.10',
     shareName: 'WorkDocs',
@@ -527,13 +531,24 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     (entry: PortableHostShareEntry) => {
       setClientValidationError(null);
       const targetHost = entry.sourceIp || entry.sourceHostName;
+      const decoded = entry.connectionCode ? decodeConnectionCode(entry.connectionCode) : null;
+      const resolved = entry.authMode === 'account' ? resolveClientAccountCredentials({
+        targetHost,
+        shareName: entry.shareName,
+        requireAccountOnly: true,
+        portableShares,
+        activeShares: shares,
+      }) : null;
+      const username = entry.authMode === 'account' ? entry.username || decoded?.username || resolved?.username || 'AhBiShare' : '';
+      const password = entry.authMode === 'account' ? entry.password || decoded?.password || resolved?.password || '' : '';
+
       setClientConfig((prev) => ({
         ...prev,
         targetHost,
         shareName: entry.shareName,
         authMode: entry.authMode,
-        username: entry.authMode === 'account' ? entry.username || '' : '',
-        password: entry.authMode === 'account' ? entry.password || '' : '',
+        username,
+        password,
       }));
       if (entry.connectionCode) {
         setRawCodeInput(entry.connectionCode);
@@ -545,7 +560,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       setPortableAppliedKey(`${entry.sourceHostName}::${entry.shareName}::${entry.updatedAt}`);
       onNotify?.(`USB에 저장된 '${entry.sourceHostName || entry.sourceIp} · ${entry.shareName}' 연결 정보를 불러왔습니다.`);
     },
-    [onNotify]
+    [portableShares, shares, onNotify]
   );
 
   const handleCodeChange = (val: string) => {
@@ -558,13 +573,20 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     const decoded = decodeConnectionCode(val);
     if (decoded) {
       setCodeParseState('valid');
+      const resolved = decoded.authMode === 'account' ? resolveClientAccountCredentials({
+        targetHost: decoded.ip || decoded.hostName,
+        shareName: decoded.shareName,
+        requireAccountOnly: true,
+        portableShares,
+        activeShares: shares,
+      }) : null;
       setClientConfig((prev) => ({
         ...prev,
         targetHost: decoded.ip || decoded.hostName,
         shareName: decoded.shareName,
         authMode: decoded.authMode,
-        username: decoded.username || '',
-        password: decoded.password || '',
+        username: decoded.username || resolved?.username || '',
+        password: decoded.password || resolved?.password || '',
       }));
     } else {
       setCodeParseState('invalid');
@@ -580,13 +602,22 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     }
     setRawCodeInput('');
     setCodeParseState('empty');
+    const targetHost = peer.ipAddress;
+    const resolved = resolveClientAccountCredentials({
+      targetHost,
+      shareName,
+      requireAccountOnly: peer.authModeHint === 'account',
+      portableShares,
+      activeShares: shares,
+    });
+    const authMode = peer.authModeHint === 'account' || resolved?.authMode === 'account' ? 'account' : 'guest';
     setClientConfig((prev) => ({
       ...prev,
-      targetHost: peer.ipAddress,
+      targetHost,
       shareName,
-      authMode: peer.authModeHint === 'account' ? 'account' : 'guest',
-      username: '',
-      password: '',
+      authMode,
+      username: authMode === 'account' ? resolved?.username || 'AhBiShare' : '',
+      password: authMode === 'account' ? resolved?.password || '' : '',
     }));
   };
 
@@ -1743,7 +1774,19 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                       type="button"
                       onClick={() => {
                         setClientValidationError(null);
-                        setClientConfig({ ...clientConfig, authMode: 'account' });
+                        const resolved = resolveClientAccountCredentials({
+                          targetHost: clientConfig.targetHost,
+                          shareName: clientConfig.shareName,
+                          requireAccountOnly: true,
+                          portableShares,
+                          activeShares: shares,
+                        });
+                        setClientConfig((prev) => ({
+                          ...prev,
+                          authMode: 'account',
+                          username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+                          password: prev.password ? prev.password : resolved?.password || '',
+                        }));
                       }}
                       className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
                         clientConfig.authMode === 'account'
@@ -1769,18 +1812,28 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                         placeholder="사용자 ID (예: AhBiShare)"
                         className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
-                      <input
-                        id="legacy-client-acc-pass"
-                        aria-label="공유 계정 암호"
-                        type="password"
-                        value={clientConfig.password}
-                        onChange={(e) => {
-                          setClientValidationError(null);
-                          setClientConfig({ ...clientConfig, password: e.target.value });
-                        }}
-                        placeholder="공유 계정 암호"
-                        className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
+                      <div className="relative">
+                        <input
+                          id="legacy-client-acc-pass"
+                          aria-label="공유 계정 암호"
+                          type={showLegacyClientPass ? 'text' : 'password'}
+                          value={clientConfig.password}
+                          onChange={(e) => {
+                            setClientValidationError(null);
+                            setClientConfig({ ...clientConfig, password: e.target.value });
+                          }}
+                          placeholder="공유 계정 암호"
+                          className="w-full px-3.5 py-2 pr-10 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowLegacyClientPass(!showLegacyClientPass)}
+                          aria-label={showLegacyClientPass ? '비밀번호 숨기기' : '비밀번호 표시'}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                        >
+                          {showLegacyClientPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

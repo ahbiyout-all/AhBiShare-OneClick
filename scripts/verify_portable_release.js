@@ -214,6 +214,7 @@ try {
   assert.strictEqual(diskParsed.hostPolicies['HOST-26H2-PC'].guestNetworkLogonDenied, true);
 
   fs.writeFileSync(path.join(tempUsbDir, portableStore.PORTABLE_FILE_NAME), `\uFEFF${rawDisk}`, 'utf8');
+  assert.strictEqual(store.getStatus().lastSyncedAt, '2026-11-16T10:00:00.000Z', 'getStatus must parse lastSyncedAt cleanly when .portable.json has UTF-8 BOM');
 
   const loadRes = store.loadPortableData();
   assert.strictEqual(loadRes.success, true);
@@ -337,12 +338,22 @@ try {
   assert.strictEqual(locReloadedUserOnly.profile.savedShares[0].password, 'LocShareSecret!2');
   assert.strictEqual(locReloadedUserOnly.profile.clientTargets[0].username, 'UpdatedClientUser');
   assert.strictEqual(locReloadedUserOnly.profile.clientTargets[0].password, 'LocClientSecret!3');
+  assert.strictEqual(
+    portableStore.decryptCredentials(locReloadedUserOnly.profile.hostPreset.encryptedCredentials).username,
+    'UpdatedHostUser',
+    'Encrypted ciphertext payload must synchronize updated hostPreset username without password re-entry'
+  );
+  assert.strictEqual(
+    portableStore.decryptCredentials(locReloadedUserOnly.profile.clientTargets[0].encryptedCredentials).username,
+    'UpdatedClientUser',
+    'Encrypted ciphertext payload must synchronize updated clientTarget username without password re-entry'
+  );
 
   const locDel = store.deleteLocationProfile(locSaveRes.profile.profileId);
   assert.strictEqual(locDel.success, true);
   assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
 
-  // Verify copied/renamed .location.json file whose filename differs from internal profileId
+  // Verify copied/renamed .location.json file whose filename differs from internal profileId, and alias deduplication on re-save
   const renamedSaveRes = store.saveLocationProfile({
     profileId: 'loc-renamed-check',
     locationName: '외부 복사 장소',
@@ -370,8 +381,19 @@ try {
   const aliasedLoad = store.loadLocationProfile('loc-renamed-check');
   assert.strictEqual(aliasedLoad.success, true, 'loadLocationProfile must resolve renamed .location.json by internal profileId');
   assert.strictEqual(aliasedLoad.profile.clientTargets[0].password, 'CopySecret!9');
+  // Re-save decrypted profile loaded from aliased file and confirm stale duplicate removal + zero leftover temp/lock files
+  const consolidatedSave = store.saveLocationProfile({
+    ...aliasedLoad.profile,
+    description: '정규 파일 통합 검증',
+  });
+  assert.strictEqual(consolidatedSave.success, true);
+  assert.strictEqual(consolidatedSave.profile.clientTargets[0].password, 'CopySecret!9');
+  assert.strictEqual(fs.existsSync(aliasedLocPath), false, 'Re-saving aliased profile must consolidate stale duplicate .location.json file');
+  assert.strictEqual(store.listLocationProfiles().profiles.length, 1, 'Consolidated profile must appear once in listLocationProfiles');
+  const dirResidue = fs.readdirSync(locDirPath).filter((f) => f.endsWith('.tmp') || f.endsWith('.lock'));
+  assert.strictEqual(dirResidue.length, 0, 'portableStore must leave zero leftover .tmp or .lock files after save');
   const aliasedDel = store.deleteLocationProfile('loc-renamed-check');
-  assert.strictEqual(aliasedDel.success, true, 'deleteLocationProfile must delete renamed .location.json by internal profileId');
+  assert.strictEqual(aliasedDel.success, true, 'deleteLocationProfile must delete consolidated .location.json by internal profileId');
   assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
   pass('Per-location .location.json AES-256-GCM encryption, BOM resilience, mixed-script ID & renamed-file CRUD verified');
 } finally {
@@ -994,6 +1016,16 @@ assert(
       appSrc.includes('runPreflightCheckForProfile') &&
       appSrc.includes('executeBatchApplyLocation'),
     'Location batch Pre-flight Check (types, PowerShell engine, shareBridge, LocationPreflightModal UI & App wiring) check failed'
+  );
+  const clientPanelAuthSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'ClientPanel.tsx'), 'utf8');
+  const legacyPanelAuthSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LegacySharingPanel.tsx'), 'utf8');
+  assert(
+    connCodeAuditSrc.includes('resolveClientAccountCredentials') &&
+      clientPanelAuthSrc.includes('showClientPass') &&
+      clientPanelAuthSrc.includes('EyeOff') &&
+      legacyPanelAuthSrc.includes('showLegacyClientPass') &&
+      appSrc.includes('inferredTarget'),
+    'Client credential resolution helper, password visibility toggles in ClientPanel/LegacySharingPanel, and App.tsx inferred client target fallback must be present'
   );
   pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 

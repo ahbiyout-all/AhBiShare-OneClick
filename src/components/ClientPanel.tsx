@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2 } from 'lucide-react';
+import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff } from 'lucide-react';
 import {
+  ActiveShare,
   ClientTargetConfig,
   DiscoveredPeer,
   HostPolicySnapshot,
@@ -11,7 +12,7 @@ import {
   PortableHostShareEntry,
   PortableStorageStatus,
 } from '@/types/share';
-import { decodeConnectionCode, validateShareName, validateTargetHost } from '@/utils/connectionCode';
+import { decodeConnectionCode, resolveClientAccountCredentials, validateShareName, validateTargetHost } from '@/utils/connectionCode';
 import {
   classifyFailureDiagnostics,
   computeHostClientPolicyDiff,
@@ -20,6 +21,7 @@ import {
 } from '@/services/networkEvolution';
 import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
+import { PresetPasswordGrid } from './PresetPasswordGrid';
 
 interface ClientPanelProps {
   peers: DiscoveredPeer[];
@@ -28,6 +30,9 @@ interface ClientPanelProps {
   isScanning: boolean;
   isConnecting: boolean;
   portableShares?: PortableHostShareEntry[];
+  locationSavedShares?: PortableHostShareEntry[];
+  locationHostPreset?: any;
+  activeShares?: ActiveShare[];
   portableStatus?: PortableStorageStatus;
   currentHostname?: string;
   hostPolicySnapshots?: Record<string, HostPolicySnapshot>;
@@ -63,6 +68,9 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   isScanning,
   isConnecting,
   portableShares = [],
+  locationSavedShares = [],
+  locationHostPreset = null,
+  activeShares = [],
   portableStatus,
   currentHostname = '',
   hostPolicySnapshots = {},
@@ -98,6 +106,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   const [confirmingDeletePortable, setConfirmingDeletePortable] = useState(false);
   const [deletingPortable, setDeletingPortable] = useState(false);
   const [deletingPolicySnap, setDeletingPolicySnap] = useState(false);
+  const [showClientPass, setShowClientPass] = useState(false);
   const hostCmdTimerRef = useRef<number | null>(null);
   const lastAuthModeSwitchKeyRef = useRef<string | null>(null);
 
@@ -162,9 +171,28 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     if (!pendingClientAuthMode || pendingClientAuthMode.key === lastAuthModeSwitchKeyRef.current) return;
     lastAuthModeSwitchKeyRef.current = pendingClientAuthMode.key;
     setValidationError(null);
-    setConfig((prev) => ({ ...prev, authMode: pendingClientAuthMode.authMode }));
+    if (pendingClientAuthMode.authMode === 'account') {
+      const resolved = resolveClientAccountCredentials({
+        targetHost: config.targetHost,
+        shareName: config.shareName,
+        requireAccountOnly: true,
+        savedLocationTargets,
+        locationSavedShares,
+        locationHostPreset,
+        portableShares,
+        activeShares,
+      });
+      setConfig((prev) => ({
+        ...prev,
+        authMode: 'account',
+        username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+        password: prev.password ? prev.password : resolved?.password || '',
+      }));
+    } else {
+      setConfig((prev) => ({ ...prev, authMode: 'guest' }));
+    }
     onClearPendingClientAuthMode?.();
-  }, [pendingClientAuthMode, onClearPendingClientAuthMode]);
+  }, [pendingClientAuthMode, config.targetHost, config.shareName, savedLocationTargets, locationSavedShares, locationHostPreset, portableShares, activeShares, onClearPendingClientAuthMode]);
 
   // Reset dismissal/index cleanly if portable share entries update
   useEffect(() => {
@@ -184,13 +212,27 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     (entry: PortableHostShareEntry, notify = true) => {
       setValidationError(null);
       const targetHost = entry.sourceIp || entry.sourceHostName;
+      const decoded = entry.connectionCode ? decodeConnectionCode(entry.connectionCode) : null;
+      const resolved = entry.authMode === 'account' ? resolveClientAccountCredentials({
+        targetHost,
+        shareName: entry.shareName,
+        requireAccountOnly: true,
+        savedLocationTargets,
+        locationSavedShares,
+        locationHostPreset,
+        portableShares,
+        activeShares,
+      }) : null;
+      const username = entry.authMode === 'account' ? entry.username || decoded?.username || resolved?.username || 'AhBiShare' : '';
+      const password = entry.authMode === 'account' ? entry.password || decoded?.password || resolved?.password || '' : '';
+
       setConfig((prev) => ({
         ...prev,
         targetHost,
         shareName: entry.shareName,
         authMode: entry.authMode,
-        username: entry.authMode === 'account' ? entry.username || '' : '',
-        password: entry.authMode === 'account' ? entry.password || '' : '',
+        username,
+        password,
       }));
       if (entry.connectionCode) {
         setRawCodeInput(entry.connectionCode);
@@ -204,7 +246,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
         onPortableAutoFill?.(entry);
       }
     },
-    [onPortableAutoFill]
+    [savedLocationTargets, locationSavedShares, locationHostPreset, portableShares, activeShares, onPortableAutoFill]
   );
 
   useEffect(() => {
@@ -231,13 +273,23 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     const decoded = decodeConnectionCode(val);
     if (decoded) {
       setCodeParseState('valid');
+      const resolved = decoded.authMode === 'account' ? resolveClientAccountCredentials({
+        targetHost: decoded.ip || decoded.hostName,
+        shareName: decoded.shareName,
+        requireAccountOnly: true,
+        savedLocationTargets,
+        locationSavedShares,
+        locationHostPreset,
+        portableShares,
+        activeShares,
+      }) : null;
       setConfig((prev) => ({
         ...prev,
         targetHost: decoded.ip || decoded.hostName,
         shareName: decoded.shareName,
         authMode: decoded.authMode,
-        username: decoded.username || '',
-        password: decoded.password || '',
+        username: decoded.username || resolved?.username || '',
+        password: decoded.password || resolved?.password || '',
       }));
     } else {
       setCodeParseState('invalid');
@@ -253,13 +305,25 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     }
     setRawCodeInput('');
     setCodeParseState('empty');
+    const targetHost = peer.ipAddress;
+    const resolved = resolveClientAccountCredentials({
+      targetHost,
+      shareName,
+      requireAccountOnly: peer.authModeHint === 'account',
+      savedLocationTargets,
+      locationSavedShares,
+      locationHostPreset,
+      portableShares,
+      activeShares,
+    });
+    const authMode = peer.authModeHint === 'account' || resolved?.authMode === 'account' ? 'account' : 'guest';
     setConfig((prev) => ({
       ...prev,
-      targetHost: peer.ipAddress,
+      targetHost,
       shareName,
-      authMode: peer.authModeHint === 'account' ? 'account' : 'guest',
-      username: '',
-      password: '',
+      authMode,
+      username: authMode === 'account' ? resolved?.username || 'AhBiShare' : '',
+      password: authMode === 'account' ? resolved?.password || '' : '',
     }));
   };
 
@@ -577,13 +641,23 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         setValidationError(null);
                         setRawCodeInput('');
                         setCodeParseState('empty');
+                        const resolved = target.authMode === 'account' ? resolveClientAccountCredentials({
+                          targetHost: target.targetHost,
+                          shareName: target.shareName,
+                          requireAccountOnly: true,
+                          savedLocationTargets,
+                          locationSavedShares,
+                          locationHostPreset,
+                          portableShares,
+                          activeShares,
+                        }) : null;
                         setConfig({
                           targetHost: target.targetHost,
                           shareName: target.shareName,
                           driveLetter: target.driveLetter,
                           authMode: target.authMode,
-                          username: target.authMode === 'account' ? target.username || '' : '',
-                          password: target.authMode === 'account' ? target.password || '' : '',
+                          username: target.authMode === 'account' ? target.username || resolved?.username || 'AhBiShare' : '',
+                          password: target.authMode === 'account' ? target.password || resolved?.password || '' : '',
                           persistent: target.persistent !== false,
                         });
                       }}
@@ -748,7 +822,22 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   type="button"
                   onClick={() => {
                     setValidationError(null);
-                    setConfig({ ...config, authMode: 'account' });
+                    const resolved = resolveClientAccountCredentials({
+                      targetHost: config.targetHost,
+                      shareName: config.shareName,
+                      requireAccountOnly: true,
+                      savedLocationTargets,
+                      locationSavedShares,
+                      locationHostPreset,
+                      portableShares,
+                      activeShares,
+                    });
+                    setConfig((prev) => ({
+                      ...prev,
+                      authMode: 'account',
+                      username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+                      password: prev.password ? prev.password : resolved?.password || '',
+                    }));
                   }}
                   className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
                     config.authMode === 'account'
@@ -761,7 +850,20 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               </div>
 
               {config.authMode === 'account' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-3 pt-1">
+                  <PresetPasswordGrid
+                    currentUsername={config.username}
+                    currentPassword={config.password}
+                    onSelectPreset={(username, password) => {
+                      setValidationError(null);
+                      setConfig({
+                        ...config,
+                        username,
+                        password,
+                      });
+                    }}
+                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="client-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                       전용 계정 ID
@@ -782,20 +884,31 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                     <label htmlFor="client-acc-pass" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                       공유 계정 암호
                     </label>
-                    <input
-                      id="client-acc-pass"
-                      type="password"
-                      value={config.password}
-                      onChange={(e) => {
-                        setValidationError(null);
-                        setConfig({ ...config, password: e.target.value });
-                      }}
-                      placeholder="공유 계정 암호"
-                      className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <div className="relative">
+                      <input
+                        id="client-acc-pass"
+                        type={showClientPass ? 'text' : 'password'}
+                        value={config.password}
+                        onChange={(e) => {
+                          setValidationError(null);
+                          setConfig({ ...config, password: e.target.value });
+                        }}
+                        placeholder="공유 계정 암호"
+                        className="w-full px-3.5 py-2 pr-10 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientPass(!showClientPass)}
+                        aria-label={showClientPass ? '비밀번호 숨기기' : '비밀번호 표시'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        {showClientPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
-              )}
+              </div>
+            )}
             </div>
 
             {validationError && (

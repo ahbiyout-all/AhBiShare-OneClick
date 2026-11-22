@@ -5,6 +5,7 @@ import { HostConfig, ActiveShare, PipelineStep, LocalNetworkInfo } from '@/types
 import { generateSecureSharePassword, validateShareName, validateFolderPath } from '@/utils/connectionCode';
 import { buildHostGuestUnlockBatchScript } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
+import { PresetPasswordGrid } from './PresetPasswordGrid';
 
 interface HostPanelProps {
   netInfo: LocalNetworkInfo;
@@ -370,7 +371,21 @@ export const HostPanel: React.FC<HostPanelProps> = ({
             </div>
 
             {config.authMode === 'account' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+              <div className="space-y-3 pt-2">
+                <PresetPasswordGrid
+                  currentUsername={config.username}
+                  currentPassword={config.password}
+                  onSelectPreset={(username, password) => {
+                    setValidationError(null);
+                    setConfig({
+                      ...config,
+                      username,
+                      password,
+                    });
+                  }}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
                 <div>
                   <label htmlFor="host-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                     전용 계정 ID
@@ -416,7 +431,8 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   </div>
                 </div>
               </div>
-            )}
+            </div>
+          )}
 
             <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">

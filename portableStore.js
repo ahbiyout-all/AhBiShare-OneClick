@@ -43,6 +43,9 @@ function decryptCredentials(enc) {
     const key = getPortableAesKey();
     const iv = Buffer.from(enc.iv, 'base64');
     const tag = Buffer.from(enc.tag, 'base64');
+    if (iv.length !== 12 || tag.length !== 16) {
+      return { ok: false, username: '', password: '' };
+    }
     const ciphertext = Buffer.from(enc.ciphertext, 'base64');
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAAD(AAD);
@@ -57,6 +60,29 @@ function decryptCredentials(enc) {
   } catch {
     return { ok: false, username: '', password: '' };
   }
+}
+
+function resolveEncryptedCredentialsForDisk(authMode, plainUsername, plainPassword, existingEnc) {
+  if (authMode !== 'account') {
+    return undefined;
+  }
+  if (plainPassword) {
+    return encryptCredentials({
+      username: plainUsername,
+      password: plainPassword,
+    });
+  }
+  if (existingEnc) {
+    const dec = decryptCredentials(existingEnc);
+    if (dec.ok && dec.password && plainUsername && plainUsername !== dec.username) {
+      return encryptCredentials({
+        username: plainUsername,
+        password: dec.password,
+      });
+    }
+    return existingEnc;
+  }
+  return undefined;
 }
 
 function encodeTokenPayload(payload) {
@@ -295,15 +321,12 @@ function prepareDiskDocument(doc) {
     const plainUsername = item.username || tokenDecoded?.username || '';
     const plainPassword = item.password || item.restoredPassword || tokenDecoded?.password || '';
 
-    let encryptedCredentials = item.encryptedCredentials;
-    if (authMode === 'account' && plainPassword) {
-      encryptedCredentials = encryptCredentials({
-        username: plainUsername,
-        password: plainPassword,
-      });
-    } else if (authMode !== 'account') {
-      encryptedCredentials = undefined;
-    }
+    const encryptedCredentials = resolveEncryptedCredentialsForDisk(
+      authMode,
+      plainUsername,
+      plainPassword,
+      item.encryptedCredentials
+    );
 
     const diskEntry = {
       sourceHostName: String(item.sourceHostName || tokenDecoded?.hostName || ''),
@@ -411,30 +434,186 @@ function hydrateRuntimeDocument(diskDoc) {
   return runtimeDoc;
 }
 
+let tmpWriteSequence = 0;
+
+function sleepSyncMs(ms) {
+  const duration = Math.max(1, Math.min(200, Number(ms) || 1));
+  try {
+    const sab = new SharedArrayBuffer(4);
+    Atomics.wait(new Int32Array(sab), 0, 0, duration);
+  } catch {
+    const end = Date.now() + duration;
+    while (Date.now() < end) {
+      // fallback wait only if SharedArrayBuffer is unavailable
+    }
+  }
+}
+
+function isTransientWinLockError(err) {
+  const code = err && err.code;
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+function withFileLockSync(lockPath, fn) {
+  const maxWaitMs = 400;
+  const retryDelayMs = 10;
+  const staleThresholdMs = 10000;
+  const start = Date.now();
+  let lockFd = null;
+  let staleCleared = false;
+
+  while (true) {
+    try {
+      lockFd = fs.openSync(lockPath, 'wx', 0o600);
+      try {
+        fs.writeSync(lockFd, `${process.pid}:${Date.now()}`);
+      } catch {}
+      break;
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        if (!staleCleared) {
+          try {
+            const st = fs.statSync(lockPath);
+            if (Date.now() - st.mtimeMs > staleThresholdMs) {
+              fs.unlinkSync(lockPath);
+              staleCleared = true;
+              continue;
+            }
+          } catch {}
+        }
+        if (Date.now() - start >= maxWaitMs) {
+          return {
+            __lockTimeout: true,
+            success: false,
+            error: '다른 저장 작업이 진행 중입니다. 잠시 후 다시 시도하세요.',
+          };
+        }
+        sleepSyncMs(retryDelayMs);
+        continue;
+      }
+      // Directory read-only / inaccessible: run fn() without holding a lock so normal error reporting runs cleanly
+      return fn();
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    try {
+      if (lockFd !== null) fs.closeSync(lockFd);
+    } catch {}
+    try {
+      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+    } catch {}
+  }
+}
+
+function fsyncDirectoryBestEffort(dirPath) {
+  try {
+    const dirFd = fs.openSync(dirPath, 'r');
+    try {
+      fs.fsyncSync(dirFd);
+    } finally {
+      fs.closeSync(dirFd);
+    }
+  } catch {
+    // Windows NTFS/exFAT does not allow opening a directory fd for fsync
+  }
+}
+
+function writeBufferFsyncSync(targetPath, buf, flags = 'wx') {
+  const fd = fs.openSync(targetPath, flags, 0o600);
+  try {
+    let offset = 0;
+    while (offset < buf.length) {
+      const written = fs.writeSync(fd, buf, offset, buf.length - offset);
+      if (written <= 0) {
+        throw new Error('파일 바이트 기록이 완료되지 않았습니다.');
+      }
+      offset += written;
+    }
+    fs.fsyncSync(fd);
+    const stat = fs.fstatSync(fd);
+    if (stat.size !== buf.length) {
+      throw new Error(`임시 파일 크기 불일치 (${stat.size} !== ${buf.length})`);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function renameWithRetrySync(srcPath, destPath) {
+  const delays = [0, 8, 16, 28];
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i] > 0) sleepSyncMs(delays[i]);
+    try {
+      fs.renameSync(srcPath, destPath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientWinLockError(err)) {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function atomicWriteJson(filePath, payloadObj) {
   const content = JSON.stringify(payloadObj, null, 2);
+  const buf = Buffer.from(content, 'utf8');
   const dir = path.dirname(filePath);
   const baseName = path.basename(filePath);
-  const tmpPath = path.join(dir, `.${baseName}.${process.pid}.${Date.now()}.tmp`);
+  tmpWriteSequence = (tmpWriteSequence + 1) % 1000000;
+  const nonce = crypto.randomBytes(4).toString('hex');
+  const tmpPath = path.join(dir, `.${baseName}.${process.pid}.${Date.now()}.${tmpWriteSequence}.${nonce}.tmp`);
+
   try {
-    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
+    writeBufferFsyncSync(tmpPath, buf, 'wx');
     try {
-      fs.renameSync(tmpPath, filePath);
-    } catch {
-      fs.writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o600 });
-      try {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch {}
+      renameWithRetrySync(tmpPath, filePath);
+    } catch (renameErr) {
+      if (renameErr && renameErr.code === 'EXDEV') {
+        // Rare cross-device fallback with rollback backup instead of bare truncate
+        const hadExisting = fs.existsSync(filePath);
+        const backupPath = `${tmpPath}.bak`;
+        if (hadExisting) {
+          fs.copyFileSync(filePath, backupPath);
+        }
+        try {
+          writeBufferFsyncSync(filePath, buf, 'w');
+        } catch (fallbackErr) {
+          if (hadExisting && fs.existsSync(backupPath)) {
+            try {
+              fs.copyFileSync(backupPath, filePath);
+            } catch {}
+          }
+          throw fallbackErr;
+        } finally {
+          try {
+            if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+          } catch {}
+        }
+      } else {
+        throw renameErr;
+      }
+    }
+    fsyncDirectoryBestEffort(dir);
+    const committedStat = fs.statSync(filePath);
+    if (committedStat.size !== buf.length) {
+      throw new Error(`저장된 파일 크기 검증 실패 (${committedStat.size} !== ${buf.length})`);
     }
     return { success: true };
   } catch (err) {
-    try {
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    } catch {}
     return {
       success: false,
       error: err && err.message ? err.message : 'USB 파일 쓰기에 실패했습니다.',
     };
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
   }
 }
 
@@ -483,15 +662,12 @@ function prepareLocationClientTargetsForDisk(targets) {
     const authMode = item.authMode === 'account' ? 'account' : 'guest';
     const plainUsername = item.username ? String(item.username) : '';
     const plainPassword = item.password ? String(item.password) : '';
-    let encryptedCredentials = item.encryptedCredentials;
-    if (authMode === 'account' && plainPassword) {
-      encryptedCredentials = encryptCredentials({
-        username: plainUsername,
-        password: plainPassword,
-      });
-    } else if (authMode !== 'account') {
-      encryptedCredentials = undefined;
-    }
+    const encryptedCredentials = resolveEncryptedCredentialsForDisk(
+      authMode,
+      plainUsername,
+      plainPassword,
+      item.encryptedCredentials
+    );
     out.push({
       targetHost: String(item.targetHost).trim(),
       shareName: String(item.shareName).trim(),
@@ -513,12 +689,15 @@ function hydrateLocationClientTargets(rawTargets) {
     const authMode = item.authMode === 'account' ? 'account' : 'guest';
     let username = item.username ? String(item.username) : '';
     let password = '';
+    let decryptionFailed = false;
     if (authMode === 'account') {
       if (item.encryptedCredentials) {
         const dec = decryptCredentials(item.encryptedCredentials);
         if (dec.ok) {
           username = username || dec.username;
           password = dec.password;
+        } else {
+          decryptionFailed = true;
         }
       } else if (item.password) {
         password = String(item.password);
@@ -533,6 +712,7 @@ function hydrateLocationClientTargets(rawTargets) {
       ...(password ? { password } : {}),
       ...(item.encryptedCredentials ? { encryptedCredentials: item.encryptedCredentials } : {}),
       persistent: item.persistent !== false,
+      ...(decryptionFailed ? { decryptionFailed: true } : {}),
     });
   }
   return out;
@@ -543,15 +723,12 @@ function prepareLocationHostPresetForDisk(preset) {
   const authMode = preset.authMode === 'account' ? 'account' : 'guest';
   const plainUsername = preset.username ? String(preset.username) : '';
   const plainPassword = preset.password ? String(preset.password) : '';
-  let encryptedCredentials = preset.encryptedCredentials;
-  if (authMode === 'account' && plainPassword) {
-    encryptedCredentials = encryptCredentials({
-      username: plainUsername,
-      password: plainPassword,
-    });
-  } else if (authMode !== 'account') {
-    encryptedCredentials = undefined;
-  }
+  const encryptedCredentials = resolveEncryptedCredentialsForDisk(
+    authMode,
+    plainUsername,
+    plainPassword,
+    preset.encryptedCredentials
+  );
   return {
     folderPath: String(preset.folderPath || 'C:\\AhBiShared'),
     shareName: String(preset.shareName || 'AhBiShared'),
@@ -569,12 +746,15 @@ function hydrateLocationHostPreset(rawPreset) {
   const authMode = rawPreset.authMode === 'account' ? 'account' : 'guest';
   let username = rawPreset.username ? String(rawPreset.username) : '';
   let password = '';
+  let decryptionFailed = false;
   if (authMode === 'account') {
     if (rawPreset.encryptedCredentials) {
       const dec = decryptCredentials(rawPreset.encryptedCredentials);
       if (dec.ok) {
         username = username || dec.username;
         password = dec.password;
+      } else {
+        decryptionFailed = true;
       }
     } else if (rawPreset.password) {
       password = String(rawPreset.password);
@@ -590,6 +770,7 @@ function hydrateLocationHostPreset(rawPreset) {
     ...(rawPreset.encryptedCredentials ? { encryptedCredentials: rawPreset.encryptedCredentials } : {}),
     ...(typeof rawPreset.ttlMinutes === 'number' ? { ttlMinutes: rawPreset.ttlMinutes } : {}),
     ...(typeof rawPreset.autoRevokeOnExpiry === 'boolean' ? { autoRevokeOnExpiry: rawPreset.autoRevokeOnExpiry } : {}),
+    ...(decryptionFailed ? { decryptionFailed: true } : {}),
   };
 }
 
@@ -732,33 +913,53 @@ function createPortableStore(options = {}) {
 
   const savePortableData = (doc) => {
     const loc = getLocation();
+    const lockPath = path.join(loc.directory, `.${PORTABLE_FILE_NAME}.lock`);
     const diskDoc = prepareDiskDocument(doc);
-    const writeRes = atomicWriteJson(loc.filePath, diskDoc);
-    const hydrated = hydrateRuntimeDocument(diskDoc);
+    return withFileLockSync(lockPath, () => {
+      const writeRes = atomicWriteJson(loc.filePath, diskDoc);
+      if (!writeRes.success) {
+        const hydratedFallback = hydrateRuntimeDocument(diskDoc);
+        return {
+          success: false,
+          document: hydratedFallback,
+          status: {
+            ...loc,
+            writable: false,
+            hasExistingFile: fs.existsSync(loc.filePath),
+            writeError: writeRes.error,
+          },
+        };
+      }
 
-    if (!writeRes.success) {
+      let committedDoc;
+      try {
+        const verifiedRaw = fs.readFileSync(loc.filePath, 'utf8').replace(/^\uFEFF/, '');
+        committedDoc = hydrateRuntimeDocument(JSON.parse(verifiedRaw));
+      } catch (verifyErr) {
+        const hydratedFallback = hydrateRuntimeDocument(diskDoc);
+        return {
+          success: false,
+          document: hydratedFallback,
+          status: {
+            ...loc,
+            writable: false,
+            hasExistingFile: fs.existsSync(loc.filePath),
+            writeError: `저장 후 무결성 검증 실패: ${verifyErr && verifyErr.message ? verifyErr.message : 'JSON 파싱 오류'}`,
+          },
+        };
+      }
+
       return {
-        success: false,
-        document: hydrated,
+        success: true,
+        document: committedDoc,
         status: {
           ...loc,
-          writable: false,
-          hasExistingFile: fs.existsSync(loc.filePath),
-          writeError: writeRes.error,
+          writable: true,
+          hasExistingFile: true,
+          lastSyncedAt: diskDoc.updatedAt,
         },
       };
-    }
-
-    return {
-      success: true,
-      document: hydrated,
-      status: {
-        ...loc,
-        writable: true,
-        hasExistingFile: true,
-        lastSyncedAt: diskDoc.updatedAt,
-      },
-    };
+    });
   };
 
   const listLocationProfiles = () => {
@@ -789,6 +990,43 @@ function createPortableStore(options = {}) {
     };
   };
 
+  const findAllLocationFilesByProfileId = (directory, profileId) => {
+    const { locDir, filePath: exactPath } = resolveSafeLocationFilePath(directory, profileId, profileId);
+    const matches = [];
+    if (fs.existsSync(exactPath)) {
+      matches.push(exactPath);
+    }
+    const targetRaw = String(profileId || '').trim();
+    const targetSanitized = sanitizeLocationId(targetRaw, '');
+    if (fs.existsSync(locDir)) {
+      try {
+        for (const entry of fs.readdirSync(locDir)) {
+          if (!entry.toLowerCase().endsWith(LOCATION_FILE_EXT)) continue;
+          const candidatePath = path.resolve(locDir, entry);
+          if (!candidatePath.startsWith(locDir + path.sep)) continue;
+          if (candidatePath === exactPath) continue;
+          try {
+            const raw = fs.readFileSync(candidatePath, 'utf8').replace(/^\uFEFF/, '');
+            const parsed = JSON.parse(raw);
+            const hydrated = hydrateLocationProfile(parsed);
+            if (
+              hydrated.profileId === targetRaw ||
+              (targetSanitized && sanitizeLocationId(hydrated.profileId, '') === targetSanitized)
+            ) {
+              matches.push(candidatePath);
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    return matches;
+  };
+
+  const findLocationFileByProfileId = (directory, profileId) => {
+    const matches = findAllLocationFilesByProfileId(directory, profileId);
+    return matches[0] || '';
+  };
+
   const saveLocationProfile = (rawProfile) => {
     const loc = getLocation();
     const diskProfile = prepareLocationProfileForDisk(rawProfile);
@@ -805,50 +1043,46 @@ function createPortableStore(options = {}) {
         error: `사용장소 보관 폴더 생성 실패: ${err && err.message ? err.message : '권한 없음'}`,
       };
     }
-    const writeRes = atomicWriteJson(filePath, diskProfile);
-    if (!writeRes.success) {
-      return {
-        success: false,
-        error: writeRes.error || '사용장소 프로필 저장에 실패했습니다.',
-      };
-    }
-    const hydrated = hydrateLocationProfile(diskProfile);
-    return {
-      success: true,
-      profile: hydrated,
-      summary: toLocationProfileSummary(hydrated, fileName),
-      filePath,
-    };
-  };
 
-  const findLocationFileByProfileId = (directory, profileId) => {
-    const { locDir, filePath: exactPath } = resolveSafeLocationFilePath(directory, profileId, profileId);
-    if (fs.existsSync(exactPath)) {
-      return exactPath;
-    }
-    const targetRaw = String(profileId || '').trim();
-    const targetSanitized = sanitizeLocationId(targetRaw, '');
-    if (fs.existsSync(locDir)) {
+    const lockPath = path.join(locDir, '.locations.lock');
+    return withFileLockSync(lockPath, () => {
+      const staleAliasFiles = findAllLocationFilesByProfileId(loc.directory, diskProfile.profileId).filter(
+        (candidate) => path.resolve(candidate) !== path.resolve(filePath)
+      );
+
+      const writeRes = atomicWriteJson(filePath, diskProfile);
+      if (!writeRes.success) {
+        return {
+          success: false,
+          error: writeRes.error || '사용장소 프로필 저장에 실패했습니다.',
+        };
+      }
+
+      let verifiedProfile;
       try {
-        for (const entry of fs.readdirSync(locDir)) {
-          if (!entry.toLowerCase().endsWith(LOCATION_FILE_EXT)) continue;
-          const candidatePath = path.resolve(locDir, entry);
-          if (!candidatePath.startsWith(locDir + path.sep)) continue;
-          try {
-            const raw = fs.readFileSync(candidatePath, 'utf8').replace(/^\uFEFF/, '');
-            const parsed = JSON.parse(raw);
-            const hydrated = hydrateLocationProfile(parsed);
-            if (
-              hydrated.profileId === targetRaw ||
-              (targetSanitized && sanitizeLocationId(hydrated.profileId, '') === targetSanitized)
-            ) {
-              return candidatePath;
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-    return '';
+        const verifiedRaw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+        verifiedProfile = hydrateLocationProfile(JSON.parse(verifiedRaw));
+      } catch (verifyErr) {
+        return {
+          success: false,
+          error: `사용장소 프로필 저장 후 무결성 검증 실패: ${verifyErr && verifyErr.message ? verifyErr.message : '파일 검증 오류'}`,
+        };
+      }
+
+      // Clean up legacy/renamed duplicates only after canonical file write and readback verification succeed
+      for (const aliasPath of staleAliasFiles) {
+        try {
+          if (fs.existsSync(aliasPath)) fs.unlinkSync(aliasPath);
+        } catch {}
+      }
+
+      return {
+        success: true,
+        profile: verifiedProfile,
+        summary: toLocationProfileSummary(verifiedProfile, fileName),
+        filePath,
+      };
+    });
   };
 
   const loadLocationProfile = (profileId) => {
@@ -872,19 +1106,25 @@ function createPortableStore(options = {}) {
 
   const deleteLocationProfile = (profileId) => {
     const loc = getLocation();
-    const filePath = findLocationFileByProfileId(loc.directory, profileId);
-    if (!filePath || !fs.existsSync(filePath)) {
-      return { success: false, error: '삭제할 사용장소 파일이 존재하지 않습니다.' };
-    }
-    try {
-      fs.unlinkSync(filePath);
-      return { success: true };
-    } catch (err) {
-      return {
-        success: false,
-        error: `사용장소 파일 삭제 실패: ${err && err.message ? err.message : '권한 오류'}`,
-      };
-    }
+    const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
+    const lockPath = path.join(locDir, '.locations.lock');
+    return withFileLockSync(lockPath, () => {
+      const matches = findAllLocationFilesByProfileId(loc.directory, profileId);
+      if (matches.length === 0) {
+        return { success: false, error: '삭제할 사용장소 파일이 존재하지 않습니다.' };
+      }
+      try {
+        for (const matchPath of matches) {
+          if (fs.existsSync(matchPath)) fs.unlinkSync(matchPath);
+        }
+        return { success: true };
+      } catch (err) {
+        return {
+          success: false,
+          error: `사용장소 파일 삭제 실패: ${err && err.message ? err.message : '권한 오류'}`,
+        };
+      }
+    });
   };
 
   return {
@@ -894,7 +1134,7 @@ function createPortableStore(options = {}) {
       let lastSyncedAt;
       if (exists) {
         try {
-          const parsed = JSON.parse(fs.readFileSync(loc.filePath, 'utf8'));
+          const parsed = JSON.parse(fs.readFileSync(loc.filePath, 'utf8').replace(/^\uFEFF/, ''));
           if (parsed && parsed.updatedAt) lastSyncedAt = String(parsed.updatedAt);
         } catch {}
       }

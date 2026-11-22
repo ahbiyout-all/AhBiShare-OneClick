@@ -132,3 +132,209 @@ export function generateSecureSharePassword(length = 12): string {
   }
   return result;
 }
+
+export interface ResolvedClientCredentials {
+  authMode: 'guest' | 'account';
+  username: string;
+  password: string;
+  connectionCode?: string;
+  source: 'location_target' | 'portable_share' | 'location_share' | 'active_share' | 'location_preset';
+  decryptionFailed?: boolean;
+}
+
+export function resolveClientAccountCredentials(params: {
+  targetHost?: string;
+  hostCandidates?: string[];
+  shareName?: string;
+  requireAccountOnly?: boolean;
+  savedLocationTargets?: Array<{
+    targetHost: string;
+    shareName: string;
+    authMode: 'guest' | 'account';
+    username?: string;
+    password?: string;
+  }>;
+  locationSavedShares?: Array<{
+    sourceHostName?: string;
+    sourceIp?: string;
+    shareName: string;
+    authMode: 'guest' | 'account';
+    username?: string;
+    password?: string;
+    connectionCode?: string;
+    decryptionFailed?: boolean;
+  }>;
+  locationHostPreset?: {
+    shareName?: string;
+    authMode: 'guest' | 'account';
+    username?: string;
+    password?: string;
+  } | null;
+  portableShares?: Array<{
+    sourceHostName?: string;
+    sourceIp?: string;
+    shareName: string;
+    authMode: 'guest' | 'account';
+    username?: string;
+    password?: string;
+    connectionCode?: string;
+    decryptionFailed?: boolean;
+  }>;
+  activeShares?: Array<{
+    sourceHostName?: string;
+    sourceIp?: string;
+    shareName: string;
+    authMode: 'guest' | 'account';
+    username?: string;
+    restoredPassword?: string;
+    connectionCode?: string;
+    decryptionFailed?: boolean;
+  }>;
+}): ResolvedClientCredentials | null {
+  const norm = (val?: string) => String(val || '').trim().toLowerCase();
+  const hostSet = new Set(
+    [params.targetHost, ...(params.hostCandidates || [])]
+      .map((h) => norm(h))
+      .filter(Boolean)
+  );
+  const targetShare = norm(params.shareName);
+  const requireAccount = Boolean(params.requireAccountOnly);
+
+  interface CandidateRecord extends ResolvedClientCredentials {
+    hostKeys: string[];
+    shareKey: string;
+    priorityOrder: number;
+  }
+
+  const candidates: CandidateRecord[] = [];
+  const collectHostKeys = (host?: string, ip?: string) =>
+    [norm(host), norm(ip)].filter(Boolean);
+
+  for (const t of params.savedLocationTargets || []) {
+    const authMode = t.authMode === 'account' ? 'account' : 'guest';
+    candidates.push({
+      authMode,
+      username: authMode === 'account' ? String(t.username || '').trim() : '',
+      password: authMode === 'account' ? String(t.password || '') : '',
+      source: 'location_target',
+      hostKeys: collectHostKeys(t.targetHost),
+      shareKey: norm(t.shareName),
+      priorityOrder: 1,
+    });
+  }
+
+  for (const s of params.portableShares || []) {
+    const decoded = s.connectionCode ? decodeConnectionCode(s.connectionCode) : null;
+    const authMode = s.authMode === 'account' ? 'account' : 'guest';
+    const password = authMode === 'account' ? s.password || decoded?.password || '' : '';
+    const username = authMode === 'account' ? String(s.username || decoded?.username || '').trim() : '';
+    candidates.push({
+      authMode,
+      username,
+      password,
+      connectionCode: s.connectionCode,
+      source: 'portable_share',
+      decryptionFailed: s.decryptionFailed,
+      hostKeys: collectHostKeys(s.sourceHostName || decoded?.hostName, s.sourceIp || decoded?.ip),
+      shareKey: norm(s.shareName),
+      priorityOrder: 2,
+    });
+  }
+
+  for (const s of params.locationSavedShares || []) {
+    const decoded = s.connectionCode ? decodeConnectionCode(s.connectionCode) : null;
+    const authMode = s.authMode === 'account' ? 'account' : 'guest';
+    const password = authMode === 'account' ? s.password || decoded?.password || '' : '';
+    const username = authMode === 'account' ? String(s.username || decoded?.username || '').trim() : '';
+    candidates.push({
+      authMode,
+      username,
+      password,
+      connectionCode: s.connectionCode,
+      source: 'location_share',
+      decryptionFailed: s.decryptionFailed,
+      hostKeys: collectHostKeys(s.sourceHostName || decoded?.hostName, s.sourceIp || decoded?.ip),
+      shareKey: norm(s.shareName),
+      priorityOrder: 3,
+    });
+  }
+
+  for (const s of params.activeShares || []) {
+    const decoded = s.connectionCode ? decodeConnectionCode(s.connectionCode) : null;
+    const authMode = s.authMode === 'account' ? 'account' : 'guest';
+    const password = authMode === 'account' ? s.restoredPassword || decoded?.password || '' : '';
+    const username = authMode === 'account' ? String(s.username || decoded?.username || '').trim() : '';
+    candidates.push({
+      authMode,
+      username,
+      password,
+      connectionCode: s.connectionCode,
+      source: 'active_share',
+      decryptionFailed: s.decryptionFailed,
+      hostKeys: collectHostKeys(s.sourceHostName || decoded?.hostName, s.sourceIp || decoded?.ip),
+      shareKey: norm(s.shareName),
+      priorityOrder: 4,
+    });
+  }
+
+  if (params.locationHostPreset) {
+    const hp = params.locationHostPreset;
+    const authMode = hp.authMode === 'account' ? 'account' : 'guest';
+    candidates.push({
+      authMode,
+      username: authMode === 'account' ? String(hp.username || '').trim() : '',
+      password: authMode === 'account' ? String(hp.password || '') : '',
+      source: 'location_preset',
+      hostKeys: [],
+      shareKey: norm(hp.shareName),
+      priorityOrder: 5,
+    });
+  }
+
+  const filtered = requireAccount ? candidates.filter((c) => c.authMode === 'account') : candidates;
+  if (filtered.length === 0) return null;
+
+  const hasHostMatch = (c: CandidateRecord) => c.hostKeys.some((hk) => hostSet.has(hk));
+  const sortBest = (list: CandidateRecord[]) =>
+    [...list].sort((a, b) => {
+      const aPwd = a.password ? 1 : 0;
+      const bPwd = b.password ? 1 : 0;
+      if (aPwd !== bPwd) return bPwd - aPwd;
+      const aUser = a.username ? 1 : 0;
+      const bUser = b.username ? 1 : 0;
+      if (aUser !== bUser) return bUser - aUser;
+      return a.priorityOrder - b.priorityOrder;
+    });
+
+  // 1. Exact host + shareName match
+  if (hostSet.size > 0 && targetShare) {
+    const exactBoth = filtered.filter((c) => hasHostMatch(c) && c.shareKey === targetShare);
+    if (exactBoth.length > 0) return sortBest(exactBoth)[0];
+  }
+
+  // When switching explicitly to account mode (requireAccount = true), allow safe fallback matching
+  if (requireAccount) {
+    // 2. Host matches any account entry
+    if (hostSet.size > 0) {
+      const hostOnly = filtered.filter((c) => hasHostMatch(c));
+      if (hostOnly.length > 0) return sortBest(hostOnly)[0];
+    }
+
+    // 3. Exact shareName matches account entry
+    if (targetShare) {
+      const shareOnly = filtered.filter((c) => c.shareKey === targetShare);
+      if (shareOnly.length > 0) return sortBest(shareOnly)[0];
+    }
+
+    // 4. Unambiguous single unique account credential with password
+    const withPwd = sortBest(filtered.filter((c) => Boolean(c.password)));
+    if (withPwd.length > 0) {
+      const distinctCreds = new Set(withPwd.map((c) => `${c.username}\0${c.password}`));
+      if (distinctCreds.size === 1) {
+        return withPwd[0];
+      }
+    }
+  }
+
+  return null;
+}

@@ -601,6 +601,13 @@ async function saveWebPreviewPortable(doc: PortableShareDocument): Promise<Porta
   };
 }
 
+let webLocationOpChain: Promise<unknown> = Promise.resolve();
+function runSerializedWebLocationOp<T>(fn: () => Promise<T>): Promise<T> {
+  const next = webLocationOpChain.then(() => fn());
+  webLocationOpChain = next.catch(() => undefined);
+  return next;
+}
+
 /**
  * Merges the current machine's ActiveShare list into an existing portable USB document
  * WITHOUT removing or modifying shares saved by other host PCs.
@@ -3183,7 +3190,7 @@ export const shareBridge = {
       return res;
     }
 
-    const existing = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    return await runSerializedWebLocationOp(async () => {
 
     let diskHostPreset: LocationHostPreset | undefined;
     let runtimeHostPreset: LocationHostPreset | undefined;
@@ -3306,7 +3313,8 @@ export const shareBridge = {
       savedShares: runtimeShares,
       clientTargets: runtimeClientTargets,
     };
-    const nextList = [sanitizedForSim, ...existing.filter((p) => p.profileId !== profile.profileId)];
+    const latestExisting = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    const nextList = [sanitizedForSim, ...latestExisting.filter((p) => p.profileId !== profile.profileId)];
     writeStore(STORAGE_LOCATIONS_SIM_KEY, nextList);
     this.cacheLocationProfileCredentials(runtimeProfile);
     return {
@@ -3325,6 +3333,7 @@ export const shareBridge = {
         fileName: `${profile.profileId}.location.json`,
       },
     };
+    });
   },
 
   async loadLocationProfile(profileId: string): Promise<{
@@ -3436,12 +3445,14 @@ export const shareBridge = {
     if (window.ahbiShareElectron?.deleteLocationProfile) {
       return await window.ahbiShareElectron.deleteLocationProfile(profileId);
     }
-    const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
-    writeStore(
-      STORAGE_LOCATIONS_SIM_KEY,
-      stored.filter((p) => p.profileId !== profileId)
-    );
-    return { success: true };
+    return await runSerializedWebLocationOp(async () => {
+      const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+      writeStore(
+        STORAGE_LOCATIONS_SIM_KEY,
+        stored.filter((p) => p.profileId !== profileId)
+      );
+      return { success: true };
+    });
   },
 
   async exportLocationProfileFile(profile: LocationProfileFile): Promise<{

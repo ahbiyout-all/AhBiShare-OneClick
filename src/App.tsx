@@ -1745,6 +1745,28 @@ export const App: React.FC = () => {
           persistent: firstTarget.persistent !== false,
         });
         setPendingLocationTarget({ key: stamp, target: firstTarget });
+      } else if (profile.savedShares.length > 0 || profile.hostPreset) {
+        const sourceShare = profile.savedShares[0] || profile.hostPreset;
+        const hostIp = profile.networkHint?.primaryIp || profile.networkHint?.hostname || '192.168.0.10';
+        const inferredTarget: LocationClientTargetEntry = {
+          targetHost: hostIp,
+          shareName: sourceShare?.shareName || 'AhBiShared',
+          driveLetter: 'Z:',
+          authMode: sourceShare?.authMode || 'guest',
+          username: sourceShare?.username || '',
+          password: sourceShare?.password || '',
+          persistent: true,
+        };
+        setClientDraft({
+          targetHost: inferredTarget.targetHost,
+          shareName: inferredTarget.shareName,
+          driveLetter: inferredTarget.driveLetter,
+          authMode: inferredTarget.authMode,
+          username: inferredTarget.username || '',
+          password: inferredTarget.password || '',
+          persistent: true,
+        });
+        setPendingLocationTarget({ key: stamp, target: inferredTarget });
       }
 
       if (notify) {
@@ -2470,6 +2492,9 @@ export const App: React.FC = () => {
             isScanning={isScanning}
             isConnecting={isClientConnecting || isLocationBatchApplying}
             portableShares={portableShares}
+            locationSavedShares={activeLocationProfile?.savedShares || []}
+            locationHostPreset={activeLocationProfile?.hostPreset || null}
+            activeShares={shares}
             portableStatus={portableStatus}
             currentHostname={netInfo.hostname}
             hostPolicySnapshots={hostPolicySnapshots}
