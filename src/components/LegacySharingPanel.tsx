@@ -15,6 +15,7 @@ import {
   FolderOpen,
   FolderOutput,
   HardDrive,
+  KeyRound,
   Laptop,
   Link2,
   Lock,
@@ -26,6 +27,7 @@ import {
   RotateCcw,
   Search,
   Server,
+  Shield,
   ShieldAlert,
   ShieldCheck,
   Terminal,
@@ -58,16 +60,19 @@ import {
 } from '@/types/share';
 import { LEGACY_COMPARISON_MATRIX, buildLegacyScriptBundle } from '@/services/legacyScriptEngine';
 import { classifyFailureDiagnostics, formatEraShortLabel } from '@/services/networkEvolution';
+import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
 import {
   decodeConnectionCode,
   generateSecureSharePassword,
   resolveClientAccountCredentials,
+  validateAccountUsername,
   validateFolderPath,
   validateShareName,
   validateTargetHost,
 } from '@/utils/connectionCode';
 import { shareBridge } from '@/services/shareBridge';
 import { PipelineTracker } from './PipelineTracker';
+import { PresetPasswordGrid } from './PresetPasswordGrid';
 
 interface LegacySharingPanelProps {
   netInfo: LocalNetworkInfo;
@@ -83,11 +88,13 @@ interface LegacySharingPanelProps {
   clientSteps: PipelineStep[];
   nowMs?: number;
   isInspecting: boolean;
+  isRefreshing?: boolean;
   isScanning: boolean;
   isHostExecuting: boolean;
   isClientConnecting: boolean;
   isApplyingMode: PolicyPatchMode | null;
   onInspectPolicy: () => Promise<void>;
+  onRefresh?: () => Promise<void>;
   onApplyPatch: (mode: PolicyPatchMode) => Promise<void>;
   onSelectFolder: (currentPath: string) => Promise<string | null>;
   onCreateLegacyHostShare: (config: HostConfig, targetOs: LegacyTargetOs) => Promise<void>;
@@ -105,6 +112,7 @@ interface LegacySharingPanelProps {
   onTriggerReboot: () => Promise<{ success: boolean; message: string }>;
   onBridgeImported?: () => Promise<void> | void;
   onOpenMatrix?: () => void;
+  onOpenDiagnostics?: (errorText?: string) => void;
   onNotify?: (msg: string) => void;
 }
 
@@ -223,11 +231,13 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   clientSteps,
   nowMs = Date.now(),
   isInspecting,
+  isRefreshing = false,
   isScanning,
   isHostExecuting,
   isClientConnecting,
   isApplyingMode,
   onInspectPolicy,
+  onRefresh,
   onApplyPatch,
   onSelectFolder,
   onCreateLegacyHostShare,
@@ -240,6 +250,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   onTriggerReboot,
   onBridgeImported,
   onOpenMatrix,
+  onOpenDiagnostics,
   onNotify,
 }) => {
   // Topology & 2-Step Role Tab
@@ -308,6 +319,8 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   const [portableAppliedKey, setPortableAppliedKey] = useState<string | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [showLegacyClientPass, setShowLegacyClientPass] = useState(false);
+  const [hostCmdCopied, setHostCmdCopied] = useState(false);
+  const hostCmdTimerRef = useRef<number | null>(null);
   const [clientConfig, setClientConfig] = useState<ClientTargetConfig>({
     targetHost: '192.168.0.10',
     shareName: 'WorkDocs',
@@ -346,6 +359,9 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current);
       }
+      if (hostCmdTimerRef.current !== null) {
+        window.clearTimeout(hostCmdTimerRef.current);
+      }
     };
   }, []);
 
@@ -360,6 +376,24 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
 
   const mountedSet = useMemo(() => new Set(mounts.map((m) => m.driveLetter.toUpperCase())), [mounts]);
 
+  const driveLetterOptions = useMemo(() => {
+    const seen = new Set<string>(DRIVE_LETTERS);
+    const list = [...DRIVE_LETTERS];
+    const currentDrive = String(clientConfig.driveLetter || '').trim().toUpperCase();
+    if (currentDrive && !seen.has(currentDrive)) {
+      seen.add(currentDrive);
+      list.unshift(currentDrive);
+    }
+    for (const m of mounts) {
+      const dl = String(m.driveLetter || '').trim().toUpperCase();
+      if (dl && !seen.has(dl)) {
+        seen.add(dl);
+        list.push(dl);
+      }
+    }
+    return list;
+  }, [clientConfig.driveLetter, mounts]);
+
   useEffect(() => {
     setClientConfig((prev) => {
       if (!mountedSet.has(prev.driveLetter.toUpperCase())) return prev;
@@ -370,7 +404,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   }, [mountedSet]);
 
   const isBusy =
-    isInspecting || isApplyingMode !== null || isHostExecuting || isClientConnecting;
+    isInspecting || isRefreshing || isApplyingMode !== null || isHostExecuting || isClientConnecting;
 
   const currentEra = policyStatus?.osEra || netInfo.osEra || 'win11_24h2';
   const currentBuild = policyStatus?.osBuild || netInfo.osBuild || 26100;
@@ -382,12 +416,19 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   const legacyBlockingIssues = useMemo(() => {
     if (!policyStatus) return [];
     const list: string[] = [];
-    const checkServerHostSide = direction === 'bidirectional' || direction === 'legacy_to_modern';
-    const checkClientSide = direction === 'bidirectional' || direction === 'modern_to_legacy';
+    // modern_to_legacy: 현재 Win 10·11 PC가 메인(호스트), 구형 OS가 클라이언트
+    // legacy_to_modern: 구형 OS가 메인(호스트), 현재 Win 10·11 PC가 클라이언트
+    const checkServerHostSide = direction === 'bidirectional' || direction === 'modern_to_legacy';
+    const checkClientSide = direction === 'bidirectional' || direction === 'legacy_to_modern';
 
     if (checkServerHostSide && policyStatus.networkProfile === 'Public') {
       list.push(
         `네트워크 프로필이 공용(Public) 상태여서 ${legacyOsShort} PC의 TCP 445·탐색 인바운드 접근이 차단됩니다.`
+      );
+    }
+    if (checkServerHostSide && policyStatus.firewall445Allowed === false) {
+      list.push(
+        `TCP 445 인바운드 방화벽 규칙이 닫혀 있어 ${legacyOsShort} PC가 공유 폴더에 접근할 수 없습니다 (Error 53).`
       );
     }
     if (checkServerHostSide && policyStatus.smb2Enabled === false) {
@@ -404,6 +445,11 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     }
     if (checkServerHostSide && policyStatus.smbServerSigningRequired) {
       list.push(`SMB 서버 보안 서명 강제가 켜져 있어 ${legacyOsShort} 비서명 연결 협상이 거부될 수 있습니다.`);
+    }
+    if (checkServerHostSide && policyStatus.guestNetworkLogonDenied) {
+      list.push(
+        `로컬 보안 정책(SeDenyNetworkLogonRight)에 Guest 네트워크 로그온이 차단되어 있어 무비밀번호 접속 시 Error 1385가 발생합니다.`
+      );
     }
     if (checkClientSide && policyStatus.smbClientSigningRequired) {
       list.push(
@@ -500,6 +546,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
 
   const handleHostSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isBusy) return;
     const folderErr = validateFolderPath(hostConfig.folderPath);
     if (folderErr) {
       setHostValidationError(folderErr);
@@ -511,8 +558,9 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       return;
     }
     if (hostConfig.authMode === 'account') {
-      if (!hostConfig.username.trim()) {
-        setHostValidationError('보안 계정 모드에서는 전용 계정 ID를 입력해야 합니다.');
+      const userErr = validateAccountUsername(hostConfig.username);
+      if (userErr) {
+        setHostValidationError(userErr);
         return;
       }
       if (!hostConfig.password || hostConfig.password.length < 4) {
@@ -526,6 +574,24 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     void onCreateLegacyHostShare(hostConfig, targetOs);
   };
 
+  const getHostCandidates = useCallback(
+    (hostInput?: string, extra: Array<string | undefined> = []): string[] => {
+      const norm = (val?: string) => String(val || '').trim().toLowerCase();
+      const targetNorm = norm(hostInput);
+      const matchedPeer = targetNorm
+        ? peers.find((p) => norm(p.ipAddress) === targetNorm || norm(p.hostName) === targetNorm)
+        : undefined;
+      return Array.from(
+        new Set(
+          [...extra, matchedPeer?.hostName, matchedPeer?.ipAddress]
+            .map((v) => String(v || '').trim())
+            .filter(Boolean)
+        )
+      );
+    },
+    [peers]
+  );
+
   // Step 2 Client handlers
   const applyPortableEntry = useCallback(
     (entry: PortableHostShareEntry) => {
@@ -534,6 +600,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       const decoded = entry.connectionCode ? decodeConnectionCode(entry.connectionCode) : null;
       const resolved = entry.authMode === 'account' ? resolveClientAccountCredentials({
         targetHost,
+        hostCandidates: getHostCandidates(targetHost, [entry.sourceHostName, entry.sourceIp, decoded?.hostName, decoded?.ip]),
         shareName: entry.shareName,
         requireAccountOnly: true,
         portableShares,
@@ -560,7 +627,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       setPortableAppliedKey(`${entry.sourceHostName}::${entry.shareName}::${entry.updatedAt}`);
       onNotify?.(`USB에 저장된 '${entry.sourceHostName || entry.sourceIp} · ${entry.shareName}' 연결 정보를 불러왔습니다.`);
     },
-    [portableShares, shares, onNotify]
+    [getHostCandidates, portableShares, shares, onNotify]
   );
 
   const handleCodeChange = (val: string) => {
@@ -575,6 +642,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       setCodeParseState('valid');
       const resolved = decoded.authMode === 'account' ? resolveClientAccountCredentials({
         targetHost: decoded.ip || decoded.hostName,
+        hostCandidates: getHostCandidates(decoded.ip || decoded.hostName, [decoded.ip, decoded.hostName]),
         shareName: decoded.shareName,
         requireAccountOnly: true,
         portableShares,
@@ -605,6 +673,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     const targetHost = peer.ipAddress;
     const resolved = resolveClientAccountCredentials({
       targetHost,
+      hostCandidates: getHostCandidates(targetHost, [peer.hostName]),
       shareName,
       requireAccountOnly: peer.authModeHint === 'account',
       portableShares,
@@ -621,8 +690,27 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     }));
   };
 
+  const switchToAccountMode = useCallback(() => {
+    setClientValidationError(null);
+    const resolved = resolveClientAccountCredentials({
+      targetHost: clientConfig.targetHost,
+      hostCandidates: getHostCandidates(clientConfig.targetHost),
+      shareName: clientConfig.shareName,
+      requireAccountOnly: true,
+      portableShares,
+      activeShares: shares,
+    });
+    setClientConfig((prev) => ({
+      ...prev,
+      authMode: 'account',
+      username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+      password: prev.password ? prev.password : resolved?.password || '',
+    }));
+  }, [clientConfig.targetHost, clientConfig.shareName, getHostCandidates, portableShares, shares]);
+
   const handleClientSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isBusy) return;
     const hostErr = validateTargetHost(clientConfig.targetHost);
     if (hostErr) {
       setClientValidationError(hostErr);
@@ -760,16 +848,30 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
             </p>
           </div>
 
-          <button
-            id="btn-inspect-legacy-bridge"
-            type="button"
-            disabled={isBusy}
-            onClick={() => void handleRunInspect()}
-            className="px-4 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isInspecting ? 'animate-spin' : ''}`} />
-            {isInspecting ? '브릿지 상태 점검 중...' : '현재 PC 호환 상태 재검사'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onRefresh && (
+              <button
+                id="btn-refresh-legacy"
+                type="button"
+                disabled={isBusy || isScanning}
+                onClick={() => void onRefresh()}
+                className="px-3.5 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
+                {isRefreshing ? '새로고침 중...' : '새로고침'}
+              </button>
+            )}
+            <button
+              id="btn-inspect-legacy-bridge"
+              type="button"
+              disabled={isBusy}
+              onClick={() => void handleRunInspect()}
+              className="px-4 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isInspecting ? 'animate-spin' : ''}`} />
+              {isInspecting ? '브릿지 상태 점검 중...' : '현재 PC 호환 상태 재검사'}
+            </button>
+          </div>
         </div>
 
         {/* Target OS + Bidirectional Topology Selector */}
@@ -1153,49 +1255,63 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                 </div>
 
                 {hostConfig.authMode === 'account' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-                    <div>
-                      <label htmlFor="legacy-host-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                        전용 계정 ID
-                      </label>
-                      <input
-                        id="legacy-host-acc-user"
-                        type="text"
-                        value={hostConfig.username}
-                        onChange={(e) => {
-                          setHostValidationError(null);
-                          setHostConfig({ ...hostConfig, username: e.target.value });
-                        }}
-                        className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="legacy-host-acc-pass" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                        접속 암호
-                      </label>
-                      <div className="flex gap-1.5">
+                  <div className="space-y-3 pt-1">
+                    <PresetPasswordGrid
+                      currentUsername={hostConfig.username}
+                      currentPassword={hostConfig.password}
+                      onSelectPreset={(username, password) => {
+                        setHostValidationError(null);
+                        setHostConfig((prev) => ({
+                          ...prev,
+                          username,
+                          password,
+                        }));
+                      }}
+                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                      <div>
+                        <label htmlFor="legacy-host-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          전용 계정 ID
+                        </label>
                         <input
-                          id="legacy-host-acc-pass"
+                          id="legacy-host-acc-user"
                           type="text"
-                          value={hostConfig.password}
+                          value={hostConfig.username}
                           onChange={(e) => {
                             setHostValidationError(null);
-                            setHostConfig({ ...hostConfig, password: e.target.value });
+                            setHostConfig({ ...hostConfig, username: e.target.value });
                           }}
-                          className="flex-1 min-w-0 px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setHostValidationError(null);
-                            setHostConfig({ ...hostConfig, password: generateSecureSharePassword(10) });
-                          }}
-                          title="새 암호 생성"
-                          aria-label="새 암호 생성"
-                          className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                        </button>
+                      </div>
+                      <div>
+                        <label htmlFor="legacy-host-acc-pass" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          접속 암호
+                        </label>
+                        <div className="flex gap-1.5">
+                          <input
+                            id="legacy-host-acc-pass"
+                            type="text"
+                            value={hostConfig.password}
+                            onChange={(e) => {
+                              setHostValidationError(null);
+                              setHostConfig({ ...hostConfig, password: e.target.value });
+                            }}
+                            className="flex-1 min-w-0 px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHostValidationError(null);
+                              setHostConfig({ ...hostConfig, password: generateSecureSharePassword(10) });
+                            }}
+                            title="새 암호 생성"
+                            aria-label="새 암호 생성"
+                            className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1585,7 +1701,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => void onScanLan()}
-                    disabled={isScanning}
+                    disabled={isScanning || isRefreshing}
                     className="px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                   >
                     <Radar className={`w-4 h-4 ${isScanning ? 'animate-spin text-indigo-500' : ''}`} />
@@ -1745,7 +1861,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                       onChange={(e) => setClientConfig({ ...clientConfig, driveLetter: e.target.value })}
                       className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     >
-                      {DRIVE_LETTERS.map((dl) => (
+                      {driveLetterOptions.map((dl) => (
                         <option key={dl} value={dl}>
                           {dl} 드라이브{mountedSet.has(dl) ? ' (연결됨)' : ''}
                         </option>
@@ -1772,22 +1888,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setClientValidationError(null);
-                        const resolved = resolveClientAccountCredentials({
-                          targetHost: clientConfig.targetHost,
-                          shareName: clientConfig.shareName,
-                          requireAccountOnly: true,
-                          portableShares,
-                          activeShares: shares,
-                        });
-                        setClientConfig((prev) => ({
-                          ...prev,
-                          authMode: 'account',
-                          username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
-                          password: prev.password ? prev.password : resolved?.password || '',
-                        }));
-                      }}
+                      onClick={switchToAccountMode}
                       className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
                         clientConfig.authMode === 'account'
                           ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
@@ -1799,40 +1900,54 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                   </div>
 
                   {clientConfig.authMode === 'account' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <input
-                        id="legacy-client-acc-user"
-                        aria-label="공유 접속 계정 ID"
-                        type="text"
-                        value={clientConfig.username}
-                        onChange={(e) => {
+                    <div className="space-y-3 pt-1">
+                      <PresetPasswordGrid
+                        currentUsername={clientConfig.username}
+                        currentPassword={clientConfig.password}
+                        onSelectPreset={(username, password) => {
                           setClientValidationError(null);
-                          setClientConfig({ ...clientConfig, username: e.target.value });
+                          setClientConfig((prev) => ({
+                            ...prev,
+                            username,
+                            password,
+                          }));
                         }}
-                        placeholder="사용자 ID (예: AhBiShare)"
-                        className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
-                      <div className="relative">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <input
-                          id="legacy-client-acc-pass"
-                          aria-label="공유 계정 암호"
-                          type={showLegacyClientPass ? 'text' : 'password'}
-                          value={clientConfig.password}
+                          id="legacy-client-acc-user"
+                          aria-label="공유 접속 계정 ID"
+                          type="text"
+                          value={clientConfig.username}
                           onChange={(e) => {
                             setClientValidationError(null);
-                            setClientConfig({ ...clientConfig, password: e.target.value });
+                            setClientConfig({ ...clientConfig, username: e.target.value });
                           }}
-                          placeholder="공유 계정 암호"
-                          className="w-full px-3.5 py-2 pr-10 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          placeholder="사용자 ID (예: AhBiShare)"
+                          className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
-                        <button
-                          type="button"
-                          onClick={() => setShowLegacyClientPass(!showLegacyClientPass)}
-                          aria-label={showLegacyClientPass ? '비밀번호 숨기기' : '비밀번호 표시'}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                        >
-                          {showLegacyClientPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        </button>
+                        <div className="relative">
+                          <input
+                            id="legacy-client-acc-pass"
+                            aria-label="공유 계정 암호"
+                            type={showLegacyClientPass ? 'text' : 'password'}
+                            value={clientConfig.password}
+                            onChange={(e) => {
+                              setClientValidationError(null);
+                              setClientConfig({ ...clientConfig, password: e.target.value });
+                            }}
+                            placeholder="공유 계정 암호"
+                            className="w-full px-3.5 py-2 pr-10 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowLegacyClientPass(!showLegacyClientPass)}
+                            aria-label={showLegacyClientPass ? '비밀번호 숨기기' : '비밀번호 표시'}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                          >
+                            {showLegacyClientPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1897,16 +2012,73 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                       </span>
                     </div>
                     <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">{diag.detail}</p>
-                    {onOpenMatrix && (
-                      <button
-                        type="button"
-                        onClick={onOpenMatrix}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
-                      >
-                        <ArrowLeftRight className="w-3.5 h-3.5" />
-                        {diag.actionLabel}
-                      </button>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {diag.isHostAuthOrGuestIssue ? (
+                        <>
+                          {onOpenDiagnostics && (
+                            <button
+                              id="btn-legacy-failure-open-diag"
+                              type="button"
+                              onClick={() => onOpenDiagnostics(failedStep?.error)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer shadow-sm"
+                            >
+                              <KeyRound className="w-3.5 h-3.5" />
+                              통합 해결 가이드 & 도구 열기
+                            </button>
+                          )}
+                          <button
+                            id="btn-legacy-failure-switch-account"
+                            type="button"
+                            onClick={switchToAccountMode}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 border border-indigo-300 dark:border-indigo-700 rounded-lg cursor-pointer"
+                          >
+                            <Shield className="w-3.5 h-3.5" />
+                            보안 계정 모드로 즉시 전환
+                          </button>
+                          <button
+                            id="btn-legacy-failure-copy-host-cmd"
+                            type="button"
+                            onClick={async () => {
+                              const cmd = buildHostGuestUnlockPsCommand(clientConfig.shareName);
+                              const ok = await copyTextWithFallback(cmd);
+                              if (ok) {
+                                if (hostCmdTimerRef.current !== null) {
+                                  window.clearTimeout(hostCmdTimerRef.current);
+                                }
+                                setHostCmdCopied(true);
+                                hostCmdTimerRef.current = window.setTimeout(() => {
+                                  setHostCmdCopied(false);
+                                  hostCmdTimerRef.current = null;
+                                }, 2000);
+                                onNotify?.('호스트 원클릭 복구 명령을 클립보드에 복사했습니다.');
+                              } else {
+                                onNotify?.('클립보드 복사에 실패했습니다. 통합 해결 가이드를 열어 복사하세요.');
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-lg cursor-pointer"
+                          >
+                            {hostCmdCopied ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                            {hostCmdCopied ? '복구 명령 복사됨!' : '호스트 원클릭 복구 명령 복사'}
+                          </button>
+                        </>
+                      ) : (
+                        onOpenMatrix && (
+                          <button
+                            id="btn-legacy-failure-open-matrix"
+                            type="button"
+                            onClick={onOpenMatrix}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
+                          >
+                            <ArrowLeftRight className="w-3.5 h-3.5" />
+                            {diag.actionLabel}
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
                 );
               })()}

@@ -205,7 +205,11 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
 
   const canRunRemediation =
     Boolean(report) &&
-    (report!.failedCount > 0 || report!.partialCount > 0 || report!.hasAhbiFirewallRule) &&
+    (report!.failedCount > 0 ||
+      report!.recommendedModes.length > 0 ||
+      report!.hasAhbiFirewallRule ||
+      activeShareCount > 0 ||
+      activeMountCount > 0) &&
     Boolean(onRestoreDefaults || onFullSecurityRollback);
 
   const hasHostComparison = Boolean(targetHostSnapshot && report?.targetHostName);

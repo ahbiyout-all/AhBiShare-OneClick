@@ -26,6 +26,7 @@ import {
   SharePermission,
 } from '@/types/share';
 import {
+  validateAccountUsername,
   validateFolderPath,
   validateShareName,
   validateTargetHost,
@@ -320,10 +321,13 @@ export const LocationProfileEditView: React.FC<LocationProfileEditViewProps> = (
         setValidationError(`호스트 공유폴더 #${i + 1}: ${folderPathErr}`);
         return;
       }
-      if (sh.authMode === 'account' && !(sh.username || '').trim()) {
-        setActiveTab('shares');
-        setValidationError(`호스트 공유폴더 '${sh.shareName}'의 보안 계정 사용자 이름을 입력하세요.`);
-        return;
+      if (sh.authMode === 'account') {
+        const shareUserErr = validateAccountUsername(sh.username || '');
+        if (shareUserErr) {
+          setActiveTab('shares');
+          setValidationError(`호스트 공유폴더 '${sh.shareName}': ${shareUserErr}`);
+          return;
+        }
       }
       if (sh.authMode === 'account' && !(sh.password || '').trim() && !sh.encryptedCredentials) {
         setActiveTab('shares');
@@ -387,10 +391,13 @@ export const LocationProfileEditView: React.FC<LocationProfileEditViewProps> = (
         setValidationError(`호스트 폼 프리셋: ${presetFolderErr}`);
         return;
       }
-      if (hostPreset.authMode === 'account' && !hostPreset.username.trim()) {
-        setActiveTab('preset');
-        setValidationError('호스트 폼 프리셋의 보안 계정 이름을 입력하세요.');
-        return;
+      if (hostPreset.authMode === 'account') {
+        const presetUserErr = validateAccountUsername(hostPreset.username || '');
+        if (presetUserErr) {
+          setActiveTab('preset');
+          setValidationError(`호스트 폼 프리셋: ${presetUserErr}`);
+          return;
+        }
       }
       if (hostPreset.authMode === 'account' && !(hostPreset.password || '').trim() && !hostPreset.encryptedCredentials) {
         setActiveTab('preset');

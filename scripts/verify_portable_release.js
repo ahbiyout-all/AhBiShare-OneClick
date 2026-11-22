@@ -1021,11 +1021,96 @@ assert(
   const legacyPanelAuthSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LegacySharingPanel.tsx'), 'utf8');
   assert(
     connCodeAuditSrc.includes('resolveClientAccountCredentials') &&
+      connCodeAuditSrc.includes('validateAccountUsername') &&
       clientPanelAuthSrc.includes('showClientPass') &&
       clientPanelAuthSrc.includes('EyeOff') &&
       legacyPanelAuthSrc.includes('showLegacyClientPass') &&
       appSrc.includes('inferredTarget'),
-    'Client credential resolution helper, password visibility toggles in ClientPanel/LegacySharingPanel, and App.tsx inferred client target fallback must be present'
+    'Client credential resolution helper, validateAccountUsername, password visibility toggles in ClientPanel/LegacySharingPanel, and App.tsx inferred client target fallback must be present'
+  );
+  const presetGridSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'PresetPasswordGrid.tsx'), 'utf8');
+  const matrixRefreshSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
+  assert(
+    presetGridSrc.includes("username: 'Visitor'") &&
+      !presetGridSrc.includes("username: 'Guest'") &&
+      hostPanelSrc.includes('PresetPasswordGrid') &&
+      hostPanelSrc.includes('validateAccountUsername') &&
+      hostPanelSrc.includes('disabled={isExecuting || isRefreshing}') &&
+      clientPanelAuthSrc.includes('PresetPasswordGrid') &&
+      clientPanelAuthSrc.includes('switchToAccountMode') &&
+      clientPanelAuthSrc.includes('getHostCandidates') &&
+      clientPanelAuthSrc.includes('disabled={isConnecting || isRefreshing}') &&
+      legacyPanelAuthSrc.includes('PresetPasswordGrid') &&
+      legacyPanelAuthSrc.includes('validateAccountUsername') &&
+      legacyPanelAuthSrc.includes('getHostCandidates') &&
+      legacyPanelAuthSrc.includes('disabled={isScanning || isRefreshing}') &&
+      rollbackPanelSrc.includes('disabled={busyScope !== null || isInspecting || isRefreshing}') &&
+      hostPanelSrc.includes('btn-refresh-host') &&
+      clientPanelAuthSrc.includes('btn-refresh-client') &&
+      matrixRefreshSrc.includes('btn-refresh-matrix') &&
+      legacyPanelAuthSrc.includes('btn-refresh-legacy') &&
+      appSrc.includes('btn-refresh-logs') &&
+      rollbackPanelSrc.includes('btn-refresh-rollback') &&
+      appSrc.includes('activeLocationProfileRef'),
+    '12th audit regressions failed: numeric account presets (Visitor avoiding *-501 Guest lock), validateAccountUsername, hostCandidates, switchToAccountMode, 6-tab refresh buttons, or concurrency guards missing'
+  );
+  assert(
+    locEditViewSrc.includes('validateAccountUsername') &&
+      locModalSrc.includes('!isSaving && !isBatchApplying && !loadingEditId') &&
+      locModalSrc.includes('disabled={isSaving || isBatchApplying || Boolean(loadingEditId)}') &&
+      locModalSrc.includes('disabled={isSaving || isBatchApplying}') &&
+      bridgeSrc.includes('const resolvedAuthMode: AuthMode =') &&
+      bridgeSrc.includes('decodeConnectionCode(s.connectionCode)') &&
+      bridgeSrc.includes('this.pingHost(host, [], netInfo)') &&
+      (mainJsSrc.match(/if \(downloadState\.cancelled\)/g) || []).length >= 2 &&
+      psEngineSrc.includes('[int]$lmKey.LmCompatibilityLevel -lt 3') &&
+      bridgeSrc.includes('webSimPolicyBase.lmCompatibilityLevel < 3') &&
+      rollbackReportSrc.includes('report!.recommendedModes.length > 0') &&
+      !rollbackReportSrc.includes('report!.partialCount > 0'),
+    '13th audit regressions failed: LocationProfileEditView validateAccountUsername, LocationManagerModal loadingEditId/isBatchApplying guards, shareBridge client account snapshot & Web Preview hydration & preflight ping netInfo, main.js updater cancel race guard, strict_26h2_default LmCompatibilityLevel < 3 hardening, or SecurityRollbackReport remediation condition'
+  );
+  assert(
+    progressModalSrc.includes('const onCloseRef = useRef(onClose);') &&
+      !progressModalSrc.includes('}, [job.isOpen, isSuccess, job.jobKey, onClose]);') &&
+      !progressModalSrc.includes('}, [job.isOpen, isRunning, onClose]);') &&
+      locPreflightModalSrc.includes('const onCloseRef = useRef(onClose);') &&
+      !locPreflightModalSrc.includes('}, [isOpen, isChecking, isExecuting, onClose]);') &&
+      legacyPanelAuthSrc.includes('driveLetterOptions') &&
+      legacyPanelAuthSrc.includes('switchToAccountMode') &&
+      legacyPanelAuthSrc.includes('diag.isHostAuthOrGuestIssue') &&
+      legacyPanelAuthSrc.includes('buildHostGuestUnlockPsCommand') &&
+      legacyPanelAuthSrc.includes('if (isBusy) return;') &&
+      appSrc.includes('onOpenDiagnostics={(errText) => {') &&
+      hostPanelSrc.includes('if (isExecuting || isRefreshing) return;') &&
+      clientPanelAuthSrc.includes('if (isConnecting || isRefreshing) return;') &&
+      mainJsSrc.includes('tagName = decodeURIComponent(tagMatch[1]);') &&
+      mainJsSrc.includes('tagName = tagMatch[1];'),
+    '14th audit regressions failed: WorkProgressModal/LocationPreflightModal onCloseRef timer/listener stability, LegacySharingPanel failure recovery parity/driveLetterOptions/isBusy submit guard, HostPanel/ClientPanel Enter-key busy guards, or main.js Atom tag decodeURIComponent try/catch guard'
+  );
+  const legacyScriptEngineSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'legacyScriptEngine.ts'), 'utf8');
+  assert(
+    legacyPanelAuthSrc.includes("const checkServerHostSide = direction === 'bidirectional' || direction === 'modern_to_legacy';") &&
+      legacyPanelAuthSrc.includes("const checkClientSide = direction === 'bidirectional' || direction === 'legacy_to_modern';") &&
+      legacyPanelAuthSrc.includes('policyStatus.firewall445Allowed === false') &&
+      legacyPanelAuthSrc.includes('policyStatus.guestNetworkLogonDenied') &&
+      legacyScriptEngineSrc.includes('[char]34+$gName+[char]34') &&
+      legacyScriptEngineSrc.includes('게스트$') &&
+      legacyScriptEngineSrc.includes('LanmanWorkstationPolicy.reg') &&
+      legacyScriptEngineSrc.includes('Resetting modified security values to hardened baseline first...') &&
+      legacyScriptEngineSrc.includes('@FirewallAPI.dll,-28502') &&
+      legacyScriptEngineSrc.includes('profile=any') &&
+      legacyScriptEngineSrc.includes('/featurename:SMB1Protocol /all /norestart') &&
+      psEngineSrc.includes('/v forceguest /t REG_DWORD /d 0') &&
+      psEngineSrc.includes('HNetCfg.FwPolicy2') &&
+      psEngineSrc.includes('AhBiShare-Legacy-SMB-445') &&
+      psEngineSrc.includes('mrxsmb10 start= demand') &&
+      psEngineSrc.includes('로컬 공유 계정 생성/갱신 실패 (') &&
+      netEvoAuditSrc.includes("code: 'Error 58'") &&
+      netEvoAuditSrc.includes('snap.osBuild > 0 && snap.osBuild < 10240 ? 1 : 0') &&
+      bridgeSrc.includes('build > 0 && build < 9200') &&
+      bridgeSrc.includes('async ensureLegacyRollbackSnapshot(') &&
+      appSrc.includes('await shareBridge.ensureLegacyRollbackSnapshot(freshNet)'),
+    '15th audit (Legacy OS sharing verification) regressions failed: inverted direction check, [char]34/게스트$ quote & SID handling, baseline-first rollback overlay, forceguest=0 reset, HNetCfg.FwPolicy2 Win 7 profile, AhBiShare-Legacy-SMB-445 detection, Win 7 mrxsmb10 demand rollback, Error 58 diagnostic, Win 7/8.1 osDisplayVersion fallback, or account-mode client guest-unlock skip'
   );
   pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 

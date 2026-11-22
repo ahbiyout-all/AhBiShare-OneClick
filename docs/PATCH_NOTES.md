@@ -1,6 +1,6 @@
 # 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)
 
-## 📅 v1.2.1 (2026-11-21) — [PATCH] 10대 보안 원복 심층 감사 · 전문가 레지스트리 비교 · 사용장소 프로필 내용 수정 · 사전 검증(Pre-flight Check) & 7~11차 자아성찰 오류 수정
+## 📅 v1.2.1 (2026-11-22) — [PATCH] 10대 보안 원복 심층 감사 · 전문가 레지스트리 비교 · 사용장소 프로필 내용 수정 · 사전 검증 · 쉬운 숫자 암호 프리셋/가시성/전 탭 새로고침 & 7~14차 자아성찰 오류 수정
 - **변경 구분**: `PATCH` (버그 수정 · 보안 및 호환성 패치 (PATCH))
 - **개발자 · 저작권**: AhBiYout · (주)청운정보시스템 (cisnet.co.kr)
 - **배포 파일**: `AhBiShare_OneClick_v1.2.1.exe`, `AhBiShare_OneClick-Lite_v1.2.1.exe`, `AhBiShare_OneClick_Win7_v1.2.1.exe`, `AhBiShare_OneClick-Setup_v1.2.1.exe`
@@ -10,26 +10,49 @@
 2. **전문가 레지스트리 원시 값 좌우 비교 뷰(`ExpertComparisonView`)**: 로컬 PC와 연결된 대상 호스트의 10대 보안 정책 실제 레지스트리 경로·키·원시 값(`REG_DWORD` 등)을 수집(`buildRawSecurityRegistryScript`)해 나란히 비교·복사할 수 있습니다.
 3. **저장된 사용장소별 프로필(`.location.json`) 파일 내용 직접 수정 기능(`LocationProfileEditView` · `saveEditedLocationProfile`)**: 장소 관리 모달과 상단 프로필 바(`내용 수정`)에서 기존 프로필의 이름·메모·참고 네트워크 대역·선호 호환 모드·호스트 공유폴더(TTL/계정 암호 포함)·클라이언트 드라이브 타깃·호스트 폼 프리셋을 직접 편집하고 AES-256-GCM 재암호화·`ABSHARE://` 연결 코드 동기화 저장을 지원합니다.
 4. **사용장소 일괄 적용 사전 검증(Pre-flight Check: `LocationPreflightModal` · `preflightLocationProfileBatch` · `buildLocationPreflightScript`)**: 일괄 적용 실행 직전 읽기 전용 검사를 선행하여 관리자 권한·SMB 서비스·참고 네트워크 대역 일치 여부, 호스트 공유폴더 경로 존재·NTFS ACL 읽기 권한·드라이브 문자 및 기존 SMB 공유 충돌·계정 암호 유효성, 클라이언트 드라이브 문자 충돌·대상 호스트 TCP 445 포트 응답·자격증명 복원 가능 여부를 항목별 `통과`·`주의`·`오류` 배지로 표시하며, 모달에서 `다시 검사` 또는 `프로필 내용 수정`으로 즉시 이동 후 일괄 적용(`WorkProgressModal`)을 진행할 수 있습니다.
-4. **7·8차 자아성찰 심층 점검 오류 수정**:
+5. **보안 계정 편의성(비밀번호 눈 아이콘 토글 · 5종 숫자 암호 프리셋) & 전 탭 통합 새로고침 (`v1.2.1`)**:
+   - `ClientPanel` 및 `LegacySharingPanel` 클라이언트 보안 계정 암호 입력란에 비밀번호 가시성 토글(`Eye` / `EyeOff`)과 다중 출처 자격증명 자동 매칭(`resolveClientAccountCredentials`)을 적용해 오타를 방지하고 재입력 부담을 줄였습니다.
+   - `PresetPasswordGrid` 컴포넌트를 신설해 메인 PC(개설)·클라이언트 PC(접속)·구형 OS(Step 1/2) 보안 계정 폼 상단에 사무실 표준 5종 숫자 암호 프리셋(`AhBiShare/123456`, `Admin/789012`, `Manager/202620`, `Staff/555555`, `Visitor/111111`)을 원클릭 적용 버튼으로 배치했습니다.
+   - 워크스페이스 전 탭(공유 개설·클라이언트 연결·OS 호환성 매트릭스·구형 OS 공유·실행 이력·보안 원복) 상단에 통합 `새로고침` 버튼(`handleRefreshTab`)을 배치해 네트워크 정보, 공유·드라이브 Live 상태, USB 포터블·사용장소 프로필, OS 보안 정책 및 LAN 탐색 결과를 즉시 재동기화할 수 있습니다.
+6. **7·8차 자아성찰 심층 점검 오류 수정**:
    - IPv4 주소 점(`.5`, `.86` 등)이 SMB 에러 코드 `5`·`86`·`53`으로 오분류되던 오류 차단 및 HTTPS 리다이렉트 `settled` 가드 추가
    - `LocationProfileEditView` `PATCH_MODE_OPTIONS` 11종 전체 보존, 보안 계정 모드 필수 비밀번호·중복 드라이브 검증, TTL 변경 시 만료 시각 초기화, `LocationManagerModal` 비동기 편집 로드 race-condition 분리, `applyLocationProfileBatch` 빈 `sourceHostName` `LOCATION` 캐시 폴백 및 `guest` 프리셋 잔류 암호 제거 적용
    - 만료 보안 원복 시 LAN 피어 목록 자동 새로고침 및 로컬 게스트 계정·익명 SID 판정 보강
-5. **9차 자아성찰 심층 점검 오류 수정**:
+7. **9차 자아성찰 심층 점검 오류 수정**:
    - `portableStore.js`: 비밀번호 재입력 없이 `username`만 수정 저장 시 기존 `encryptedCredentials` 암호문 내부의 이전 사용자명이 수정된 상위 `username`을 덮어쓰던 우선순위 역전(`shares`·`clientTargets`·`hostPreset`) 수정
    - `App.tsx`: `hostPreset` 없는 사용장소 프로필의 `savedShares[0]` 폴백 적용 시 `guest` 모드에서 직전 작업 중이던 `hostDraft.password`가 잔류 유입되던 누출 차단
    - `LocationProfileEditView.tsx` · `LocationManagerModal.tsx`: 공유/클라이언트 행 삭제 시 `visiblePasswords` 인덱스 재정렬(삭제 직후 다음 행 비밀번호 노출 방지), `hostPreset` TTL 비활성화 시 `autoRevokeOnExpiry` 자동 해제, 상단 바 편집 진입 시 목록 화면 깜빡임 제거용 로딩 상태 표시 추가
    - `powershellEngine.ts`: `buildRawSecurityRegistryScript` 원격 레지스트리 `Wait-Job` 타임아웃을 `3초`에서 `6초`로 상향해 PowerShell 콜드 스타트 오탐 타임아웃 방지
-6. **10차 자아성찰 심층 점검 오류 수정**:
+8. **10차 자아성찰 심층 점검 오류 수정**:
    - `App.tsx` (`handleFullSecurityRollback`) · `RollbackPanel.tsx`: 전체 보안 원복 실행 시 실제 성공 여부(`allOk`), 진행 중 충돌(`!jobKey`), 예외 오류 메시지를 그대로 반환·표시해 실패 시에도 성공 배너가 뜨던 문제 수정
    - `shareBridge.ts` (`loadWebPreviewPortable` · `saveLocationProfile`): 웹 프리뷰 로더에서 수정된 상위 `username`이 `dec.username`보다 우선하도록 정렬하고, Electron 프로필 저장 직후 복호화된 `res.profile` 자격증명을 런타임 캐시에 재보관해 암호 미재입력 저장 직후 일괄 적용 실패 방지
    - `App.tsx` (`applyLocationProfileToWorkspace`) · `HostPanel.tsx`: 암호 없는 사용장소 프로필 전환 시 직전 프로필/작업의 `prev.password`가 새 호스트 폼으로 유입되던 교차 누출 차단
    - `LocationManagerModal.tsx` · `LocationProfileEditView.tsx`: 편집 데이터 비동기 로드 중 `Escape` 모달 종료 차단(`!loadingEditId`) 및 인증 방식을 `guest`로 전환 시 잔류 `encryptedCredentials`·암호 상태 즉시 초기화
    - `main.js` (`install-portable-update`): `fs.mkdtempSync` 스테이징 폴더 생성을 `try/catch` 내부로 이동하고 null-safe `cleanupStaging`을 적용해 임시 폴더 생성 실패 시 미처리 IPC 예외 방지
-7. **11차 자아성찰 심층 점검 오류 수정**:
+9. **11차 자아성찰 심층 점검 오류 수정**:
    - `powershellEngine.ts` · `types/share.ts` · `shareBridge.ts`: `legacy_bridge_rollback` 실행 시 사전 스냅샷의 `guestAccountEnabled` 상태를 복원해 내장 `*-501` Guest 계정을 비활성화하도록 보강하고, 웹 프리뷰 시뮬레이션 정책(`rollbackPolicies` · `legacy_bridge_compat` · `legacy_bridge_rollback`) 대칭 필드(`everyoneIncludesAnonymous`, `ahbiFirewallRulePresent`, `smbEncryptData`, `limitBlankPasswordUse`, `restrictAnonymous`, `guestAccountEnabled`) 정렬
    - `shareBridge.ts` (`saveLocationProfile` · `loadLocationProfile`): Electron 저장 시 실패 전 조기 캐시 파기를 제거(성공 후 재캐시)하고, 웹 프리뷰 모드에서도 `encryptWebSimCredentials` / `decryptWebSimCredentials` 기반 AES-GCM 암호화 저장 및 암호 미재입력 편집 시 기존 자격증명 보존 적용
    - `networkEvolution.ts` (`deriveRawRegistrySnapshotFromHostSnap`): 실측 `rawRegistrySnapshot`이 없는 USB 호스트 스냅샷(`!isPreset`)에서 미측정 클라이언트 서명(`cliRequireSig`) 및 `everyoneincludesanonymous`(`everyAnon`) 값을 추정 생성하지 않고 `<미측정>`(`null`)으로 표시
    - `LocationProfileEditView.tsx` · `connectionCode.ts` · `main.js` · `updateChecker.ts`: `hostPreset` 보안 계정 필수 비밀번호 및 `validateShareName` · `validateFolderPath` · `validateTargetHost` 일괄 검증 추가, 하이픈(`-`) 시작 호스트 CLI 옵션 오인 차단, `openExternalReleaseUrl` HTTPS/HTTP 검증 및 `window.open` 제거
+10. **12차 자아성찰 심층 점검 오류 수정**:
+   - `PresetPasswordGrid.tsx` · `connectionCode.ts` · `HostPanel.tsx` · `LegacySharingPanel.tsx`: 보안 계정 모드에서 PowerShell(`h_auth`)이 Windows 내장 `*-501` `Guest` 계정을 자동 비활성화 및 `SeDenyNetworkLogonRight`로 차단함에 따라 발생하던 프리셋 충돌을 제거(`Guest` → 전용 `Visitor / 111111` 프리셋 교체)하고, `validateAccountUsername`으로 호스트 폼에서 내장 `Guest`/`게스트` 및 특수문자·길이 초과 ID 입력을 사전 차단
+   - `ClientPanel.tsx` · `LegacySharingPanel.tsx`: 연결 실패 진단 배너의 `보안 계정 모드로 즉시 전환` 버튼(`#btn-failure-switch-account`)이 자격증명 자동 복원 없이 모드만 바꾸던 누락을 공통 `switchToAccountMode`로 통합 수정하고, 모든 `resolveClientAccountCredentials` 호출에 LAN 피어 IP·호스트명 매칭 기반 `hostCandidates`를 전달해 IP 변경·호스트명 전환 시에도 저장 암호가 일관 복원되도록 개선
+   - `HostPanel.tsx` · `ClientPanel.tsx` · `LegacySharingPanel.tsx` · `RollbackPanel.tsx` · `App.tsx`: `PresetPasswordGrid` 상태 갱신을 함수형 업데이터(`setConfig((prev) => ...)`)로 전환하고, 탭 새로고침 중 중복 실행 방지(`disabled={... || isRefreshing}`, `handleScanLan` / `handleInspectOsPolicy` `refreshTabInFlightRef` 가드) 및 `handleRefreshTab` 내 활성 사용장소 프로필(`activeLocationProfileRef`) 자동 재동기화·삭제 정리 적용
+11. **13차 자아성찰 심층 점검 오류 수정**:
+   - `LocationProfileEditView.tsx` · `LocationManagerModal.tsx`: 사용장소 프로필 편집 저장 시 호스트 공유폴더 및 `hostPreset` 보안 계정 ID에도 `validateAccountUsername`을 적용해 내장 `Guest`/특수문자/20자 초과 SAM 계정 저장을 사전 차단하고, 프로필 편집 데이터 비동기 로드(`loadingEditId`) 및 일괄 적용(`isBatchApplying`) 중 배경 닫기·닫기(`X`)·JSON 가져오기·저장 버튼 중복 조작 잠금 가드를 정렬
+   - `shareBridge.ts` (`buildLocationProfileSnapshot` · `saveLocationProfile` · `loadLocationProfile` · `preflightLocationProfileBatch`): OS `net use` 동기화 드라이브가 `guest`로 판별되더라도 활성 `clientConfig`가 동일 타깃의 `account` 모드일 때 `resolvedAuthMode`와 비밀번호를 스냅샷에 온전히 보존하도록 수정하고, 웹 프리뷰 위치 프로필 저장·로드 시 `decodeConnectionCode`·`'LOCATION'` 캐시 폴백 보강 및 일괄 적용 사전 검증 `pingHost(host, [], netInfo)` 서브넷 컨텍스트 전달 적용
+   - `main.js` (`install-portable-update`): 다운로드 완료 직후 및 PowerShell self-replace `spawn` 직전에 `downloadState.cancelled`를 재검사해 취소 경쟁 조건(cancel race condition) 발생 시 스테이징 폴더만 정리하고 교체·재실행을 안전 중단하도록 보강
+   - `powershellEngine.ts` · `shareBridge.ts` · `SecurityRollbackReport.tsx`: `strict_26h2_default` 보안 원복 시 하향된 `LmCompatibilityLevel < 3` 레지스트리 값을 NTLMv2 전용(`3`)으로 실제 복원하도록 추가하고, OS 기본 NTLM(`LmCompatibilityLevel=null`, 조치 불필요 `partial`) 환경에서 `#btn-harden-remaining-policies` 버튼이 무한 반복 노출되던 조건(`report!.partialCount > 0` → `recommendedModes.length > 0 || failedCount > 0 || hasAhbiFirewallRule || activeShareCount > 0 || activeMountCount > 0`)을 수정
+12. **14차 자아성찰 심층 점검 오류 수정**:
+   - `WorkProgressModal.tsx` · `LocationPreflightModal.tsx`: `onClose` 콜백을 `onCloseRef`(`useRef`)에 보관하고 1.5초 자동 닫힘 타이머 및 `Escape`/포커스 트랩 `keydown` `useEffect` 의존성 배열에서 제거해, 부모 컴포넌트의 1초 타이머 틱·상태 재렌더링 시 자동 닫힘 카운트다운이 리셋되거나 전역 키 리스너가 반복 재등록되던 문제 수정
+   - `LegacySharingPanel.tsx` · `App.tsx`: 구형 OS `2단계 클라이언트` 연결 실패 배너(`diag.isHostAuthOrGuestIssue`)에 `통합 해결 가이드 & 도구 열기`(`onOpenDiagnostics`), `보안 계정 모드로 즉시 전환`(`switchToAccountMode`), `호스트 원클릭 복구 명령 복사`(`buildHostGuestUnlockPsCommand`) 복구 액션을 `ClientPanel`과 동일하게 보강하고, 드라이브 선택 목록에 비표준/현재 연결 드라이브(`driveLetterOptions`)가 누락되던 결함 수정
+   - `HostPanel.tsx` · `ClientPanel.tsx` · `LegacySharingPanel.tsx`: 폼 제출 버튼(`disabled`)이 잠긴 실행·새로고침 중에도 입력란에서 `Enter` 키를 누르면 `onSubmit`이 우회 실행되던 중복 제출 가드(`if (isExecuting || isRefreshing) return;` / `if (isConnecting || isRefreshing) return;` / `if (isBusy) return;`) 추가
+   - `main.js` (`check-github-updates`): Atom 릴리즈 폴백에서 비정상 `%` 인코딩이 포함된 태그 URL 시 `decodeURIComponent(tagMatch[1])` 미처리 `URIError` 예외로 전체 폴백이 중단되지 않도록 `try/catch` 안전 처리 추가
+13. **구형 OS 공유(Win 7·8·8.1 ⇄ Win 10·11) 전수 검증 및 개선 (15차 심층 점검)**:
+   - `LegacySharingPanel.tsx`: `modern_to_legacy`(최신 PC 메인 → 구형 클라이언트) vs `legacy_to_modern`(구형 PC 메인 → 최신 클라이언트) 진단 방향 판별식이 반대로 뒤집혀 호스트/클라이언트 차단 경고가 누락되던 결함 수정 및 TCP 445 방화벽(`firewall445Allowed === false`)·Guest 네트워크 로그온 거부(`guestNetworkLogonDenied`) 호스트 측 진단 추가
+   - `legacyScriptEngine.ts` (오프라인 USB `.bat`/`.reg`): `cmd.exe` 내부 PowerShell 인자 `\"` 파싱 깨짐을 `[char]34`로 교정하고 한글 Windows `게스트$` 로컬 보안 정책 토큰 인식 추가, `AhBiShare_Legacy_Rollback.bat` 실행 시 **신규 생성된 완화 키를 먼저 표준 보안값으로 초기화한 뒤** 사전 백업(`LanmanWorkstationPolicy.reg` 포함)을 덮어씌우도록 복원 순서 수정, `forceguest=0` 복원·로케일 무관 방화벽 그룹 ID(`@FirewallAPI.dll,-28502`/`-32752`)·`profile=any`·Win 8~11 `Public→Private` 전환·`DISM /all` 적용
+   - `powershellEngine.ts` · `networkEvolution.ts` · `shareBridge.ts` · `App.tsx`: `host`·`legacy_bridge_rollback`·`strict_26h2_default` 원복 시 `Control\Lsa\forceguest=0` 복원, Win 7(`build < 10240`) `HNetCfg.FwPolicy2` 활성 방화벽 프로필 판별·`AhBiShare-Legacy-SMB-445` 및 `파일 및 프린터 공유(SMB-In)` 규칙 인식·`mrxsmb10 start= demand` 대칭 원복·`net user` 상세 오류 메시지 전파, SMB 암호화·방언 불일치 **`Error 58`** 전용 진단 분류 및 `osBuild === 0` SMBv1 오판 가드 추가, Win 7/8/8.1 `osDisplayVersion` `22H2` 오표기 수정(`SP1`/`8.0`/`8.1`), 구형 OS 클라이언트 **보안 계정 모드** 연결 시 불필요한 로컬 `Guest(*-501)` 개방 대신 원복 스냅샷(`ensureLegacyRollbackSnapshot`)만 확보하고 클라이언트 정책만 정렬하도록 보안 강화
+
 
 ## 📅 v1.2.0 (2026-11-19) — [MINOR] 실시간 작업 진행 모션창(WorkProgressModal) 및 6차 자아성찰 심층 점검 안정화
 - **변경 구분**: `MINOR` (하위 호환 신규 기능 추가 (MINOR))

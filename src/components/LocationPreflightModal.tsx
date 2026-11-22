@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -82,16 +82,19 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
   onEditProfile,
   onConfirmExecute,
 }) => {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !isChecking && !isExecuting) {
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, isChecking, isExecuting, onClose]);
+  }, [isOpen, isChecking, isExecuting]);
 
   if (!isOpen || !profile) return null;
 

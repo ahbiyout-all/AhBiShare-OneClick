@@ -27,6 +27,9 @@
   - 저장된 사용장소 파일의 기본 정보·참고 네트워크 대역·선호 호환 모드·호스트 공유폴더(TTL/계정 암호)·클라이언트 드라이브·호스트 프리셋을 앱 내에서 직접 편집(`내용 수정`)하고 AES-256-GCM 재암호화 저장을 지원합니다.
 - **사용장소 일괄 적용 사전 검증(Pre-flight Check) 단계 및 결과 모달 (`v1.2.1`)**:
   - 사용장소 1클릭 일괄 적용 직전 `LocationPreflightModal`을 통해 관리자 권한·SMB 서비스·참고 네트워크 대역, 호스트 공유폴더 경로 존재·NTFS ACL 권한·기존 공유 충돌·자격증명, 클라이언트 드라이브 문자 충돌·대상 호스트 TCP 445 포트 연결 가능 여부를 읽기 전용으로 사전 점검(`buildLocationPreflightScript` · `preflightLocationProfileBatch`)하고 `통과`·`주의`·`오류` 배지 및 `다시 검사`·`프로필 내용 수정`·`일괄 적용 실행` 액션을 제공합니다.
+- **보안 계정 편의 UI(비밀번호 가시성 토글 · 5종 숫자 암호 프리셋) & 전 탭 통합 새로고침 (`v1.2.1`)**:
+  - `ClientPanel` 및 `LegacySharingPanel` 클라이언트 암호 입력란에 비밀번호 가시성 토글(`Eye`/`EyeOff`)과 다중 출처 자격증명 자동 매칭(`resolveClientAccountCredentials` · `hostCandidates`)을 적용해 오타를 방지합니다.
+  - `PresetPasswordGrid`를 통해 메인·클라이언트·구형 OS 보안 계정 폼 상단에 5종 사무실 표준 숫자 암호 프리셋(`AhBiShare/123456` ~ `Visitor/111111`)을 제공하며, 워크스페이스 전 6개 탭 상단에 통합 **새로고침 버튼(`handleRefreshTab`)**을 배치했습니다.
 - **실시간 작업 진행 모션창 (`WorkProgressModal`) — 주요 작업 11종 전면 적용 (`v1.2.0`)**:
   - 공유 개설·해제, 네트워크 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS(Win 7/8) 통합 개설·접속, 사용장소 일괄 적용, 호스트·클라이언트·만료 보안 원복까지 모든 주요 작업 시 **듀얼 링 SVG 회전 모션 + 실시간 단계 진행 타임라인 + 경과 시간 표시창**을 제공합니다.
   - 실행 중에는 닫기·ESC·배경 클릭·키보드(`Enter`/`Space`/`Tab`) 재실행을 차단하는 중앙 잠금 및 본문 스크롤 잠금을 적용하며, 작업 성공 시 **1.5초 카운트다운 자동 닫힘**, 오류 발생 시 원인 안내와 함께 수동 확인 시까지 창을 유지합니다.
@@ -38,7 +41,14 @@
   - 기존 공유 데이터(`.portable.json`) 및 사용장소 프로필(`locations/`)은 안전하게 보존됩니다.
 
 ### 🔧 24H2/25H2 공유 오류 해결 & 심층 점검(Deep Audit) (`v1.1.1` ~ `v1.2.1`)
-- **7~11차 자아성찰 심층 점검 — 레거시 `*-501` Guest 원복 · 웹 프리뷰 암호화 · 프로필 검증 & 원격 레지스트리 안정화 (`v1.2.1`)**:
+- **구형 OS(Win 7·8·8.1 ⇄ Win 10·11) 공유 전수 검증 및 개선 (15차 심층 점검 · `v1.2.1`)**:
+  - `LegacySharingPanel.tsx`: `modern_to_legacy` ↔ `legacy_to_modern` 토폴로지 방향 판별 역전을 바로잡아 호스트/클라이언트 차단 진단이 정확한 방향에서 동작하도록 수정하고, 호스트 측 TCP 445 방화벽(`firewall445Allowed === false`) 및 Guest 네트워크 로그온 거부(`guestNetworkLogonDenied`) 진단을 추가했습니다.
+  - `legacyScriptEngine.ts` (USB 오프라인 키트): PowerShell `-Command "..."` 내부 `\"` 따옴표 파싱 깨짐을 `[char]34`로 교정하고 한글 `게스트$` 정책 토큰을 인식하도록 보강했으며, `Rollback.bat` 복원 순서를 **표준 보안값 선초기화 → 사전 백업(`LanmanWorkstationPolicy.reg` 포함) 덮어쓰기**로 고쳐 신규 생성된 완화 키가 잔류하지 않게 개선하고, `forceguest=0`·로케일 무관 방화벽 그룹(`@FirewallAPI.dll,-28502`/`-32752`)·`profile=any`·`Public→Private`·`DISM /all`을 적용했습니다.
+  - `powershellEngine.ts` · `networkEvolution.ts` · `shareBridge.ts` · `App.tsx`: `host`·`legacy_bridge_rollback`·`strict_26h2_default` 원복에 `forceguest=0` 초기화를 추가하고, Win 7 `HNetCfg.FwPolicy2` 활성 프로필 판별·`AhBiShare-Legacy-SMB-445`/`파일 및 프린터 공유(SMB-In)` 인식·`mrxsmb10 start= demand` 대칭 원복·`net user` 상세 오류 캡처를 구현했으며, SMB 전송 암호화·방언 불일치 **`Error 58`** 진단 분류, Win 7/8.1 `osDisplayVersion`(`SP1`/`8.0`/`8.1`) 보정 및 구형 OS **보안 계정 모드** 연결 시 불필요한 로컬 `Guest(*-501)` 개방 대신 `ensureLegacyRollbackSnapshot`만 확보하도록 개선했습니다.
+- **7~14차 자아성찰 심층 점검 — 모달 타이머·구형 OS 실패 복구·Enter 중복 제출·Atom URL & NTLM 복원 안정화 (`v1.2.1`)**:
+  - `WorkProgressModal` · `LocationPreflightModal` `onCloseRef` 안정화로 1.5초 자동 닫힘/전역 키보드 리스너 재등록을 차단하고, `LegacySharingPanel` `2단계 클라이언트` 실패 배너에 `통합 해결 가이드`·`보안 계정 전환`(`switchToAccountMode`)·`호스트 복구 명령 복사` 및 비표준 드라이브 선택(`driveLetterOptions`)을 보강했으며, `HostPanel`/`ClientPanel`/`LegacySharingPanel` `Enter` 키 중복 제출 가드와 `main.js` Atom 태그 `decodeURIComponent` 예외 방어를 추가했습니다.
+  - `LocationProfileEditView` · `LocationManagerModal` 내 `validateAccountUsername` SAM 계정 검증 및 `loadingEditId`/`isBatchApplying` 모달 잠금 가드 정렬, `shareBridge.ts` 내 활성 `account` 클라이언트 스냅샷 `resolvedAuthMode` 보존·웹 프리뷰 `decodeConnectionCode`/`LOCATION` 자격증명 복원·`pingHost(host, [], netInfo)` 서브넷 전달, `main.js` 포터블 업데이터 `downloadState.cancelled` 취소 경쟁 조건(cancel race) 차단, `strict_26h2_default` `LmCompatibilityLevel < 3` 실제 복원 및 `SecurityRollbackReport` 미복구 버튼 무한 루프 방지(`recommendedModes` 기반 판정)를 반영했습니다.
+  - Windows 보안 계정 모드에서 자동 비활성화되는 내장 `*-501` `Guest` 계정과의 프리셋 충돌을 제거(`Visitor / 111111` 교체 및 `validateAccountUsername` 사전 차단)하고, 실패 배너의 `보안 계정 모드로 즉시 전환`(`switchToAccountMode`)·LAN 피어 기반 `hostCandidates` 교차 매칭·전 탭 새로고침 동시성 가드(`isRefreshing` / `refreshTabInFlightRef`)·활성 사용장소 프로필 재동기화를 반영했습니다.
   - IPv4 주소 점(`.5`, `.86` 등) 에러코드 오분류 차단, HTTPS 리다이렉트 `settled` · 업데이터 `mkdtempSync` 가드, 전체 보안 원복(`handleFullSecurityRollback` · `RollbackPanel`) 실제 판정 배너 전파, `legacy_bridge_rollback` `*-501` Guest 비활성화 및 웹 프리뷰 시뮬레이션 정책 대칭 정렬을 반영했습니다.
   - `LocationProfileEditView` 내 11종 정책 모드·공유명/경로/호스트/`hostPreset` 암호 검증·행 삭제 가시성·`guest` 초기화 및 `LocationManagerModal` `Escape` 가드를 보완하고, `portableStore.js` 및 `shareBridge.ts` 내 `username` 우선 보존·웹 프리뷰 프로필 AES-GCM 암호화 저장/복호화·Electron 저장 후 캐시 재보관·프로필 전환 시 `prev.password` 누출 차단·실측 누락 스냅샷(`<미측정>`) 처리·하이픈(`-`) 호스트 차단·`openExternalReleaseUrl` HTTPS 검증을 적용했습니다.
 - **6차 자아성찰 심층 점검 — 진행 모션창 포커스·모션 접근성 & 만료 원복·장소 일괄 적용 오류 수정 (`v1.2.0`)**:
@@ -93,7 +103,7 @@ npm run version:bump -- patch --summary "패치 요약" --note "세부 기록"
 ---
 
 ## 📜 릴리즈 이력 요약
-- **`v1.2.1` (2026-11-21 · `PATCH`)**: 10대 보안 원복 심층 감사 보고서·호스트 불일치 색상 배지·전문가 레지스트리 원시 값 비교 뷰(`ExpertComparisonView`)·저장된 `.location.json` 프로필 내용 직접 수정 에디터·사용장소 일괄 적용 사전 검증(`LocationPreflightModal` · `preflightLocationProfileBatch`) 추가 및 7~11차 자아성찰 심층 점검(레거시 `*-501` Guest 원복, 웹 프리뷰 프로필 AES-GCM 암호화·정책 시뮬레이션 대칭, 미측정 스냅샷 `null` 처리, 프로필 편집기 전체 필드 검증, IPv4·하이픈 호스트·리다이렉트/임시폴더 가드, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선)
+- **`v1.2.1` (2026-11-22 · `PATCH`)**: 10대 보안 원복 심층 감사 보고서·호스트 불일치 색상 배지·전문가 레지스트리 원시 값 비교 뷰(`ExpertComparisonView`)·저장된 `.location.json` 프로필 내용 직접 수정 에디터·사용장소 일괄 적용 사전 검증(`LocationPreflightModal` · `preflightLocationProfileBatch`)·클라이언트 비밀번호 가시성 토글·5종 숫자 암호 프리셋(`PresetPasswordGrid`)·전 탭 통합 새로고침 버튼 추가 및 7~14차 자아성찰 심층 점검(모달 `onCloseRef` 타이머/키 리스너 안정화·구형 OS 2단계 실패 복구 액션 및 `driveLetterOptions` 보강·`Enter` 키 중복 제출 가드·Atom 태그 `decodeURIComponent` 예외 방어, 프로필 편집기 SAM 계정 검증·모달 잠금 가드, 클라이언트 계정 스냅샷 `resolvedAuthMode`·웹 프리뷰 복원·사전 검증 `netInfo` 전달, 업데이터 취소 경합 차단, `LmCompatibilityLevel < 3` NTLM 복원·미복구 버튼 무한 루프 방지, 내장 `Guest` 프리셋 충돌 제거 및 `validateAccountUsername` 차단, 실패 배너 `switchToAccountMode`·`hostCandidates` 교차 복원, 새로고침 동시성 가드, 레거시 `*-501` Guest 원복, 웹 프리뷰 프로필 AES-GCM 암호화·정책 시뮬레이션 대칭, 미측정 스냅샷 `null` 처리, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선)
 - **`v1.2.0` (2026-11-19 · `MINOR`)**: 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·실시간 단계 목록·경과 시간·1.5초 자동 닫힘/오류 유지·포커스/스크롤 잠금) 주요 작업 11종 도입 및 6차 자아성찰 심층 점검(`handleExpirySecurityRollback`·`handleApplyOsPatch` 오류 검증, `applyLocationProfileBatch` `validShares` 인덱스 정렬, `prefers-reduced-motion` 개선)
 - **`v1.1.5` (2026-11-19 · `PATCH`)**: 5차 자아성찰 심층 점검 — `secedit` INF `[System.Text.Encoding]::Unicode` 명시 & `SeDenyNetworkLogonRight` 비게스트 따옴표 보존, `c_mount` `/`·`*` 암호 `net.exe` 충돌 회피 및 Guest Win32 Null 세션(`''`/`''`) 폴백 추가, `syncLiveState` 공유 `folderPath`·드라이브 UNC 변경 감지 강화
 - **`v1.1.4` (2026-11-19 · `PATCH`)**: 4차 심층 점검 — 무비밀번호(Guest) 마운트 `Guest: 시스템 오류 86`·`1223` 근본 해결 (`WNetAddConnection2` · `ProcessStartInfo` 원시 빈 암호 전달, 호스트 `*-501` 빈 암호(`/passwordreq:no`)·`S-1-5-7` 공유 권한, `LimitBlankPasswordUse=0` 정렬, `secedit` UTF-16LE INF `ReadAllLines` 보강)

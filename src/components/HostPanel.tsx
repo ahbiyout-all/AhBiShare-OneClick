@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { FolderOpen, Play, Copy, Check, QrCode, Trash2, RefreshCw, ExternalLink, Clock, KeyRound, Download } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { HostConfig, ActiveShare, PipelineStep, LocalNetworkInfo } from '@/types/share';
-import { generateSecureSharePassword, validateShareName, validateFolderPath } from '@/utils/connectionCode';
+import { generateSecureSharePassword, validateAccountUsername, validateShareName, validateFolderPath } from '@/utils/connectionCode';
 import { buildHostGuestUnlockBatchScript } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
@@ -12,6 +12,7 @@ interface HostPanelProps {
   shares: ActiveShare[];
   steps: PipelineStep[];
   isExecuting: boolean;
+  isRefreshing?: boolean;
   nowMs?: number;
   initialConfig?: HostConfig;
   pendingHostPreset?: { key: string; config: Partial<HostConfig> } | null;
@@ -21,6 +22,7 @@ interface HostPanelProps {
   onCreateShare: (config: HostConfig) => Promise<void>;
   onRemoveShare: (shareName: string) => Promise<void>;
   onOpenFolder: (path: string) => Promise<void>;
+  onRefresh?: () => Promise<void>;
 }
 
 const TTL_PRESETS: Array<{ label: string; minutes: number }> = [
@@ -59,6 +61,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   shares,
   steps,
   isExecuting,
+  isRefreshing = false,
   nowMs = Date.now(),
   initialConfig,
   pendingHostPreset = null,
@@ -68,6 +71,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   onCreateShare,
   onRemoveShare,
   onOpenFolder,
+  onRefresh,
 }) => {
   const [config, setConfig] = useState<HostConfig>(() =>
     initialConfig || {
@@ -177,6 +181,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isExecuting || isRefreshing) return;
     const folderErr = validateFolderPath(config.folderPath);
     if (folderErr) {
       setValidationError(folderErr);
@@ -188,8 +193,9 @@ export const HostPanel: React.FC<HostPanelProps> = ({
       return;
     }
     if (config.authMode === 'account') {
-      if (!config.username.trim()) {
-        setValidationError('보안 계정 모드에서는 전용 계정 ID를 입력해야 합니다.');
+      const userErr = validateAccountUsername(config.username);
+      if (userErr) {
+        setValidationError(userErr);
         return;
       }
       if (!config.password || config.password.length < 4) {
@@ -210,16 +216,30 @@ export const HostPanel: React.FC<HostPanelProps> = ({
           onSubmit={handleSubmit}
           className="lg:col-span-7 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 p-6 space-y-6"
         >
-          <div className="space-y-1.5">
-            <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-              메인 PC 공유폴더 원클릭 개설
-            </h2>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              방화벽 포트 445, 네트워크 검색 서비스, NTFS·SMB 권한 설정과 클라이언트용 연결 코드를 한 번에 구성합니다.
-            </p>
-            <p className="tabular-data text-xs text-slate-500 dark:text-slate-400 pt-1">
-              현재 호스트: {netInfo.hostname} · LAN IP: {netInfo.primaryIp} · {netInfo.adapterName}
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="space-y-1.5 min-w-0 flex-1">
+              <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+                메인 PC 공유폴더 원클릭 개설
+              </h2>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                방화벽 포트 445, 네트워크 검색 서비스, NTFS·SMB 권한 설정과 클라이언트용 연결 코드를 한 번에 구성합니다.
+              </p>
+              <p className="tabular-data text-xs text-slate-500 dark:text-slate-400 pt-1">
+                현재 호스트: {netInfo.hostname} · LAN IP: {netInfo.primaryIp} · {netInfo.adapterName}
+              </p>
+            </div>
+            {onRefresh && (
+              <button
+                id="btn-refresh-host"
+                type="button"
+                disabled={isRefreshing || isExecuting}
+                onClick={() => void onRefresh()}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
+                {isRefreshing ? '새로고침 중...' : '새로고침'}
+              </button>
+            )}
           </div>
 
           <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
@@ -377,11 +397,11 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   currentPassword={config.password}
                   onSelectPreset={(username, password) => {
                     setValidationError(null);
-                    setConfig({
-                      ...config,
+                    setConfig((prev) => ({
+                      ...prev,
                       username,
                       password,
-                    });
+                    }));
                   }}
                 />
 
@@ -494,7 +514,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
             <button
               id="btn-host-oneclick"
               type="submit"
-              disabled={isExecuting}
+              disabled={isExecuting || isRefreshing}
               className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
             >
               <Play className="w-4 h-4" />

@@ -949,7 +949,14 @@ ipcMain.handle('check-github-updates', async () => {
         const htmlUrl = linkMatch ? decodeXmlEntities(linkMatch[1]) : 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest';
         const tagMatch = htmlUrl.match(/\/releases\/tag\/([^/?#\s]+)/i);
         const rawTitle = titleMatch ? decodeXmlEntities(titleMatch[1]).trim() : '';
-        const tagName = tagMatch ? decodeURIComponent(tagMatch[1]) : rawTitle;
+        let tagName = rawTitle;
+        if (tagMatch) {
+          try {
+            tagName = decodeURIComponent(tagMatch[1]);
+          } catch {
+            tagName = tagMatch[1];
+          }
+        }
         const bodyText = contentMatch
           ? decodeXmlEntities(
               decodeXmlEntities(contentMatch[1])
@@ -1289,6 +1296,11 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       downloadState
     );
 
+    if (downloadState.cancelled) {
+      cleanupStaging();
+      return { success: false, cancelled: true, error: '사용자에 의해 다운로드가 취소되었습니다.' };
+    }
+
     emitUpdateProgress({
       phase: 'verifying',
       percent: 100,
@@ -1321,6 +1333,11 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       stagingDir,
     });
     fs.writeFileSync(psScriptPath, `\uFEFF${psScript}`, 'utf8');
+
+    if (downloadState.cancelled) {
+      cleanupStaging();
+      return { success: false, cancelled: true, error: '사용자에 의해 다운로드가 취소되었습니다.' };
+    }
 
     emitUpdateProgress({
       phase: 'replacing',

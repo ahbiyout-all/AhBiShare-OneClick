@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import {
   ActiveShare,
   ClientTargetConfig,
@@ -29,6 +29,7 @@ interface ClientPanelProps {
   steps: PipelineStep[];
   isScanning: boolean;
   isConnecting: boolean;
+  isRefreshing?: boolean;
   portableShares?: PortableHostShareEntry[];
   locationSavedShares?: PortableHostShareEntry[];
   locationHostPreset?: any;
@@ -50,6 +51,7 @@ interface ClientPanelProps {
   onConfigChange?: (config: ClientTargetConfig) => void;
   onOpenMatrix?: () => void;
   onScanLan: () => Promise<void>;
+  onRefresh?: () => Promise<void>;
   onConnect: (config: ClientTargetConfig) => Promise<void>;
   onUnmount: (driveLetter: string) => Promise<void>;
   onOpenDrive: (drivePath: string) => Promise<void>;
@@ -67,6 +69,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   steps,
   isScanning,
   isConnecting,
+  isRefreshing = false,
   portableShares = [],
   locationSavedShares = [],
   locationHostPreset = null,
@@ -88,6 +91,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onConfigChange,
   onOpenMatrix,
   onScanLan,
+  onRefresh,
   onConnect,
   onUnmount,
   onOpenDrive,
@@ -167,32 +171,65 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     onClearPendingLocationTarget?.();
   }, [pendingLocationTarget, onClearPendingLocationTarget]);
 
+  const getHostCandidates = useCallback(
+    (hostInput?: string, extra: Array<string | undefined> = []): string[] => {
+      const norm = (val?: string) => String(val || '').trim().toLowerCase();
+      const targetNorm = norm(hostInput);
+      const matchedPeer = targetNorm
+        ? peers.find((p) => norm(p.ipAddress) === targetNorm || norm(p.hostName) === targetNorm)
+        : undefined;
+      return Array.from(
+        new Set(
+          [...extra, matchedPeer?.hostName, matchedPeer?.ipAddress]
+            .map((v) => String(v || '').trim())
+            .filter(Boolean)
+        )
+      );
+    },
+    [peers]
+  );
+
+  const switchToAccountMode = useCallback(() => {
+    setValidationError(null);
+    const resolved = resolveClientAccountCredentials({
+      targetHost: config.targetHost,
+      hostCandidates: getHostCandidates(config.targetHost),
+      shareName: config.shareName,
+      requireAccountOnly: true,
+      savedLocationTargets,
+      locationSavedShares,
+      locationHostPreset,
+      portableShares,
+      activeShares,
+    });
+    setConfig((prev) => ({
+      ...prev,
+      authMode: 'account',
+      username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+      password: prev.password ? prev.password : resolved?.password || '',
+    }));
+  }, [
+    config.targetHost,
+    config.shareName,
+    getHostCandidates,
+    savedLocationTargets,
+    locationSavedShares,
+    locationHostPreset,
+    portableShares,
+    activeShares,
+  ]);
+
   useEffect(() => {
     if (!pendingClientAuthMode || pendingClientAuthMode.key === lastAuthModeSwitchKeyRef.current) return;
     lastAuthModeSwitchKeyRef.current = pendingClientAuthMode.key;
-    setValidationError(null);
     if (pendingClientAuthMode.authMode === 'account') {
-      const resolved = resolveClientAccountCredentials({
-        targetHost: config.targetHost,
-        shareName: config.shareName,
-        requireAccountOnly: true,
-        savedLocationTargets,
-        locationSavedShares,
-        locationHostPreset,
-        portableShares,
-        activeShares,
-      });
-      setConfig((prev) => ({
-        ...prev,
-        authMode: 'account',
-        username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
-        password: prev.password ? prev.password : resolved?.password || '',
-      }));
+      switchToAccountMode();
     } else {
+      setValidationError(null);
       setConfig((prev) => ({ ...prev, authMode: 'guest' }));
     }
     onClearPendingClientAuthMode?.();
-  }, [pendingClientAuthMode, config.targetHost, config.shareName, savedLocationTargets, locationSavedShares, locationHostPreset, portableShares, activeShares, onClearPendingClientAuthMode]);
+  }, [pendingClientAuthMode, switchToAccountMode, onClearPendingClientAuthMode]);
 
   // Reset dismissal/index cleanly if portable share entries update
   useEffect(() => {
@@ -215,6 +252,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       const decoded = entry.connectionCode ? decodeConnectionCode(entry.connectionCode) : null;
       const resolved = entry.authMode === 'account' ? resolveClientAccountCredentials({
         targetHost,
+        hostCandidates: getHostCandidates(targetHost, [entry.sourceHostName, entry.sourceIp, decoded?.hostName, decoded?.ip]),
         shareName: entry.shareName,
         requireAccountOnly: true,
         savedLocationTargets,
@@ -246,7 +284,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
         onPortableAutoFill?.(entry);
       }
     },
-    [savedLocationTargets, locationSavedShares, locationHostPreset, portableShares, activeShares, onPortableAutoFill]
+    [getHostCandidates, savedLocationTargets, locationSavedShares, locationHostPreset, portableShares, activeShares, onPortableAutoFill]
   );
 
   useEffect(() => {
@@ -275,6 +313,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       setCodeParseState('valid');
       const resolved = decoded.authMode === 'account' ? resolveClientAccountCredentials({
         targetHost: decoded.ip || decoded.hostName,
+        hostCandidates: getHostCandidates(decoded.ip || decoded.hostName, [decoded.ip, decoded.hostName]),
         shareName: decoded.shareName,
         requireAccountOnly: true,
         savedLocationTargets,
@@ -308,6 +347,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     const targetHost = peer.ipAddress;
     const resolved = resolveClientAccountCredentials({
       targetHost,
+      hostCandidates: getHostCandidates(targetHost, [peer.hostName]),
       shareName,
       requireAccountOnly: peer.authModeHint === 'account',
       savedLocationTargets,
@@ -329,6 +369,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isConnecting || isRefreshing) return;
     const hostErr = validateTargetHost(config.targetHost);
     if (hostErr) {
       setValidationError(hostErr);
@@ -584,15 +625,29 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   메인 PC에서 복사한 연결 코드를 붙여넣거나 같은 네트워크의 PC를 자동 탐색해 즉시 연결합니다.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => void onScanLan()}
-                disabled={isScanning}
-                className="px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-              >
-                <Radar className={`w-4 h-4 ${isScanning ? 'animate-spin text-indigo-500' : ''}`} />
-                {isScanning ? 'LAN 스캔 중...' : 'LAN PC 자동 탐색'}
-              </button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {onRefresh && (
+                  <button
+                    id="btn-refresh-client"
+                    type="button"
+                    onClick={() => void onRefresh()}
+                    disabled={isRefreshing || isConnecting || isScanning}
+                    className="px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
+                    {isRefreshing ? '새로고침 중...' : '새로고침'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void onScanLan()}
+                  disabled={isScanning || isRefreshing}
+                  className="px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <Radar className={`w-4 h-4 ${isScanning ? 'animate-spin text-indigo-500' : ''}`} />
+                  {isScanning ? 'LAN 스캔 중...' : 'LAN PC 자동 탐색'}
+                </button>
+              </div>
             </div>
 
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
@@ -643,6 +698,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         setCodeParseState('empty');
                         const resolved = target.authMode === 'account' ? resolveClientAccountCredentials({
                           targetHost: target.targetHost,
+                          hostCandidates: getHostCandidates(target.targetHost),
                           shareName: target.shareName,
                           requireAccountOnly: true,
                           savedLocationTargets,
@@ -820,25 +876,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setValidationError(null);
-                    const resolved = resolveClientAccountCredentials({
-                      targetHost: config.targetHost,
-                      shareName: config.shareName,
-                      requireAccountOnly: true,
-                      savedLocationTargets,
-                      locationSavedShares,
-                      locationHostPreset,
-                      portableShares,
-                      activeShares,
-                    });
-                    setConfig((prev) => ({
-                      ...prev,
-                      authMode: 'account',
-                      username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
-                      password: prev.password ? prev.password : resolved?.password || '',
-                    }));
-                  }}
+                  onClick={switchToAccountMode}
                   className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
                     config.authMode === 'account'
                       ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
@@ -856,11 +894,11 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                     currentPassword={config.password}
                     onSelectPreset={(username, password) => {
                       setValidationError(null);
-                      setConfig({
-                        ...config,
+                      setConfig((prev) => ({
+                        ...prev,
                         username,
                         password,
-                      });
+                      }));
                     }}
                   />
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -931,7 +969,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               <button
                 id="btn-client-oneclick"
                 type="submit"
-                disabled={isConnecting}
+                disabled={isConnecting || isRefreshing}
                 className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
                 <Link2 className="w-4 h-4" />
@@ -986,10 +1024,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       <button
                         id="btn-failure-switch-account"
                         type="button"
-                        onClick={() => {
-                          setValidationError(null);
-                          setConfig((prev) => ({ ...prev, authMode: 'account' }));
-                        }}
+                        onClick={switchToAccountMode}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 border border-indigo-300 dark:border-indigo-700 rounded-lg cursor-pointer"
                       >
                         <Shield className="w-3.5 h-3.5" />

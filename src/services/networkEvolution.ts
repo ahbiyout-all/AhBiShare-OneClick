@@ -572,6 +572,15 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       isHostAuthOrGuestIssue: true,
     };
   }
+  if (/(?<![.\d])58(?![.\d])|지정한 서버가 요청한 작업|cannot perform the requested operation/i.test(sanitized)) {
+    return {
+      code: 'Error 58',
+      title: 'SMB 전송 암호화·서명 또는 프로토콜 버전 불일치 (Win 7·8)',
+      detail: '대상 서버가 SMB 전송 암호화(EncryptData)를 강제하거나 SMB 보안 서명·프로토콜 방언 협상에 실패했습니다. [구형 OS 호환] 탭에서 브릿지 호환 패치를 양단에 적용하세요.',
+      needsOsPatchHint: true,
+      actionLabel: '구형 OS 호환 브릿지 정렬',
+    };
+  }
   if (/(?<![.\d])53(?![.\d])|(?<![.\d])67(?![.\d])|네트워크 경로|연결 시간 초과|timeout|445/i.test(sanitized)) {
     return {
       code: 'Error 53 / TCP 445',
@@ -2173,7 +2182,7 @@ export function deriveRawRegistrySnapshotFromHostSnap(
       rpcPrivacy: snap.rpcAuthnLevelPrivacyDisabled ? 0 : 1,
       rpcNamedPipe: snap.rpcUseNamedPipeProtocol ? 1 : 0,
       rpcProtocols: null,
-      srvSmb1: snap.osBuild < 10240 ? 1 : 0,
+      srvSmb1: snap.osBuild > 0 && snap.osBuild < 10240 ? 1 : 0,
       ahbiFw445: typeof snap.firewall445Allowed === 'boolean' ? (snap.firewall445Allowed ? 1 : 0) : null,
     },
     isPreset ? 'preset_reference' : 'snapshot_derived',

@@ -14,11 +14,12 @@
 
 ---
 
-## ✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-21)
+## ✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-22)
 - **10대 보안 원복 심층 감사 · 호스트 불일치 배지 · 전문가 레지스트리 비교 뷰 & 사용장소 프로필 수정 (`v1.2.1`)**:
   - 보안 원복 직후 SMB 서명·게스트 차단·NTLM·LSA 등 10개 핵심 항목의 복구 상태를 정밀 검증하는 **보안 원복 심층 감사 보고서**, 대상 호스트와의 차이를 표시하는 **항목별 색상 배지**, 로컬·호스트 실제 레지스트리 원시 값을 나란히 비교하는 **전문가 비교 뷰**를 추가했습니다.
   - 저장된 사용장소 프로필(`.location.json`)의 이름·메모·네트워크 대역·호스트 공유·클라이언트 드라이브·프리셋을 앱 내에서 직접 고칠 수 있는 **프로필 내용 수정 기능**과, 일괄 적용 실행 직전에 로컬 폴더 존재·NTFS 접근 권한·드라이브 문자 충돌·TCP 445 포트 응답·계정 자격증명·관리자/SMB 서비스 상태를 읽기 전용으로 미리 진단하고 결과(`통과`·`주의`·`오류`)를 보여주는 **일괄 적용 사전 검증(Pre-flight Check)** 단계를 도입했습니다.
-  - **7~11차 자아성찰 심층 점검**: IPv4 주소 점(`.5`, `.86` 등)·선두 하이픈(`-`) 호스트 차단, 리다이렉트 `settled` · 업데이터 임시폴더 `try/catch` 가드, 전체 보안 원복 실제 판정 전파, 레거시 브릿지 원복 시 내장 `*-501` Guest 비활성화 및 웹 프리뷰 AES-GCM 자격증명 암호화/정책 대칭 정렬, 미측정 호스트 스냅샷 `<미측정>` 처리, 프로필 편집기 11종 정책 모드·공유명/경로/호스트/`hostPreset` 암호 검증·수정 `username` 우선 보존·저장 후 자격증명 재캐시·프로필/게스트 암호 누출 차단·편집 로딩 `Escape` 가드 및 원격 레지스트리 `Wait-Job` 6초 상향을 반영했습니다.
+  - **보안 계정 편의성 & 전 탭 새로고침**: 클라이언트/구형 OS 암호 입력란에 **비밀번호 표시/숨김(눈 아이콘) 토글** 및 IP·호스트명 교차 자격증명 자동 복원을 적용하고, 메인·클라이언트·구형 OS 보안 계정 폼에 **사무실 표준 5종 숫자 암호 프리셋(`AhBiShare/123456` ~ `Visitor/111111`)** 및 **6개 전 탭 통합 새로고침 버튼**을 추가했습니다.
+  - **7~15차 자아성찰 & 구형 OS(Win 7·8·8.1) 전수 검증 심층 점검**: `LegacySharingPanel` 토폴로지 방향(`modern_to_legacy`/`legacy_to_modern`) 오판 수정·방화벽/1385 호스트 진단 보강, USB `.bat` 키트 `[char]34`·한글 `게스트$` 처리·선초기화 후 백업 덮어쓰기(신규 완화 키 잔류 차단)·`forceguest=0`·로케일 무관 방화벽 그룹/프로필·`DISM /all` 개선, `HNetCfg.FwPolicy2` Win 7 활성 프로필/규칙 인식·`mrxsmb10` 원복·`Error 58` SMB 암호화/방언 불일치 진단·Win 7/8.1 표시명(`SP1`/`8.0`/`8.1`)·보안 계정 클라이언트 연결 시 로컬 `Guest(*-501)` 무개방 스냅샷 분리를 적용했으며, `WorkProgressModal`·`LocationPreflightModal` `onCloseRef` 안정화, 구형 OS `2단계 클라이언트` 실패 복구·`driveLetterOptions`, `Enter` 키 중복 제출 가드, `main.js` Atom URL 예외 방어, SAM 계정 검증(`validateAccountUsername`), 활성 `account` 클라이언트 스냅샷 보존, 포터블 업데이터 취소 경합 차단, `LmCompatibilityLevel < 3` 복원, 내장 `Guest` 프리셋 충돌 제거(`Visitor` 교체) 및 전 탭 새로고침 동시성 가드를 완료했습니다.
 - **실시간 작업 진행 모션창(`WorkProgressModal`) & 6차 자아성찰 심층 점검 안정화 (`v1.2.0 · MINOR`)**:
   - 공유 개설·해제, 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS 통합 개설·접속, 사용장소 일괄 적용, 보안 원복까지 주요 작업 11종 전체에 **듀얼 링 회전 모션 + 실시간 단계 진행 타임라인 + 경과 시간 표시 모달**을 도입했습니다(실행 중 배경 잠금·포커스 트랩·성공 1.5초 후 자동 닫힘·오류 시 수동 확인 유지).
   - `prefers-reduced-motion` 환경 고속 깜빡임 제거(`animation-iteration-count: 1`), 만료 공유 원복(`handleExpirySecurityRollback`) 실패 검증 및 실패 단계 추적, 정책 실패 시 완료 토스트 오표시 수정, 사용장소 일괄 적용 `validShares` 인덱스 불일치를 해결했습니다.
@@ -83,10 +84,11 @@
 ---
 
 ## 📜 전체 업데이트 누적 이력
-- **v1.2.1 (2026-11-21 · PATCH)**
+- **v1.2.1 (2026-11-22 · PATCH)**
   - 10대 보안 원복 심층 감사 보고서, 호스트-클라이언트 정책 불일치 색상 배지 및 전문가 레지스트리 원시 값 좌우 비교 뷰 추가
   - 저장된 사용장소 프로필(`.location.json`) 파일 내용 직접 수정 에디터, 상단 바/목록 `수정` 진입점 및 **일괄 적용 사전 검증(Pre-flight Check: 경로·NTFS ACL 권한·드라이브 충돌·TCP 445 포트·자격증명 사전 진단 모달)** 추가
-  - 7~11차 자아성찰 심층 점검: 레거시 `*-501` Guest 원복·웹 프리뷰 프로필 AES-GCM 암호화 및 정책 시뮬레이션 대칭 정렬, 미측정 스냅샷 `null` 처리, 프로필 편집기 전체 필드 검증, IPv4·하이픈 호스트·리다이렉트/임시폴더 가드, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선
+  - 클라이언트 비밀번호 가시성 눈 아이콘 토글·IP/호스트명 교차 자격증명 자동 복원, 사무실 표준 5종 숫자 암호 프리셋(`PresetPasswordGrid`) 및 전 6개 탭 통합 새로고침 버튼 추가
+  - 7~14차 자아성찰 심층 점검: 모달 `onCloseRef` 자동 닫힘/키보드 리스너 안정화·구형 OS 2단계 실패 복구 액션 및 `driveLetterOptions` 보강·`Enter` 키 중복 제출 가드·Atom 태그 `decodeURIComponent` 예외 방어, 프로필 편집기 SAM 계정 검증(`validateAccountUsername`)·모달 잠금 가드, 클라이언트 계정 스냅샷 `resolvedAuthMode` 보존·웹 프리뷰 복원·사전 검증 `netInfo` 전달, 업데이터 취소 경합 차단, `LmCompatibilityLevel < 3` NTLM 복원·미복구 버튼 루프 방지, 내장 `Guest` 프리셋 충돌 제거(`Visitor` 교체)·실패 배너 계정 전환 자격증명 복원·새로고침 동시성 가드, 레거시 `*-501` Guest 원복·웹 프리뷰 프로필 AES-GCM 암호화 및 정책 시뮬레이션 대칭 정렬, 미측정 스냅샷 `null` 처리, IPv4·하이픈 호스트·리다이렉트/임시폴더 가드, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선
 - **v1.2.0 (2026-11-19 · MINOR)**
   - 주요 작업 11종 전체에 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·단계 진행 목록·경과 시간·성공 1.5초 자동 닫힘/오류 수동 유지·실행 중 포커스/스크롤 잠금) 추가
   - 6차 자아성찰 심층 점검: `prefers-reduced-motion` 깜빡임 방지, 만료 보안 원복 및 OS 정책 패치 실패 판정/토스트 오류 수정, 사용장소 일괄 적용 `validShares` 진행 인덱스 불일치 수정
@@ -131,9 +133,9 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
   </p>
 
   <div style="background: #eef2ff; border-left: 4px solid #4f46e5; border-radius: 6px; padding: 16px 18px; margin: 20px 0;">
-    <h3 style="color: #312e81; margin: 0 0 10px 0; font-size: 17px;">✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-21)</h3>
+    <h3 style="color: #312e81; margin: 0 0 10px 0; font-size: 17px;">✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-22)</h3>
     <ul style="margin: 0; padding-left: 20px;">
-      <li style="margin-bottom: 8px;"><strong>10대 보안 원복 감사 · 호스트 불일치 배지 · 전문가 레지스트리 비교 뷰 · 프로필 내용 수정 &amp; 일괄 적용 사전 검증 (v1.2.1)</strong>: 보안 원복 후 10개 핵심 항목 감사 보고서, 대상 호스트 기대 정책과의 <strong>항목별 색상 배지</strong>, 로컬·호스트 실제 레지스트리 원시 값 <strong>전문가 좌우 비교 뷰</strong>, 저장된 <code>.location.json</code> <strong>프로필 파일 내용 직접 수정 에디터</strong> 및 일괄 적용 직전 폴더 경로·NTFS 권한·드라이브 충돌·TCP 445·자격증명을 읽기 전용 점검해 <code>통과</code>·<code>주의</code>·<code>오류</code>로 안내하는 <strong>사전 검증(Pre-flight Check) 모달</strong>을 추가하고, 레거시 <code>*-501</code> Guest 원복·웹 프리뷰 프로필 AES-GCM 암호화 및 정책 시뮬레이션 대칭 정렬·미측정 스냅샷 <code>null</code> 처리·프로필 편집기 전체 필드 검증·IPv4/하이픈 호스트/리다이렉트/임시폴더 가드·전체 원복 실제 판정 전파·수정 <code>username</code> 보존·자격증명 재캐시 및 누출 차단·원격 레지스트리 타임아웃 보완 등 7~11차 심층 점검 오류를 수정했습니다.</li>
+      <li style="margin-bottom: 8px;"><strong>10대 보안 원복 감사 · 호스트 불일치 배지 · 전문가 레지스트리 비교 · 프로필 수정 · 사전 검증 · 숫자 암호 프리셋 &amp; 전 탭 새로고침 (v1.2.1)</strong>: 보안 원복 후 10개 핵심 항목 감사 보고서, 대상 호스트 기대 정책과의 <strong>항목별 색상 배지</strong>, 로컬·호스트 실제 레지스트리 원시 값 <strong>전문가 좌우 비교 뷰</strong>, 저장된 <code>.location.json</code> <strong>프로필 파일 내용 직접 수정 에디터</strong>, 일괄 적용 직전 <strong>사전 검증(Pre-flight Check) 모달</strong>, 클라이언트 <strong>비밀번호 표시/숨김 눈 아이콘</strong>·<strong>5종 숫자 암호 프리셋(<code>AhBiShare/123456</code> ~ <code>Visitor/111111</code>)</strong> 및 <strong>6개 전 탭 통합 새로고침 버튼</strong>을 추가하고, <code>WorkProgressModal</code>·<code>LocationPreflightModal</code> <code>onCloseRef</code> 타이머/키 리스너 안정화·구형 OS 2단계 실패 복구 액션 및 <code>driveLetterOptions</code> 보강·<code>Enter</code> 키 중복 제출 가드·Atom 태그 <code>decodeURIComponent</code> 예외 방어·프로필 편집기 SAM 계정 검증·모달 잠금 가드·클라이언트 계정 스냅샷 <code>resolvedAuthMode</code> 보존·웹 프리뷰 <code>decodeConnectionCode</code> 복원·사전 검증 <code>netInfo</code> 전달·업데이터 취소 경합 차단·NTLM <code>LmCompatibilityLevel &lt; 3</code> 복원·미복구 버튼 루프 방지·내장 <code>*-501</code> <code>Guest</code> 프리셋 충돌 제거·실패 배너 계정 전환 자격증명 복원·<code>hostCandidates</code> 교차 매칭·새로고침 동시성 가드·레거시 <code>*-501</code> Guest 원복·웹 프리뷰 프로필 AES-GCM 암호화 및 정책 시뮬레이션 대칭 정렬·미측정 스냅샷 <code>null</code> 처리·IPv4/하이픈 호스트/리다이렉트/임시폴더 가드·전체 원복 실제 판정 전파·수정 <code>username</code> 보존·원격 레지스트리 타임아웃 보완 등 7~14차 심층 점검 오류를 수정했습니다.</li>
       <li style="margin-bottom: 8px;"><strong>실시간 작업 진행 모션창(WorkProgressModal) &amp; 6차 자아성찰 심층 점검 안정화 (v1.2.0 · MINOR)</strong>: 공유 개설·해제, 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS 통합, 사용장소 일괄 적용, 보안 원복 등 주요 작업 11종에 <strong>듀얼 링 모션 · 실시간 단계 목록 · 경과 시간 표시창</strong>(실행 중 배경·포커스 잠금, 성공 1.5초 자동 닫힘, 오류 수동 확인)을 도입하고, <code>prefers-reduced-motion</code> 깜빡임 방지·만료 보안 원복/OS 패치 실패 판정·<code>validShares</code> 일괄 적용 인덱스 일치를 반영했습니다.</li>
       <li style="margin-bottom: 8px;"><strong>5차 자아성찰 심층 점검 — 보안 정책 따옴표 보존 · Null 세션 · Live 동기화 정확도 개선 (v1.1.5)</strong>: <code>secedit</code> UTF-16LE INF 읽기에 <code>[System.Text.Encoding]::Unicode</code>를 명시하고 <code>SeDenyNetworkLogonRight</code> 비게스트 항목의 기존 따옴표를 보존했으며(오프라인 USB 키트 포함), <code>c_mount</code> 내 <code>/</code>·<code>*</code> 시작 암호의 <code>net.exe</code> 충돌 회피·Win32 SMB Null 세션(빈 계정/빈 암호) 폴백 추가 및 <code>syncLiveState</code> 경로/UNC 변경 감지를 보강했습니다.</li>
       <li style="margin-bottom: 8px;"><strong>4차 심층 점검 — 무비밀번호(Guest) 마운트 오류 86·1223 근본 해결 (v1.1.4)</strong>: PowerShell 배열 이스케이프로 <code>net.exe</code>에 리터럴 <code>""</code> 암호가 전달되어 <code>Guest</code>/<code>Anonymous</code> <strong>오류 86·1223</strong>이 발생하던 결함을 Win32 <code>WNetAddConnection2</code> 및 <code>ProcessStartInfo</code> 원시 빈 암호 전달로 해결하고, 호스트 <code>*-501</code> 빈 암호(<code>/passwordreq:no</code>)·<code>S-1-5-7</code> 공유 권한·<code>LimitBlankPasswordUse=0</code>·<code>secedit</code> INF <code>ReadAllLines</code> 인코딩 정렬을 추가했습니다.</li>
@@ -206,10 +208,10 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
   </ul>
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">📜 전체 업데이트 누적 이력</h3>
-  <p style="margin-bottom: 6px;"><strong>v1.2.1 (2026-11-21 · PATCH)</strong></p>
+  <p style="margin-bottom: 6px;"><strong>v1.2.1 (2026-11-22 · PATCH)</strong></p>
   <ul style="padding-left: 20px; margin-top: 0;">
     <li>10대 보안 원복 심층 감사 보고서, 호스트-클라이언트 불일치 색상 배지 및 전문가 레지스트리 원시 값 좌우 비교 뷰 추가</li>
-    <li>저장된 사용장소 프로필(<code>.location.json</code>) 파일 내용 직접 수정 에디터, 일괄 적용 사전 검증(<code>Pre-flight Check</code>) 모달 및 7~11차 자아성찰 심층 점검(레거시 <code>*-501</code> Guest 원복, 웹 프리뷰 프로필 AES-GCM 암호화·정책 시뮬레이션 대칭, 미측정 스냅샷 <code>null</code> 처리, 프로필 편집기 전체 필드 검증, IPv4/하이픈 호스트/리다이렉트/임시폴더 가드, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선)</li>
+    <li>저장된 사용장소 프로필(<code>.location.json</code>) 파일 내용 직접 수정 에디터, 일괄 적용 사전 검증(<code>Pre-flight Check</code>) 모달, 클라이언트 비밀번호 가시성 눈 아이콘·5종 숫자 암호 프리셋·전 6개 탭 새로고침 버튼 추가 및 7~14차 자아성찰 심층 점검(모달 <code>onCloseRef</code> 타이머/키 리스너 안정화·구형 OS 2단계 실패 복구 및 <code>driveLetterOptions</code> 보강·<code>Enter</code> 키 중복 제출 가드·Atom 태그 <code>decodeURIComponent</code> 예외 방어·프로필 편집기 SAM 계정 검증·모달 잠금 가드·클라이언트 계정 스냅샷 <code>resolvedAuthMode</code> 보존·사전 검증 <code>netInfo</code> 전달·업데이터 취소 경합 차단·NTLM <code>LmCompatibilityLevel &lt; 3</code> 복원·미복구 버튼 루프 방지·내장 <code>Guest</code> 프리셋 충돌 제거·실패 배너 계정 전환 자격증명 복원·<code>hostCandidates</code> 매칭·새로고침 동시성 가드, 레거시 <code>*-501</code> Guest 원복, 웹 프리뷰 프로필 AES-GCM 암호화·정책 시뮬레이션 대칭, 미측정 스냅샷 <code>null</code> 처리, IPv4/하이픈 호스트/리다이렉트/임시폴더 가드, 전체 보안 원복 실제 판정 전파 및 자격증명 보존 개선)</li>
   </ul>
   <p style="margin-bottom: 6px;"><strong>v1.2.0 (2026-11-19 · MINOR)</strong></p>
   <ul style="padding-left: 20px; margin-top: 0;">

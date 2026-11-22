@@ -1,4 +1,5 @@
 import {
+  AuthMode,
   HostConfig,
   ActiveShare,
   ClientTargetConfig,
@@ -1660,7 +1661,19 @@ export const shareBridge = {
                 : 'Unknown';
           const base = {
             osProductName: parsed.osProductName || netInfo?.osProductName || 'Windows',
-            osDisplayVersion: disp || (era === 'win11_25_26h2' ? '25H2/26H2' : era === 'win11_24h2' ? '24H2' : '22H2'),
+            osDisplayVersion:
+              disp ||
+              (build > 0 && build < 9200
+                ? 'SP1'
+                : build >= 9200 && build < 9600
+                  ? '8.0'
+                  : build >= 9600 && build < 10240
+                    ? '8.1'
+                    : era === 'win11_25_26h2'
+                      ? '25H2/26H2'
+                      : era === 'win11_24h2'
+                        ? '24H2'
+                        : '22H2'),
             osBuild: build,
             osEra: era,
             osEditionId: parsed.osEditionId || 'Professional',
@@ -2208,6 +2221,9 @@ export const shareBridge = {
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else if (mode === 'strict_26h2_default') {
+      const lmUpdated =
+        typeof webSimPolicyBase.lmCompatibilityLevel === 'number' &&
+        webSimPolicyBase.lmCompatibilityLevel < 3;
       webSimPolicyBase = {
         ...webSimPolicyBase,
         smbServerSigningRequired: true,
@@ -2221,11 +2237,13 @@ export const shareBridge = {
         restrictAnonymous: true,
         everyoneIncludesAnonymous: false,
         localAccountTokenFilterEnabled: false,
+        ...(lmUpdated ? { lmCompatibilityLevel: 3 } : {}),
       };
       appliedActions = [
         'Server/Client SMB 보안 서명 강제(RequireSecuritySignature=$true) 복원',
         '비인증 게스트 로그온·UAC 원격 토큰 필터 차단 복원',
         'LSA 익명 접근 차단 및 빈 암호 제한 복원',
+        ...(lmUpdated ? ['NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원'] : []),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else {
@@ -2551,6 +2569,29 @@ export const shareBridge = {
 
   getLegacyRollbackSnapshot(): LegacyRollbackSnapshot | null {
     return readStore<LegacyRollbackSnapshot | null>(STORAGE_LEGACY_ROLLBACK_KEY, null);
+  },
+
+  async ensureLegacyRollbackSnapshot(netInfo?: LocalNetworkInfo): Promise<LegacyRollbackSnapshot | null> {
+    const existing = this.getLegacyRollbackSnapshot();
+    if (existing) return existing;
+    const current = await this.inspectOsNetworkPolicy(netInfo);
+    const snap: LegacyRollbackSnapshot = {
+      capturedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      hostName: netInfo?.hostname || 'LOCAL-PC',
+      smbServerSigningRequired: current.smbServerSigningRequired,
+      smbClientSigningRequired: current.smbClientSigningRequired,
+      allowInsecureGuestAuth: current.allowInsecureGuestAuth,
+      enableInsecureGuestLogons: current.enableInsecureGuestLogons,
+      guestAccountEnabled: Boolean(current.guestAccountEnabled),
+      guestNetworkLogonDenied: Boolean(current.guestNetworkLogonDenied),
+      localAccountTokenFilterEnabled: Boolean(current.localAccountTokenFilterEnabled),
+      smbEncryptData: current.smbEncryptData,
+      smbRejectUnencryptedAccess: Boolean(current.smbRejectUnencryptedAccess),
+      smb1Enabled: Boolean(current.smb1Enabled || current.smb1ServerEnabled),
+      lmCompatibilityLevel: current.lmCompatibilityLevel,
+    };
+    this.saveLegacyRollbackSnapshot(snap);
+    return snap;
   },
 
   saveLegacyRollbackSnapshot(snap: LegacyRollbackSnapshot): void {
@@ -2920,12 +2961,14 @@ export const shareBridge = {
           params.clientConfig &&
           params.clientConfig.targetHost.trim().toLowerCase() === m.targetHost.trim().toLowerCase() &&
           params.clientConfig.shareName.trim().toLowerCase() === m.shareName.trim().toLowerCase();
+        const resolvedAuthMode: AuthMode =
+          formMatch && params.clientConfig?.authMode === 'account' ? 'account' : m.authMode;
         const resolvedClientUsername =
           formMatch && params.clientConfig?.username?.trim()
             ? params.clientConfig.username.trim()
             : m.username || '';
         const cachedClientPwd =
-          m.authMode === 'account'
+          resolvedAuthMode === 'account'
             ? (formMatch && params.clientConfig?.authMode === 'account' && params.clientConfig.password
                 ? params.clientConfig.password
                 : getCachedPassword(m.targetHost, m.shareName) || '')
@@ -2934,7 +2977,7 @@ export const shareBridge = {
           targetHost: m.targetHost,
           shareName: m.shareName,
           driveLetter: dl,
-          authMode: m.authMode,
+          authMode: resolvedAuthMode,
           ...(resolvedClientUsername ? { username: resolvedClientUsername } : {}),
           ...(cachedClientPwd ? { password: cachedClientPwd } : {}),
           persistent: formMatch ? params.clientConfig?.persistent !== false : true,
@@ -3228,13 +3271,21 @@ export const shareBridge = {
     const diskShares: PortableHostShareEntry[] = [];
     const runtimeShares: PortableHostShareEntry[] = [];
     for (const sh of profile.savedShares || []) {
-      const shUser = sh.username || '';
+      let shUser = sh.username || '';
       let shPass = sh.authMode === 'account' ? sh.password || '' : '';
       let shEnc = sh.authMode === 'account' ? sh.encryptedCredentials : undefined;
       if (sh.authMode === 'account' && !shPass && shEnc) {
         const dec = await decryptWebSimCredentials(shEnc);
         if (dec.ok) {
+          shUser = shUser || dec.username;
           shPass = dec.password;
+        }
+      }
+      if (sh.authMode === 'account' && !shPass && sh.connectionCode) {
+        const parsedCode = decodeConnectionCode(sh.connectionCode);
+        if (parsedCode?.password) {
+          shUser = shUser || parsedCode.username || '';
+          shPass = parsedCode.password;
         }
       }
       if (sh.authMode === 'account' && !shPass) {
@@ -3250,14 +3301,16 @@ export const shareBridge = {
       }
       const cleanDiskShare = sanitizeLocationShareForSim({
         ...sh,
+        ...(shUser ? { username: shUser } : {}),
         ...(shEnc ? { encryptedCredentials: shEnc } : { encryptedCredentials: undefined }),
       });
       diskShares.push(cleanDiskShare);
       runtimeShares.push({
         ...sh,
+        ...(shUser ? { username: shUser } : {}),
         ...(shPass ? { password: shPass } : {}),
         ...(shEnc ? { encryptedCredentials: shEnc } : {}),
-        connectionCode: shPass ? rehydrateCodeWithPassword(sh, shPass) : sh.connectionCode,
+        connectionCode: shPass ? rehydrateCodeWithPassword({ ...sh, username: shUser }, shPass) : sh.connectionCode,
       });
     }
 
@@ -3389,8 +3442,18 @@ export const shareBridge = {
           shPass = dec.password;
         }
       }
+      if (s.authMode === 'account' && !shPass && s.connectionCode) {
+        const parsedCode = decodeConnectionCode(s.connectionCode);
+        if (parsedCode?.password) {
+          shUser = shUser || parsedCode.username || '';
+          shPass = parsedCode.password;
+        }
+      }
       if (s.authMode === 'account' && !shPass) {
-        shPass = getCachedPassword(s.sourceHostName || 'LOCATION', s.shareName) || '';
+        shPass =
+          getCachedPassword(s.sourceHostName || 'LOCATION', s.shareName) ||
+          getCachedPassword('LOCATION', s.shareName) ||
+          '';
       }
       hydratedShares.push({
         ...s,
@@ -3637,7 +3700,7 @@ export const shareBridge = {
     const pingPromise = Promise.all(
       uniqueHosts.map(async (host) => {
         try {
-          const res = await this.pingHost(host);
+          const res = await this.pingHost(host, [], netInfo);
           return [host.toLowerCase(), res] as const;
         } catch {
           return [host.toLowerCase(), null] as const;

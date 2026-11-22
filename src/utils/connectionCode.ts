@@ -61,6 +61,22 @@ export function validateTargetHost(host: string): string | null {
   return null;
 }
 
+export function validateAccountUsername(username: string): string | null {
+  const trimmed = username.trim();
+  if (!trimmed) return '보안 계정 모드에서는 전용 계정 ID를 입력해야 합니다.';
+  const lower = trimmed.toLowerCase();
+  if (lower === 'guest' || lower === '게스트') {
+    return 'Windows 내장 Guest 계정은 보안 계정 모드에서 비활성화 및 네트워크 로그온이 차단됩니다. 무비밀번호 모드를 사용하거나 Visitor·AhBiShare 등 다른 전용 계정 ID를 입력하세요.';
+  }
+  if (/^-/.test(trimmed) || /["/\\[\]:;|=,+*?<>]/.test(trimmed)) {
+    return '전용 계정 ID에는 / \\ [ ] : ; | = , + * ? < > " 문자나 선두 하이픈(-)을 사용할 수 없습니다.';
+  }
+  if (trimmed.length > 20) {
+    return '전용 계정 ID는 Windows 호환성을 위해 20자 이하로 입력하세요.';
+  }
+  return null;
+}
+
 export function encodeConnectionCode(payload: ConnectionTokenPayload): string {
   const json = JSON.stringify(payload);
   return `${TOKEN_PREFIX}${encodeUtf8Base64(json)}`;

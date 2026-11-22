@@ -210,7 +210,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
       aria-modal="true"
       aria-labelledby="location-modal-title"
       onClick={(e) => {
-        if (e.target === e.currentTarget && !isSaving && !isBatchApplying) {
+        if (e.target === e.currentTarget && !isSaving && !isBatchApplying && !loadingEditId) {
           onClose();
         }
       }}
@@ -235,8 +235,9 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
               <button
                 id="btn-modal-import-json"
                 type="button"
+                disabled={isSaving || isBatchApplying || Boolean(loadingEditId)}
                 onClick={() => void onImportJsonFile()}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Upload className="w-3.5 h-3.5" />
                 .json 가져오기
@@ -244,7 +245,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
             )}
             <button
               type="button"
-              disabled={isSaving || isBatchApplying}
+              disabled={isSaving || isBatchApplying || Boolean(loadingEditId)}
               onClick={onClose}
               aria-label="사용장소 관리 창 닫기"
               className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
@@ -376,7 +377,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
               <button
                 id="btn-save-new-location"
                 type="button"
-                disabled={isSaving}
+                disabled={isSaving || isBatchApplying}
                 onClick={() => void handleSave(false)}
                 className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
               >
@@ -388,7 +389,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                 <button
                   id="btn-update-active-location"
                   type="button"
-                  disabled={isSaving}
+                  disabled={isSaving || isBatchApplying}
                   onClick={() => void handleSave(true)}
                   className="px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >

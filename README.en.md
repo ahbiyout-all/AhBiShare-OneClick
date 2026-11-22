@@ -9,20 +9,20 @@
 - **Host PC (1-Click Share Setup)**:
   - Switches network profile to Private and opens Windows Firewall TCP ports `445` and `139` inbound.
   - Automatically configures and starts `LanmanServer`, `FDResPub`, `fdPHost`, and `SSDPSrv`.
-  - Supports both **No-Password Easy Mode** and **Account-Authenticated Security Mode**, expiring temporary share timers (`TTL`), and generates `ABSHARE://` connection codes & QR codes.
+  - Supports both **No-Password Easy Mode** and **Account-Authenticated Security Mode** (with 5 one-click numeric-password office presets safe from built-in `Guest` collisions), expiring temporary share timers (`TTL`), and generates `ABSHARE://` connection codes & QR codes.
 - **Client PC (1-Click Drive Mount)**:
-  - Scans `/24` local subnet SMB `445` / NetBIOS hosts and auto-fills portable credentials stored in `AhBiShare_OneClick.portable.json` (AES-256-GCM encrypted).
+  - Scans `/24` local subnet SMB `445` / NetBIOS hosts, auto-fills portable credentials stored in `AhBiShare_OneClick.portable.json` (AES-256-GCM encrypted), and provides **multi-source IP/hostname credential resolution, easy numeric presets, password visibility toggles (eye icon), and a unified Refresh button across all 6 workspace tabs**.
   - Automatically diagnoses and mitigates Windows `0x80070035`, `1272`, `5`, and `1219` SMB errors before mounting drives.
 - **Per-Location Profiles & 1-Click Batch Apply (`v1.2.1`)**:
-  - Saves separate AES-256-GCM encrypted profiles (`locations/*.location.json`) per site (Office, Home, Field), supports `.json` export/import, **in-app profile content editing** (metadata, network hint, host shares, client drives, host preset), auto-fills workspace fields, and applies host shares & client drives together in **1 click**.
+  - Saves separate AES-256-GCM encrypted profiles (`locations/*.location.json`) per site (Office, Home, Field), preserves active account-authenticated client mounts/credentials in snapshots, supports `.json` export/import, **in-app profile content editing** (metadata, network hint, host shares, client drives, host preset with Windows SAM username validation), auto-fill, and **Pre-flight validated 1-click batch apply**.
 - **OS Compatibility Matrix (Win 10 ~ Win 11 26H2)**:
-  - Detects host-client policy mismatches in real time with **color-coded discrepancy badges**, provides a **10-point Security Rollback Audit Report**, includes an **Expert Raw Registry Comparison View** (local vs. target host side-by-side), offers **1-click batch auto-alignment**, and evaluates reboot requirements.
+  - Detects host-client policy mismatches in real time with **color-coded discrepancy badges**, provides a **10-point Security Rollback Audit Report** (with NTLM `LmCompatibilityLevel < 3` remediation and clean OS default loop prevention), includes an **Expert Raw Registry Comparison View** (local vs. target host side-by-side), offers **1-click batch auto-alignment**, and evaluates reboot requirements.
 - **Legacy OS Sharing & Bidirectional Bridge (Win 7 · 8 · 8.1 ⇄ Win 10 · 11)**:
-  - Provides a guided 2-step flow (**Step 1: Main Host PC** / **Step 2: Client PC**) with 1-click SMB 2.1/3.0 unencrypted compatibility bridging, 2-step acknowledged SMB 1.0 safety control, and pre-change registry snapshot rollback (`Backup_Before_Apply`).
-  - Generates pure Windows 7 `cmd.exe`-compatible `.bat` + UTF-16LE BOM `.reg` 4-file offline USB kits and supports **Win 10/11 ⇄ Win 7/8 bidirectional JSON data bridging**.
+  - Provides a guided 2-step flow (**Step 1: Main Host PC** / **Step 2: Client PC**) with 1-click SMB 2.1/3.0 unencrypted compatibility bridging, 2-step acknowledged SMB 1.0 control (with Win 7 `mrxsmb10` symmetric rollback), snapshot + `forceguest=0` rollback, `Error 58` SMB encryption/dialect diagnostics, account-mode client guest-unlock skip, Win 7 `HNetCfg.FwPolicy2` profile detection, custom mounted drive options, and **Step 2 auth/guest failure recovery actions (Diagnostics, instant Account Mode switch, Host unlock command)**.
+  - Generates pure Windows 7 `cmd.exe`-compatible `.bat` (`[char]34`-safe quoting, baseline-first-then-backup overlay, locale-independent firewall rules) + UTF-16LE BOM `.reg` 4-file offline USB kits and supports **Win 10/11 ⇄ Win 7/8 bidirectional JSON data bridging**.
 - **GitHub Auto-Update Detection & Portable Self-Replace (`v1.2.1`)**:
-  - Checks GitHub Releases (REST API + Atom/`expanded_assets` dual fallback) and displays an update confirmation modal.
-  - Detects the running portable edition (`Standard`, `Lite`, or `Win7`), verifies official GitHub download URLs and Windows PE (`MZ`) headers, and **terminates/removes the old portable EXE, replaces it with the new EXE, and relaunches automatically** while preserving `.portable.json` and `locations/`.
+  - Checks GitHub Releases (REST API + fault-tolerant Atom/`expanded_assets` fallback) and displays an update confirmation modal.
+  - Detects the running portable edition (`Standard`, `Lite`, or `Win7`), verifies official GitHub download URLs and Windows PE (`MZ`) headers with cancel-race protection, and **terminates/removes the old portable EXE, replaces it with the new EXE, and relaunches automatically** while preserving `.portable.json` and `locations/`.
 
 ## Build, Verification & Semantic Versioning
 

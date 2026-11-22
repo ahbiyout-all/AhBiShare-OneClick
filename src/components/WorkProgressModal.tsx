@@ -56,6 +56,8 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
   const activeStepRef = useRef<HTMLLIElement | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   const isRunning = job.status === 'running';
   const isSuccess = job.status === 'success';
@@ -86,14 +88,14 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
     }, 100);
 
     const autoCloseTimerId = window.setTimeout(() => {
-      onClose();
+      onCloseRef.current();
     }, AUTO_CLOSE_DELAY_MS);
 
     return () => {
       window.clearInterval(countdownId);
       window.clearTimeout(autoCloseTimerId);
     };
-  }, [job.isOpen, isSuccess, job.jobKey, onClose]);
+  }, [job.isOpen, isSuccess, job.jobKey]);
 
   // Lock page scroll & isolate focus inside modal while open; restore focus on close
   useEffect(() => {
@@ -145,7 +147,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
           e.stopPropagation();
           return;
         }
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -191,7 +193,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [job.isOpen, isRunning, onClose]);
+  }, [job.isOpen, isRunning]);
 
   // Auto-scroll active or failed step into view
   useEffect(() => {

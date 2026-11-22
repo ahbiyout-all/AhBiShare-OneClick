@@ -69,10 +69,12 @@ interface NetworkMatrixPanelProps {
   lastPatchResult: PolicyApplyResult | null;
   lastAutoAlignResult?: AutoAlignBatchResult | null;
   isInspecting: boolean;
+  isRefreshing?: boolean;
   isAutoAligning?: boolean;
   isApplyingPendingHostTask?: boolean;
   isApplyingMode: PolicyPatchMode | null;
   onInspectPolicy: () => Promise<void>;
+  onRefresh?: () => Promise<void>;
   onApplyPatch: (mode: PolicyPatchMode) => Promise<void>;
   onSyncMatchedPolicies: (modes: PolicyPatchMode[]) => Promise<void>;
   onFullSecurityRollback?: () => Promise<{ success: boolean; message: string } | void>;
@@ -139,10 +141,12 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   lastPatchResult,
   lastAutoAlignResult = null,
   isInspecting,
+  isRefreshing = false,
   isAutoAligning = false,
   isApplyingPendingHostTask = false,
   isApplyingMode,
   onInspectPolicy,
+  onRefresh,
   onApplyPatch,
   onSyncMatchedPolicies,
   onFullSecurityRollback,
@@ -183,7 +187,7 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   const [expertFetchResult, setExpertFetchResult] = useState<ExpertRegistryFetchResult | null>(null);
   const initializedPendingSourceRef = useRef<string | null>(null);
 
-  const isBusy = isInspecting || isApplyingMode !== null || isAutoAligning || isApplyingPendingHostTask;
+  const isBusy = isInspecting || isRefreshing || isApplyingMode !== null || isAutoAligning || isApplyingPendingHostTask;
   const currentEra: WindowsNetworkEra = policyStatus?.osEra || netInfo.osEra || 'win11_24h2';
   const currentBuild = policyStatus?.osBuild || netInfo.osBuild || 26100;
   const currentDisp = policyStatus?.osDisplayVersion || netInfo.osDisplayVersion || '24H2';
@@ -555,16 +559,30 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             </p>
           </div>
 
-          <button
-            id="btn-inspect-os-policy"
-            type="button"
-            disabled={isBusy}
-            onClick={() => void onInspectPolicy()}
-            className="px-4 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isInspecting ? 'animate-spin' : ''}`} />
-            {isInspecting ? 'OS 정책 분석 중...' : '현재 OS 네트워크 정책 재검사'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onRefresh && (
+              <button
+                id="btn-refresh-matrix"
+                type="button"
+                disabled={isBusy}
+                onClick={() => void onRefresh()}
+                className="px-3.5 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
+                {isRefreshing ? '새로고침 중...' : '새로고침'}
+              </button>
+            )}
+            <button
+              id="btn-inspect-os-policy"
+              type="button"
+              disabled={isBusy}
+              onClick={() => void onInspectPolicy()}
+              className="px-4 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isInspecting ? 'animate-spin' : ''}`} />
+              {isInspecting ? 'OS 정책 분석 중...' : '현재 OS 네트워크 정책 재검사'}
+            </button>
+          </div>
         </div>
 
         {/* Live Telemetry Cards */}

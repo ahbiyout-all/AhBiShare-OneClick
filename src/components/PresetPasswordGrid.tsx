@@ -12,7 +12,7 @@ export const EASY_ACCOUNT_PRESETS: PresetAccount[] = [
   { label: '관리자 (Admin / 789012)', username: 'Admin', password: '789012' },
   { label: '매니저 (Manager / 202620)', username: 'Manager', password: '202620' },
   { label: '직원 (Staff / 555555)', username: 'Staff', password: '555555' },
-  { label: '게스트 (Guest / 111111)', username: 'Guest', password: '111111' },
+  { label: '방문자 (Visitor / 111111)', username: 'Visitor', password: '111111' },
 ];
 
 interface PresetPasswordGridProps {

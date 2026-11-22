@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap } from 'lucide-react';
+import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap, RefreshCw } from 'lucide-react';
 import {
   RoleMode,
   AppSection,
@@ -132,6 +132,8 @@ export const App: React.FC = () => {
     shareBridge.getLegacyRollbackSnapshot()
   );
   const [isPolicyInspecting, setIsPolicyInspecting] = useState(false);
+  const [isRefreshingTab, setIsRefreshingTab] = useState(false);
+  const refreshTabInFlightRef = useRef(false);
   const [isAutoAligning, setIsAutoAligning] = useState(false);
   const [applyingPatchMode, setApplyingPatchMode] = useState<PolicyPatchMode | null>(null);
   const [legacyHostSteps, setLegacyHostSteps] = useState<PipelineStep[]>([]);
@@ -140,6 +142,8 @@ export const App: React.FC = () => {
   const [locationProfiles, setLocationProfiles] = useState<LocationProfileSummary[]>([]);
   const [locationStorageDir, setLocationStorageDir] = useState<string>('locations');
   const [activeLocationProfile, setActiveLocationProfile] = useState<LocationProfileFile | null>(null);
+  const activeLocationProfileRef = useRef<LocationProfileFile | null>(null);
+  activeLocationProfileRef.current = activeLocationProfile;
   const [locationModalOpen, setLocationModalOpen] = useState(false);
   const [locationModalTab, setLocationModalTab] = useState<'save' | 'manage'>('manage');
   const [locationModalEditProfileId, setLocationModalEditProfileId] = useState<string | null>(null);
@@ -364,6 +368,65 @@ export const App: React.FC = () => {
     } catch {}
   }, []);
 
+  const handleRefreshTab = useCallback(
+    async (options?: { scanLan?: boolean; inspectPolicy?: boolean; tabLabel?: string }) => {
+      if (refreshTabInFlightRef.current) return;
+      refreshTabInFlightRef.current = true;
+      setIsRefreshingTab(true);
+      const label = options?.tabLabel || '화면';
+      try {
+        const freshNet = await shareBridge.getLocalNetworkInfo();
+        setNetInfo(freshNet);
+        const synced = await shareBridge.syncLiveState(freshNet);
+        setShares(synced.shares);
+        setMounts(synced.mounts);
+        const sortedPortable = sortPortableEntriesForClient(synced.portable.document.shares, freshNet.hostname);
+        setPortableShares(sortedPortable);
+        setPortableStatus(synced.portable.status);
+        setHostPolicySnapshots(synced.portable.document.hostPolicies || {});
+        setPendingHostActions(synced.portable.document.pendingHostActions || {});
+        if (options?.scanLan) {
+          try {
+            const found = await shareBridge.scanLanPeers(freshNet);
+            setPeers(found);
+          } catch {}
+        }
+        if (options?.inspectPolicy !== false) {
+          try {
+            const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+            setPolicyStatus(pol);
+          } catch {}
+        }
+        const listRes = await shareBridge.listLocationProfiles();
+        setLocationProfiles(listRes.profiles);
+        if (listRes.directory) setLocationStorageDir(listRes.directory);
+        const currentActiveProfile = activeLocationProfileRef.current;
+        if (currentActiveProfile) {
+          const stillExists = listRes.profiles.some((p) => p.profileId === currentActiveProfile.profileId);
+          if (!stillExists) {
+            setActiveLocationProfile(null);
+            setLastLocationBatchResult(null);
+          } else {
+            const reloaded = await shareBridge.loadLocationProfile(currentActiveProfile.profileId);
+            if (reloaded.success && reloaded.profile) {
+              setActiveLocationProfile(reloaded.profile);
+            }
+          }
+        }
+        appendLog(label, `${label} 상태(네트워크·공유·드라이브·USB 프로필) 새로고침 완료`, 'success');
+        showToast(`${label} 상태를 최신 정보로 새로고침했습니다.`);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : '알 수 없는 오류';
+        appendLog(label, `새로고침 실패: ${reason}`, 'error');
+        showToast('새로고침 중 오류가 발생했습니다.');
+      } finally {
+        refreshTabInFlightRef.current = false;
+        setIsRefreshingTab(false);
+      }
+    },
+    [appendLog, showToast]
+  );
+
   useEffect(() => {
     const bootstrap = async () => {
       try {
@@ -459,6 +522,7 @@ export const App: React.FC = () => {
   }, [shares, nowMs, netInfo, refreshPortableSnapshot, appendLog, showToast]);
 
   const handleInspectOsPolicy = useCallback(async () => {
+    if (refreshTabInFlightRef.current) return;
     setIsPolicyInspecting(true);
     setLastAutoAlignResult(null);
     try {
@@ -966,6 +1030,7 @@ export const App: React.FC = () => {
   };
 
   const handleScanLan = async () => {
+    if (refreshTabInFlightRef.current) return;
     setIsScanning(true);
     try {
       const freshNet = await shareBridge.getLocalNetworkInfo();
@@ -1154,11 +1219,16 @@ export const App: React.FC = () => {
 
   const handleConnectLegacyClient = async (config: ClientTargetConfig, targetOs: LegacyTargetOs) => {
     const osTag = targetOs === 'win7' ? 'Win 7(SMB 2.1)' : 'Win 8/8.1(SMB 3.0)';
+    const isGuestClientMode = config.authMode === 'guest';
     const bridgeStepId = 'legacy-bridge-client';
     const initialBridgeStep: PipelineStep = {
       id: bridgeStepId,
-      title: `${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`,
-      detail: '게스트 로그온 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장',
+      title: isGuestClientMode
+        ? `${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`
+        : `${osTag} 보안 계정 클라이언트 스냅샷 백업 및 정책 준비`,
+      detail: isGuestClientMode
+        ? '게스트 로그온 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장'
+        : '사전 스냅샷 저장 · 보안 계정 모드(로컬 Guest 계정 개방 생략)',
       status: 'running',
     };
     const jobKey = startProgressJob(
@@ -1176,28 +1246,46 @@ export const App: React.FC = () => {
       const freshNet = await shareBridge.getLocalNetworkInfo();
       setNetInfo(freshNet);
       const t0 = performance.now();
-      const bridgeRes = await shareBridge.applyOsCompatibilityPatch('legacy_bridge_compat', freshNet);
-      const bridgeStep: PipelineStep = {
-        id: bridgeStepId,
-        title: `${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`,
-        detail: bridgeRes.summary,
-        status: bridgeRes.success ? 'success' : 'error',
-        durationMs: Math.round(performance.now() - t0),
-        output: bridgeRes.success ? bridgeRes.rebootJudgment.title : undefined,
-        error: bridgeRes.success ? undefined : bridgeRes.summary,
-      };
-      setLastPatchResult(bridgeRes);
-      setPolicyStatus(bridgeRes.updatedPolicy);
-      setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-      latestSteps = [bridgeStep];
-      setLegacyClientSteps(latestSteps);
-      updateProgressSteps(jobKey, latestSteps);
+      let bridgeStep: PipelineStep;
 
-      if (!bridgeRes.success) {
-        appendLog('구형 OS 클라이언트', `브릿지 정렬 실패: ${bridgeRes.summary}`, 'error');
-        showToast('구형 OS 호환 브릿지 정렬에 실패했습니다.');
-        failProgressJob(jobKey, bridgeRes.summary, latestSteps);
-        return;
+      if (isGuestClientMode) {
+        const bridgeRes = await shareBridge.applyOsCompatibilityPatch('legacy_bridge_compat', freshNet);
+        bridgeStep = {
+          id: bridgeStepId,
+          title: initialBridgeStep.title,
+          detail: bridgeRes.summary,
+          status: bridgeRes.success ? 'success' : 'error',
+          durationMs: Math.round(performance.now() - t0),
+          output: bridgeRes.success ? bridgeRes.rebootJudgment.title : undefined,
+          error: bridgeRes.success ? undefined : bridgeRes.summary,
+        };
+        setLastPatchResult(bridgeRes);
+        setPolicyStatus(bridgeRes.updatedPolicy);
+        setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+        latestSteps = [bridgeStep];
+        setLegacyClientSteps(latestSteps);
+        updateProgressSteps(jobKey, latestSteps);
+
+        if (!bridgeRes.success) {
+          appendLog('구형 OS 클라이언트', `브릿지 정렬 실패: ${bridgeRes.summary}`, 'error');
+          showToast('구형 OS 호환 브릿지 정렬에 실패했습니다.');
+          failProgressJob(jobKey, bridgeRes.summary, latestSteps);
+          return;
+        }
+      } else {
+        const snap = await shareBridge.ensureLegacyRollbackSnapshot(freshNet);
+        setLegacyRollbackSnapshot(snap);
+        bridgeStep = {
+          id: bridgeStepId,
+          title: initialBridgeStep.title,
+          detail: '원복 스냅샷을 저장했으며, 로컬 Guest(*-501) 개방 없이 클라이언트 서명·NTLMv2 정책만 정렬합니다.',
+          status: 'success',
+          durationMs: Math.round(performance.now() - t0),
+          output: snap ? `스냅샷 저장 완료 (${snap.capturedAt})` : '보안 계정 모드 준비 완료',
+        };
+        latestSteps = [bridgeStep];
+        setLegacyClientSteps(latestSteps);
+        updateProgressSteps(jobKey, latestSteps);
       }
 
       const mountRes = await shareBridge.runClientOneClick(
@@ -2472,6 +2560,7 @@ export const App: React.FC = () => {
             shares={shares}
             steps={hostSteps}
             isExecuting={isHostExecuting || isLocationBatchApplying}
+            isRefreshing={isRefreshingTab}
             nowMs={nowMs}
             initialConfig={hostDraft}
             pendingHostPreset={pendingHostPreset}
@@ -2481,6 +2570,7 @@ export const App: React.FC = () => {
             onCreateShare={handleCreateShare}
             onRemoveShare={handleRemoveShare}
             onOpenFolder={handleOpenPath}
+            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: '공유 개설' })}
           />
         )}
 
@@ -2491,6 +2581,7 @@ export const App: React.FC = () => {
             steps={clientSteps}
             isScanning={isScanning}
             isConnecting={isClientConnecting || isLocationBatchApplying}
+            isRefreshing={isRefreshingTab}
             portableShares={portableShares}
             locationSavedShares={activeLocationProfile?.savedShares || []}
             locationHostPreset={activeLocationProfile?.hostPreset || null}
@@ -2515,6 +2606,7 @@ export const App: React.FC = () => {
               void handleOpenDiagnostics(errText);
             }}
             onScanLan={handleScanLan}
+            onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: '클라이언트 연결' })}
             onConnect={handleConnectClient}
             onUnmount={handleUnmount}
             onOpenDrive={handleOpenPath}
@@ -2537,10 +2629,12 @@ export const App: React.FC = () => {
             lastPatchResult={lastPatchResult}
             lastAutoAlignResult={lastAutoAlignResult}
             isInspecting={isPolicyInspecting}
+            isRefreshing={isRefreshingTab}
             isAutoAligning={isAutoAligning}
             isApplyingPendingHostTask={isApplyingPendingHostTask}
             isApplyingMode={applyingPatchMode}
             onInspectPolicy={handleInspectOsPolicy}
+            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: 'OS 호환성 매트릭스' })}
             onApplyPatch={handleApplyOsPatch}
             onSyncMatchedPolicies={handleSyncMatchedPolicies}
             onFullSecurityRollback={handleFullSecurityRollback}
@@ -2571,11 +2665,13 @@ export const App: React.FC = () => {
             clientSteps={legacyClientSteps}
             nowMs={nowMs}
             isInspecting={isPolicyInspecting}
+            isRefreshing={isRefreshingTab}
             isScanning={isScanning}
             isHostExecuting={isHostExecuting}
             isClientConnecting={isClientConnecting}
             isApplyingMode={applyingPatchMode}
             onInspectPolicy={handleInspectOsPolicy}
+            onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: '구형 OS 공유' })}
             onApplyPatch={handleApplyOsPatch}
             onSelectFolder={shareBridge.selectFolder}
             onCreateLegacyHostShare={handleCreateLegacyHostShare}
@@ -2588,25 +2684,40 @@ export const App: React.FC = () => {
             onTriggerReboot={handleTriggerReboot}
             onBridgeImported={handleBridgeImported}
             onOpenMatrix={() => setActiveSection('matrix')}
+            onOpenDiagnostics={(errText) => {
+              void handleOpenDiagnostics(errText);
+            }}
             onNotify={showToast}
           />
         )}
 
         {activeSection === 'logs' && (
           <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
                 작업 실행 이력 ({activityLog.length})
               </h2>
-              {activityLog.length > 0 && (
+              <div className="flex items-center gap-2">
                 <button
+                  id="btn-refresh-logs"
                   type="button"
-                  onClick={() => setActivityLog([])}
-                  className="text-xs font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                  disabled={isRefreshingTab}
+                  onClick={() => void handleRefreshTab({ inspectPolicy: true, tabLabel: '실행 이력' })}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
-                  이력 비우기
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingTab ? 'animate-spin text-indigo-500' : ''}`} />
+                  {isRefreshingTab ? '새로고침 중...' : '새로고침'}
                 </button>
-              )}
+                {activityLog.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setActivityLog([])}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                  >
+                    이력 비우기
+                  </button>
+                )}
+              </div>
             </div>
             {activityLog.length === 0 ? (
               <div className="px-6 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
@@ -2644,9 +2755,11 @@ export const App: React.FC = () => {
             activeShareCount={shares.length}
             activeMountCount={mounts.length}
             isInspecting={isPolicyInspecting}
+            isRefreshing={isRefreshingTab}
             onRollback={handleRollback}
             onFullSecurityRollback={handleFullSecurityRollback}
             onInspectPolicy={handleInspectOsPolicy}
+            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: '보안 원복' })}
             onRestoreDefaults={handleSyncMatchedPolicies}
             onNotify={showToast}
           />

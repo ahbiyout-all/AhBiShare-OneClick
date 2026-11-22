@@ -172,8 +172,10 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
       script: `
         netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes 2>$null | Out-Null
         netsh advfirewall firewall set rule group="파일 및 프린터 공유" new enable=Yes 2>$null | Out-Null
+        netsh advfirewall firewall set rule group="@FirewallAPI.dll,-28502" new enable=Yes 2>$null | Out-Null
         netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes 2>$null | Out-Null
         netsh advfirewall firewall set rule group="네트워크 검색" new enable=Yes 2>$null | Out-Null
+        netsh advfirewall firewall set rule group="@FirewallAPI.dll,-32752" new enable=Yes 2>$null | Out-Null
         if (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) {
           $fwRule = Get-NetFirewallRule -DisplayName "AhBiShare-SMB-445" -ErrorAction SilentlyContinue
           if (-not $fwRule) {
@@ -296,12 +298,16 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               }
             } else {
               & net.exe user $p_user 2>$null | Out-Null
-              if ($LASTEXITCODE -eq 0) {
-                & net.exe user $p_user $p_pass /active:yes /expires:never /passwordchg:no 2>&1 | Out-Null
+              $userExists = ($LASTEXITCODE -eq 0)
+              try { [Console]::OutputEncoding = [System.Text.Encoding]::Default } catch {}
+              if ($userExists) {
+                $script:__nuOut = (& net.exe user $p_user $p_pass /active:yes /expires:never /passwordchg:no 2>&1) -join ' '
               } else {
-                & net.exe user $p_user $p_pass /add /active:yes /expires:never /passwordchg:no 2>&1 | Out-Null
+                $script:__nuOut = (& net.exe user $p_user $p_pass /add /active:yes /expires:never /passwordchg:no 2>&1) -join ' '
               }
-              if ($LASTEXITCODE -ne 0) { throw ("로컬 공유 계정 생성/갱신 실패: " + $p_user) }
+              $nuCode = $LASTEXITCODE
+              try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+              if ($nuCode -ne 0) { throw ("로컬 공유 계정 생성/갱신 실패 (" + $p_user + "): " + $script:__nuOut) }
             }
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Failed to harden LSA policy (Admin required)" }
@@ -842,6 +848,8 @@ public class AhBiMprNet {
             $hint = ' [원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌 또는 호스트 Guest 빈 암호 제한. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]'
           } elseif ($diagOut -match '(?<![.\\d])1326(?![.\\d])|(?<![.\\d])86(?![.\\d])|(?<![.\\d])5(?![.\\d])|액세스|거부|로그온|암호|password is not correct') {
             $hint = ' [원인: 호스트 계정 ID/암호 불일치, 빈 암호 제한(LimitBlankPasswordUse) 또는 익명 접근 제한. 호스트에서 무비밀번호 공유 재개설 또는 [보안 계정 모드]를 확인하세요.]'
+          } elseif ($diagOut -match '(?<![.\\d])58(?![.\\d])|지정한 서버가 요청한 작업|cannot perform the requested operation') {
+            $hint = ' [원인: 대상 서버의 SMB 전송 암호화·서명 강제 또는 SMB 프로토콜 버전 불일치(Error 58). 호스트/클라이언트에서 구형 OS 호환 브릿지 정렬을 실행하세요.]'
           } elseif ($diagOut -match '(?<![.\\d])53(?![.\\d])|(?<![.\\d])67(?![.\\d])|네트워크 경로') {
             $hint = ' [원인: 네트워크 경로(' + $p_unc + ') 또는 공유 이름을 찾을 수 없습니다. 호스트 방화벽/공유 이름을 확인하세요.]'
           }
@@ -879,6 +887,7 @@ export function buildRollbackScript(scope: 'host' | 'client'): string {
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EncryptData /t REG_DWORD /d 0 /f 2>$null | Out-Null
@@ -1039,16 +1048,25 @@ export function buildOsNetworkPolicyInspectScript(): string {
       }
     } else {
       try {
-        $nlProfiles = Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles' -ErrorAction SilentlyContinue
-        foreach ($np in $nlProfiles) {
-          $pObj = Get-ItemProperty $np.PSPath -ErrorAction SilentlyContinue
-          if ($pObj -and $null -ne $pObj.Category) {
-            if ([int]$pObj.Category -eq 0) { $netProfile = 'Public'; break }
-            elseif ([int]$pObj.Category -eq 1) { $netProfile = 'Private' }
-            elseif ([int]$pObj.Category -eq 2 -and $netProfile -eq 'Unknown') { $netProfile = 'DomainAuthenticated' }
-          }
-        }
+        $fwPol2 = New-Object -ComObject HNetCfg.FwPolicy2 -ErrorAction Stop
+        $curTypes = [int]$fwPol2.CurrentProfileTypes
+        if (($curTypes -band 4) -ne 0) { $netProfile = 'Public' }
+        elseif (($curTypes -band 2) -ne 0) { $netProfile = 'Private' }
+        elseif (($curTypes -band 1) -ne 0) { $netProfile = 'DomainAuthenticated' }
       } catch {}
+      if ($netProfile -eq 'Unknown') {
+        try {
+          $nlProfiles = Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles' -ErrorAction SilentlyContinue
+          foreach ($np in $nlProfiles) {
+            $pObj = Get-ItemProperty $np.PSPath -ErrorAction SilentlyContinue
+            if ($pObj -and $null -ne $pObj.Category) {
+              if ([int]$pObj.Category -eq 0) { $netProfile = 'Public'; break }
+              elseif ([int]$pObj.Category -eq 1) { $netProfile = 'Private' }
+              elseif ([int]$pObj.Category -eq 2 -and $netProfile -eq 'Unknown') { $netProfile = 'DomainAuthenticated' }
+            }
+          }
+        } catch {}
+      }
     }
 
     $srvCfg = if (Get-Command Get-SmbServerConfiguration -ErrorAction SilentlyContinue) { Get-SmbServerConfiguration -ErrorAction SilentlyContinue } else { $null }
@@ -1152,7 +1170,8 @@ export function buildOsNetworkPolicyInspectScript(): string {
     try {
       if (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) {
         $ahbiRule = @(Get-NetFirewallRule -DisplayName 'AhBiShare-SMB-445' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' })
-        if ($ahbiRule.Count -gt 0) {
+        $ahbiLegacyRule = @(Get-NetFirewallRule -DisplayName 'AhBiShare-Legacy-SMB-445' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' })
+        if ($ahbiRule.Count -gt 0 -or $ahbiLegacyRule.Count -gt 0) {
           $ahbiFwPresent = $true
           $fw445Ok = $true
         } else {
@@ -1169,12 +1188,15 @@ export function buildOsNetworkPolicyInspectScript(): string {
         } catch {}
         try {
           $nsOut = (& netsh.exe advfirewall firewall show rule name="AhBiShare-SMB-445" 2>$null) -join ' '
-          if ($nsOut -match 'Enabled:\\s*Yes|사용:\\s*예') {
+          $nsLegacyOut = (& netsh.exe advfirewall firewall show rule name="AhBiShare-Legacy-SMB-445" 2>$null) -join ' '
+          if (($nsOut -match 'Enabled:\\s*Yes|사용:\\s*예') -or ($nsLegacyOut -match 'Enabled:\\s*Yes|사용:\\s*예')) {
             $ahbiFwPresent = $true
             $fw445Ok = $true
           } else {
-            $nsFps = (& netsh.exe advfirewall firewall show rule name="FPS-SMB-In-TCP" 2>$null) -join ' '
-            if ($nsFps -match 'Enabled:\\s*Yes|사용:\\s*예') { $fw445Ok = $true }
+            foreach ($fpsCandidate in @('FPS-SMB-In-TCP', 'File and Printer Sharing (SMB-In)', '파일 및 프린터 공유(SMB-In)')) {
+              $nsFps = (& netsh.exe advfirewall firewall show rule name="$fpsCandidate" 2>$null) -join ' '
+              if ($nsFps -match 'Enabled:\\s*Yes|사용:\\s*예') { $fw445Ok = $true; break }
+            }
           }
         } finally {
           try {
@@ -1827,6 +1849,7 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d ${guestDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d ${guestDword === 1 ? 1 : 0} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d ${lmDword} /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d ${uacFilterDword} /f 2>$null | Out-Null
       Set-AhBiGuestNetworkLogonPolicy ${allowGuestRightsPs}
@@ -1860,6 +1883,8 @@ export function buildOsCompatibilityPatchScript(
         reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v SMB1 /t REG_DWORD /d 0 /f 2>$null | Out-Null
         if (Get-Command Disable-WindowsOptionalFeature -ErrorAction SilentlyContinue) {
           Disable-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -NoRestart -ErrorAction SilentlyContinue | Out-Null
+        } else {
+          & sc.exe config mrxsmb10 start= demand 2>$null | Out-Null
         }
         $smb1Changed = $true
         $actions += '레거시 SMB 1.0 프로토콜 비활성화(Disable-WindowsOptionalFeature SMB1Protocol) 완료'
@@ -1911,6 +1936,14 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
+      try {
+        $lmKey = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name 'LmCompatibilityLevel' -ErrorAction SilentlyContinue
+        if ($lmKey -and $null -ne $lmKey.LmCompatibilityLevel -and [int]$lmKey.LmCompatibilityLevel -lt 3) {
+          reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f 2>$null | Out-Null
+          $actions += 'NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원'
+        }
+      } catch {}
       if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
         $guestStrict = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
         if ($guestStrict) { Disable-LocalUser -Name $guestStrict.Name -ErrorAction SilentlyContinue }
