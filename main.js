@@ -100,11 +100,9 @@ function getPowerShellExe() {
 
 function decodeWindowsBuffer(buf) {
   if (!buf || buf.length === 0) return '';
-  // Explicit UTF-16LE BOM
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
     return buf.toString('utf16le').replace(/^\uFEFF/, '').replace(/\u0000/g, '');
   }
-  // Distinguish real UTF-16LE (odd-index 0x00 interleaving) from UTF-8 containing an accidental stray 0x00 byte
   let oddZeros = 0;
   let evenZeros = 0;
   for (let i = 0; i < buf.length; i++) {
@@ -113,10 +111,9 @@ function decodeWindowsBuffer(buf) {
       else evenZeros++;
     }
   }
-  const cleaned = oddZeros + evenZeros > 0 ? Buffer.from(buf.filter((b) => b !== 0x00)) : buf;
   let strictUtf8 = null;
   try {
-    strictUtf8 = new TextDecoder('utf-8', { fatal: true }).decode(cleaned).replace(/^\uFEFF/, '');
+    strictUtf8 = new TextDecoder('utf-8', { fatal: true }).decode(buf).replace(/^\uFEFF/, '');
   } catch {
     strictUtf8 = null;
   }
@@ -127,13 +124,13 @@ function decodeWindowsBuffer(buf) {
   if (hasRealUtf16Interleaving) {
     return buf.toString('utf16le').replace(/^\uFEFF/, '').replace(/\u0000/g, '');
   }
-
-  if (strictUtf8 !== null) return strictUtf8;
+  if (strictUtf8 !== null && !/\ufffd/.test(strictUtf8)) return strictUtf8;
   try {
-    return new TextDecoder('euc-kr').decode(cleaned).replace(/^\uFEFF/, '');
-  } catch {
-    return cleaned.toString('utf8').replace(/^\uFEFF/, '');
-  }
+    const decodedEuc = new TextDecoder('euc-kr').decode(buf).replace(/^\uFEFF/, '');
+    if (decodedEuc) return decodedEuc;
+  } catch {}
+  if (strictUtf8 !== null) return strictUtf8;
+  return buf.toString('utf8').replace(/^\uFEFF/, '');
 }
 
 function executePowerShellScript(script, timeoutMs = 45000) {

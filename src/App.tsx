@@ -1214,29 +1214,41 @@ export const App: React.FC = () => {
           const sameEndpoint =
             latestDraft.targetHost.trim().toLowerCase() === targetHost.trim().toLowerCase() &&
             latestDraft.shareName.trim().toLowerCase() === ticket.shareName.trim().toLowerCase();
-          const mountCfg: ClientTargetConfig = {
-            targetHost,
-            shareName: ticket.shareName,
-            driveLetter: nextDriveLetter || (sameEndpoint ? latestDraft.driveLetter : 'Z:'),
-            authMode: sameEndpoint ? latestDraft.authMode : ticket.authMode,
-            username: sameEndpoint ? latestDraft.username : '',
-            password: sameEndpoint ? latestDraft.password : '',
-            persistent: latestDraft.persistent,
-          };
-          const mountRes = await shareBridge.runClientOneClick(
-            mountCfg,
-            (steps) => setClientSteps(steps),
-            netInfo.osEra
-          );
-          if (mountRes.success && mountRes.mount) {
-            setMounts(shareBridge.getSavedMounts());
-            ok = true;
-            resolvedImmediately = true;
-            message = `${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 재연결 성공`;
-          } else {
-            const failedStep = mountRes.steps.find((s) => s.status === 'error');
+          
+          let authModeToUse = sameEndpoint ? latestDraft.authMode : ticket.authMode;
+          let passToUse = sameEndpoint ? latestDraft.password : latestDraft.password || '';
+          const isHostUnlocked = ticket.status === 'host_fixed' || ticket.hostSteps.some((s) => s.executor === 'host_guest_unlock_and_reopen' && s.status === 'completed');
+          if (isHostUnlocked && authModeToUse === 'account' && !passToUse) {
+            authModeToUse = 'guest';
+          }
+          if (authModeToUse === 'account' && !passToUse) {
             ok = false;
-            message = failedStep?.error || '네트워크 드라이브 재연결에 실패했습니다.';
+            message = '보안 계정 모드에서는 비밀번호가 필수입니다. 암호를 입력하거나 Guest 모드로 전환하세요.';
+          } else {
+            const mountCfg: ClientTargetConfig = {
+              targetHost,
+              shareName: ticket.shareName,
+              driveLetter: nextDriveLetter || (sameEndpoint ? latestDraft.driveLetter : 'Z:'),
+              authMode: authModeToUse,
+              username: sameEndpoint ? latestDraft.username : (authModeToUse === 'account' ? latestDraft.username : ''),
+              password: passToUse,
+              persistent: latestDraft.persistent,
+            };
+            const mountRes = await shareBridge.runClientOneClick(
+              mountCfg,
+              (steps) => setClientSteps(steps),
+              netInfo.osEra
+            );
+            if (mountRes.success && mountRes.mount) {
+              setMounts(shareBridge.getSavedMounts());
+              ok = true;
+              resolvedImmediately = true;
+              message = `${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 재연결 성공`;
+            } else {
+              const failedStep = mountRes.steps.find((s) => s.status === 'error');
+              ok = false;
+              message = failedStep?.error || '네트워크 드라이브 재연결에 실패했습니다.';
+            }
           }
         } else if (step.executor === 'retry_host_share') {
           const shareLower = ticket.shareName.trim().toLowerCase();

@@ -542,12 +542,12 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       isHostAuthOrGuestIssue: true,
     };
   }
-  if (/(?<![.\d])1223(?![.\d])|사용자 이름 입력|작업을 취소|canceled by the user/i.test(sanitized)) {
+  if (/(?<![.\d])1326(?![.\d])|(?<![.\d])86(?![.\d])|(?<![.\d])5(?![.\d])|액세스|거부|로그온|암호|password is not correct/i.test(sanitized)) {
     return {
-      code: 'Error 1223',
-      title: '호스트 자격 증명 요구 또는 익명 게스트 접근 거부',
-      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 무비밀번호 정책을 완전 개방하거나, 클라이언트에서 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.',
-      needsOsPatchHint: false,
+      code: 'Error 5 / 86 / 1326',
+      title: '계정 인증 실패 · 빈 암호 제한 또는 암호 보호 공유',
+      detail: '호스트가 빈 암호 네트워크 로그온을 제한(LimitBlankPasswordUse=1)했거나 Guest 계정에 암호가 남아있는 경우, 또는 암호로 보호된 공유가 켜져 있는 상태입니다. 호스트 PC에서 [무비밀번호 정책 개방]을 실행하거나 [보안 계정 모드]로 연결하세요.',
+      needsOsPatchHint: true,
       actionLabel: '통합 해결 가이드 & 도구 열기',
       isHostAuthOrGuestIssue: true,
     };
@@ -559,16 +559,6 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       detail: '별도 Windows 업데이트는 필요 없으며, 호스트·클라이언트 양단에서 [안전 호환 패치] 또는 [보안 계정 모드] 전환으로 즉시 해결됩니다.',
       needsOsPatchHint: true,
       actionLabel: '매트릭스 호환 패치로 이동',
-      isHostAuthOrGuestIssue: true,
-    };
-  }
-  if (/(?<![.\d])1326(?![.\d])|(?<![.\d])86(?![.\d])|(?<![.\d])5(?![.\d])|액세스|거부|로그온|암호|password is not correct/i.test(sanitized)) {
-    return {
-      code: 'Error 5 / 86 / 1326',
-      title: '계정 인증 실패 · 빈 암호 제한 또는 암호 보호 공유',
-      detail: '호스트가 빈 암호 네트워크 로그온을 제한(LimitBlankPasswordUse=1)했거나 Guest 계정에 암호가 남아있는 경우, 또는 암호로 보호된 공유가 켜져 있는 상태입니다. 호스트 PC에서 [무비밀번호 정책 개방]을 실행하거나 [보안 계정 모드]로 연결하세요.',
-      needsOsPatchHint: true,
-      actionLabel: '통합 해결 가이드 & 도구 열기',
       isHostAuthOrGuestIssue: true,
     };
   }
@@ -588,6 +578,16 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       detail: '호스트 방화벽·공용(Public) 프로필 차단, 또는 구형 NAS·복합기라면 OS 매트릭스의 [SMBv1 클라이언트 기능 설치]가 필요할 수 있습니다.',
       needsOsPatchHint: true,
       actionLabel: '매트릭스 별도 기능·SMBv1 확인',
+    };
+  }
+  if (/(?<![.\d])1223(?![.\d])|사용자 이름 입력|작업을 취소|canceled by the user/i.test(sanitized)) {
+    return {
+      code: 'Error 1223',
+      title: '호스트 자격 증명 요구 또는 익명 게스트 접근 거부',
+      detail: '대상 호스트가 익명·게스트 연결을 거부하고 사용자 이름/암호 인증을 요구했습니다. 호스트에서 무비밀번호 정책을 완전 개방하거나, 클라이언트에서 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.',
+      needsOsPatchHint: false,
+      actionLabel: '통합 해결 가이드 & 도구 열기',
+      isHostAuthOrGuestIssue: true,
     };
   }
   return {

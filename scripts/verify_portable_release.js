@@ -654,9 +654,10 @@ for (const marker of ['extractAutoAlignModes', 'combineRebootJudgments', 'evalua
   assert(netEvoSrc.includes(marker), `networkEvolution.ts missing auto-align / audit / raw registry / diagnostic / OS label symbol: ${marker}`);
 }
 assert(
-  netEvoSrc.indexOf("'Error 1385'") < netEvoSrc.indexOf("'Error 1223'") &&
-    netEvoSrc.indexOf("'Error 1223'") < netEvoSrc.indexOf("'0x80070035 / 1272'"),
-  'networkEvolution.ts classifyFailureDiagnostics must prioritize Error 1385 and Error 1223 before generic Guest error'
+  netEvoSrc.indexOf("'Error 1385'") < netEvoSrc.indexOf("'Error 5 / 86 / 1326'") &&
+    netEvoSrc.indexOf("'Error 5 / 86 / 1326'") < netEvoSrc.indexOf("'0x80070035 / 1272'") &&
+    netEvoSrc.indexOf("'0x80070035 / 1272'") < netEvoSrc.indexOf("'Error 1223'"),
+  'networkEvolution.ts classifyFailureDiagnostics must prioritize Error 1385 and Error 5 / 86 / 1326 before Error 1223'
 );
 assert(
   psEngineSrc.includes('everyoneIncludesAnonymous') &&
@@ -1648,7 +1649,7 @@ try {
   const hostPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'HostPanel.tsx'), 'utf8');
   const clientPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'ClientPanel.tsx'), 'utf8');
 
-  for (const sym of ['buildTroubleshootTicketDraft', 'upsertTroubleshootTicketList', 'recomputeTroubleshootTicketStatus', 'evaluateTroubleshootTicketsForPc', 'detectTicketMatchSideForPc']) {
+  for (const sym of ['buildTroubleshootTicketDraft', 'upsertTroubleshootTicketList', 'recomputeTroubleshootTicketStatus', 'evaluateTroubleshootTicketsForPc', 'detectTicketMatchSideForPc', 'sortWizardStepsBySuccessProbability']) {
     assert(playbookSrc.includes(sym), `troubleshootPlaybook.ts missing ${sym}`);
   }
   for (const bridgeSym of ['recordTroubleshootError(', 'updateTroubleshootTicket(', 'deleteTroubleshootTicket(', 'clearResolvedTroubleshootTickets(', 'runHostGuestUnlockDirect(', 'clearConflictingSmbSessions(']) {

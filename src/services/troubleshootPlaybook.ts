@@ -498,6 +498,10 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
     }
   }
 
+  const prioritized = sortWizardStepsBySuccessProbability(errorCode, hostSteps, clientSteps);
+  hostSteps = prioritized.hostSteps;
+  clientSteps = prioritized.clientSteps;
+
   return {
     ticketId: `ts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     schemaVersion: 1,
@@ -521,6 +525,53 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
     createdAt: nowIso,
     updatedAt: nowIso,
   };
+}
+
+/**
+ * 오류 증상별 자동 우선순위 분류기 (Error Symptom-Based Automatic Priority Classifier)
+ * SMB 연결 오류 코드(1223, 86, 1385, 1219, 85 등)를 분석하여
+ * 마법사의 step 실행 순서를 가장 성공 확률이 높은 순으로 동적 재정렬합니다.
+ */
+export function sortWizardStepsBySuccessProbability(
+  errorCode: string,
+  hostSteps: TroubleshootWizardStep[],
+  clientSteps: TroubleshootWizardStep[]
+): { hostSteps: TroubleshootWizardStep[]; clientSteps: TroubleshootWizardStep[] } {
+  const hostPriorityWeights: Record<string, number> = {
+    'host_guest_unlock_and_reopen': 10,
+    'apply_safe_compat': 20,
+    'apply_legacy_bridge': 20,
+    'retry_host_share': 30,
+  };
+
+  const clientPriorityWeights: Record<string, number> = {
+    'clear_conflicting_sessions': 5,
+    'reassign_free_drive': 5,
+    'verify_port_445': 10,
+    'switch_to_account_mode': 15,
+    'apply_safe_compat': 20,
+    'apply_legacy_bridge': 20,
+    'enable_smbv1_client': 25,
+    'retry_mount': 40,
+  };
+
+  if (errorCode === 'Error 1219') {
+    clientPriorityWeights['clear_conflicting_sessions'] = 1;
+  } else if (errorCode === 'Error 85') {
+    clientPriorityWeights['reassign_free_drive'] = 1;
+  } else if (errorCode === 'Error 1385' || errorCode === 'Error 1223' || errorCode === 'Error 5 / 86 / 1326') {
+    hostPriorityWeights['host_guest_unlock_and_reopen'] = 1;
+  }
+
+  const sortedHost = [...hostSteps]
+    .sort((a, b) => (hostPriorityWeights[a.executor] || 50) - (hostPriorityWeights[b.executor] || 50))
+    .map((s, idx) => ({ ...s, order: idx + 1 }));
+
+  const sortedClient = [...clientSteps]
+    .sort((a, b) => (clientPriorityWeights[a.executor] || 50) - (clientPriorityWeights[b.executor] || 50))
+    .map((s, idx) => ({ ...s, order: idx + 1 }));
+
+  return { hostSteps: sortedHost, clientSteps: sortedClient };
 }
 
 function sameNormalizedEndpoint(a: TroubleshootTicket, b: TroubleshootTicket): boolean {
