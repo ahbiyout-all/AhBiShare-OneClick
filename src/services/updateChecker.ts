@@ -119,6 +119,7 @@ export interface PortableUpdateRuntimeInfo {
   isPackaged: boolean;
   isPortable: boolean;
   canSelfReplace: boolean;
+  writeProtected?: boolean;
   edition: PortableEdition;
   currentVersion: string;
   portableExePath: string;

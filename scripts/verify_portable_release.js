@@ -395,7 +395,115 @@ try {
   const aliasedDel = store.deleteLocationProfile('loc-renamed-check');
   assert.strictEqual(aliasedDel.success, true, 'deleteLocationProfile must delete consolidated .location.json by internal profileId');
   assert.strictEqual(store.listLocationProfiles().profiles.length, 0);
-  pass('Per-location .location.json AES-256-GCM encryption, BOM resilience, mixed-script ID & renamed-file CRUD verified');
+
+  // USB write-safety probe, OS write-protect error classifier, and atomicWriteBuffer verification
+  const writableProbeRes = portableStore.probeDirectoryWriteSafety(tempUsbDir);
+  assert.strictEqual(writableProbeRes.writable, true, 'probeDirectoryWriteSafety must pass on writable directory');
+  assert.strictEqual(writableProbeRes.writeProtected, false);
+  const probeResidue = fs.readdirSync(tempUsbDir).filter((f) => f.includes('ahbishare-write-probe'));
+  assert.strictEqual(probeResidue.length, 0, 'probeDirectoryWriteSafety must leave zero probe temp files');
+
+  const missingProbeRes = portableStore.probeDirectoryWriteSafety(path.join(tempUsbDir, 'non-existent-usb-subdir'));
+  assert.strictEqual(missingProbeRes.writable, false);
+  assert.strictEqual(missingProbeRes.writeProtected, false);
+
+  const erofsErr = Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' });
+  const epermErr = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+  const enospcErr = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  assert.strictEqual(portableStore.classifyUsbWriteError(erofsErr).writeProtected, true);
+  assert.strictEqual(portableStore.classifyUsbWriteError(epermErr).writeProtected, true);
+  assert.strictEqual(portableStore.classifyUsbWriteError(enospcErr).writeProtected, false);
+
+  const bufTarget = path.join(tempUsbDir, 'AhBiShare_Legacy_Test.reg');
+  const regPayload = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('Windows Registry Editor Version 5.00\r\n', 'utf16le')]);
+  const bufWriteRes = portableStore.atomicWriteBuffer(bufTarget, regPayload);
+  assert.strictEqual(bufWriteRes.success, true, 'atomicWriteBuffer must write UTF-16LE BOM buffer cleanly');
+  assert.strictEqual(Buffer.compare(fs.readFileSync(bufTarget), regPayload), 0);
+
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+    const lockedDir = path.join(tempUsbDir, 'locked-usb-sim');
+    fs.mkdirSync(lockedDir);
+    fs.chmodSync(lockedDir, 0o555);
+    try {
+      const lockedProbe = portableStore.probeDirectoryWriteSafety(lockedDir);
+      assert.strictEqual(lockedProbe.writable, false, 'probeDirectoryWriteSafety must reject read-only USB directory');
+      assert.strictEqual(lockedProbe.writeProtected, true, 'probeDirectoryWriteSafety must flag read-only directory as writeProtected');
+    } finally {
+      fs.chmodSync(lockedDir, 0o755);
+    }
+  }
+
+  // 17th Deep Audit: loadPortableData must separate read/permission failures from JSON corruption and never quarantine .portable.json on writeProtected/unreadable errors
+  const corruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-corrupt-test-'));
+  try {
+    const corruptStore = portableStore.createPortableStore({
+      env: { PORTABLE_EXECUTABLE_DIR: corruptDir },
+      app: { isPackaged: true, getPath: () => corruptDir },
+    });
+    const portablePath = path.join(corruptDir, portableStore.PORTABLE_FILE_NAME);
+
+    // Case A: writable dir + genuine malformed JSON -> quarantines to .corrupt-*.json
+    fs.writeFileSync(portablePath, '{not-valid-json', 'utf8');
+    const corruptRes = corruptStore.loadPortableData();
+    assert.strictEqual(corruptRes.success, false, 'Malformed JSON must return success: false');
+    assert.strictEqual(fs.existsSync(portablePath), false, 'Genuine corrupt JSON on writable drive should be quarantined');
+    const quarantinedFiles = fs.readdirSync(corruptDir).filter((f) => f.includes('.corrupt-'));
+    assert.strictEqual(quarantinedFiles.length, 1, 'Genuine corrupt JSON should produce one .corrupt-*.json backup');
+
+    // Case B: writeProtected (read-only dir) + malformed JSON -> must NOT attempt rename/quarantine
+    if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+      const roCorruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-ro-corrupt-'));
+      try {
+        const roStore = portableStore.createPortableStore({
+          env: { PORTABLE_EXECUTABLE_DIR: roCorruptDir },
+          app: { isPackaged: true, getPath: () => roCorruptDir },
+        });
+        const roPortablePath = path.join(roCorruptDir, portableStore.PORTABLE_FILE_NAME);
+        fs.writeFileSync(roPortablePath, '{corrupt-ro', 'utf8');
+        fs.chmodSync(roCorruptDir, 0o555);
+        try {
+          const roLoadRes = roStore.loadPortableData();
+          assert.strictEqual(roLoadRes.success, false);
+          assert.strictEqual(roLoadRes.writeProtected, true, 'Write-protected corrupt file load must report writeProtected: true');
+          assert.strictEqual(fs.existsSync(roPortablePath), true, 'Write-protected .portable.json must remain untouched');
+          assert.strictEqual(
+            fs.readdirSync(roCorruptDir).filter((f) => f.includes('.corrupt-')).length,
+            0,
+            'Write-protected directory must not accumulate quarantine files'
+          );
+        } finally {
+          fs.chmodSync(roCorruptDir, 0o755);
+        }
+      } finally {
+        fs.rmSync(roCorruptDir, { recursive: true, force: true });
+      }
+    }
+
+    // Case C: unreadable/locked entry (directory at .portable.json or read error) -> must NOT quarantine as .corrupt
+    const lockSimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-readerr-test-'));
+    try {
+      const lockStore = portableStore.createPortableStore({
+        env: { PORTABLE_EXECUTABLE_DIR: lockSimDir },
+        app: { isPackaged: true, getPath: () => lockSimDir },
+      });
+      const lockTargetPath = path.join(lockSimDir, portableStore.PORTABLE_FILE_NAME);
+      fs.mkdirSync(lockTargetPath); // causes EISDIR read failure
+      const readErrRes = lockStore.loadPortableData();
+      assert.strictEqual(readErrRes.success, false);
+      assert.strictEqual(fs.existsSync(lockTargetPath), true, 'Read/lock failure must NOT rename .portable.json to .corrupt');
+      assert.strictEqual(
+        fs.readdirSync(lockSimDir).filter((f) => f.includes('.corrupt-')).length,
+        0,
+        'Read/lock failure must never create .corrupt quarantine files'
+      );
+    } finally {
+      fs.rmSync(lockSimDir, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(corruptDir, { recursive: true, force: true });
+  }
+
+  pass('Per-location .location.json AES-256-GCM encryption, BOM resilience, mixed-script ID & renamed-file CRUD & USB write-safety verified');
 } finally {
   fs.rmSync(tempUsbDir, { recursive: true, force: true });
 }
@@ -1112,6 +1220,98 @@ assert(
       appSrc.includes('await shareBridge.ensureLegacyRollbackSnapshot(freshNet)'),
     '15th audit (Legacy OS sharing verification) regressions failed: inverted direction check, [char]34/게스트$ quote & SID handling, baseline-first rollback overlay, forceguest=0 reset, HNetCfg.FwPolicy2 Win 7 profile, AhBiShare-Legacy-SMB-445 detection, Win 7 mrxsmb10 demand rollback, Error 58 diagnostic, Win 7/8.1 osDisplayVersion fallback, or account-mode client guest-unlock skip'
   );
+  const typesShareProbeSrc = fs.readFileSync(path.join(rootDir, 'src', 'types', 'share.ts'), 'utf8');
+  const probeBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'ShareAuthProbeBar.tsx'), 'utf8');
+  assert(
+    typesShareProbeSrc.includes('export interface ShareAuthProbeResult') &&
+      typesShareProbeSrc.includes("'client_guest_blocked'") &&
+      psEngineSrc.includes('export function buildShareAuthProbeScript(') &&
+      psEngineSrc.includes('WNetCancelConnection2') &&
+      psEngineSrc.includes('lpLocalName = $null') &&
+      psEngineSrc.includes('existing_session_conflict') &&
+      psEngineSrc.includes("-ieq 'IPC$'") &&
+      psEngineSrc.includes('$hasExplicitCredReject') &&
+      mainJsSrc.includes("Arguments = ('view ' + [char]34 + '\\\\\\\\' + $p_ip + [char]34)") &&
+      mainJsSrc.includes('$procNv.WaitForExit(4000)') &&
+      mainJsSrc.includes('authModeHint = $hint') &&
+      bridgeSrc.includes('async probeShareAuthMode(') &&
+      clientPanelAuthSrc.includes('<ShareAuthProbeBar') &&
+      clientPanelAuthSrc.includes('suppressedAutoSwitchKeysRef') &&
+      clientPanelAuthSrc.includes('inFlightProbeRef') &&
+      clientPanelAuthSrc.includes('completedProbeRef') &&
+      clientPanelAuthSrc.includes('ahbishare:autoswitch-changed') &&
+      legacyPanelAuthSrc.includes('<ShareAuthProbeBar') &&
+      legacyPanelAuthSrc.includes('runLegacyShareAuthProbe') &&
+      legacyPanelAuthSrc.includes('inFlightProbeRef') &&
+      legacyPanelAuthSrc.includes('ahbishare:autoswitch-changed') &&
+      probeBarSrc.includes('auto-switch-toggle') &&
+      probeBarSrc.includes('btn-undo-autoswitch') &&
+      !probeBarSrc.includes('border-l-4'),
+    'Manual NAS/Share auth probe & 16th audit regressions failed: ShareAuthProbeResult, buildShareAuthProbeScript IPC$/precedence, main.js ProcessStartInfo 4s timeout/authModeHint, probeShareAuthMode, ShareAuthProbeBar Zero-Pill banner, or ClientPanel/LegacySharingPanel inFlightProbeRef race guards missing'
+  );
+  const connCodeUncSrc = fs.readFileSync(path.join(rootDir, 'src', 'utils', 'connectionCode.ts'), 'utf8');
+  assert(
+    connCodeUncSrc.includes('export function resolveActiveShareUncPath(') &&
+      hostPanelSrc.includes('resolveActiveShareUncPath(share, netInfo.primaryIp)') &&
+      hostPanelSrc.includes('탐색기에서 열기') &&
+      hostPanelSrc.includes('onOpenFolder(uncTarget)') &&
+      legacyPanelAuthSrc.includes('resolveActiveShareUncPath(share, netInfo.primaryIp)') &&
+      legacyPanelAuthSrc.includes('탐색기에서 열기') &&
+      legacyPanelAuthSrc.includes('onOpenPath(uncTarget)') &&
+      bridgeSrc.includes('Windows 탐색기에서 열었습니다:') &&
+      mainJsSrc.includes("const explorerExe = fs.existsSync(candidateExe) ? candidateExe : 'explorer.exe';") &&
+      mainJsSrc.includes('spawn(explorerExe, [normalized], {'),
+    'ActiveShare Open-in-Explorer UNC feature assertions failed: resolveActiveShareUncPath, HostPanel/LegacySharingPanel button, or main.js explorer.exe UNC handler missing'
+  );
+  assert(
+    typesShareProbeSrc.includes('export interface SmartAuthDetectionResult') &&
+      typesShareProbeSrc.includes('export interface SmartAuthTargetInput') &&
+      bridgeSrc.includes('export interface') === false && // sanity: interfaces live in types/share.ts
+      bridgeSrc.includes('SMART_AUTH_CACHE_TTL_MS') &&
+      bridgeSrc.includes('function parseSmartAuthTarget(') &&
+      bridgeSrc.includes('function resolveKnownSmartAuthHint(') &&
+      bridgeSrc.includes('clearSmartAuthCache(') &&
+      bridgeSrc.includes('evaluateSmartAuthDecision(') &&
+      bridgeSrc.includes('async detectSmartShareAuth(') &&
+      bridgeSrc.includes('isSmartAuthSuppressed(') &&
+      bridgeSrc.includes('setSmartAuthSuppressed(') &&
+      probeBarSrc.includes('smartResult?: SmartAuthDetectionResult | null') &&
+      probeBarSrc.includes('canAlignSession') &&
+      clientPanelAuthSrc.includes('shareBridge.detectSmartShareAuth(') &&
+      clientPanelAuthSrc.includes('shareBridge.evaluateSmartAuthDecision(') &&
+      legacyPanelAuthSrc.includes('shareBridge.detectSmartShareAuth(') &&
+      legacyPanelAuthSrc.includes('shareBridge.evaluateSmartAuthDecision(') &&
+      connCodeUncSrc.includes('export function isValidIpv4Address(') &&
+      bridgeSrc.includes('async probeSmbTarget(') &&
+      appSrc.includes('const probeSmbTarget = useCallback(') &&
+      appSrc.includes('[clientDraft.targetHost, probeSmbTarget]'),
+    'Smart Auth Detection assertions failed: SmartAuthDetectionResult types, shareBridge.detectSmartShareAuth/probeSmbTarget/suppression/caching, isValidIpv4Address, App.tsx probeSmbTarget useEffect, ShareAuthProbeBar smartResult, or ClientPanel/LegacySharingPanel integration missing'
+  );
+  assert(
+    appSrc.includes("if (finalDecision.action !== 'auto_switch' || !finalDecision.switchToMode) return;") &&
+      appSrc.includes('hasValidAbshareTokenRef') &&
+      appSrc.includes('skipNextIpProbeHostRef') &&
+      appSrc.includes('onAbshareTokenValidityChange') &&
+      clientPanelAuthSrc.includes('pendingClientAuthMode.targetHost') &&
+      clientPanelAuthSrc.includes('pendingClientAuthMode.switchedFrom ||') &&
+      clientPanelAuthSrc.includes("setCodeParseState('empty');") &&
+      clientPanelAuthSrc.includes("setRawCodeInput('');") &&
+      legacyPanelAuthSrc.includes("setCodeParseState('empty');") &&
+      legacyPanelAuthSrc.includes("setRawCodeInput('');") &&
+      portableStoreSrc.includes('function readUtf8WithRetrySync(') &&
+      portableStoreSrc.includes('if (!loc.writeProtected)') &&
+      mainJsSrc.includes('writeProtected: Boolean(writeRes.writeProtected)') &&
+      readmeSrc.includes('탐색기에서 열기') &&
+      readmeSrc.includes('probeSmbTarget') &&
+      readmeEnSrc.includes('Open in Explorer') &&
+      readmeEnSrc.includes('probeSmbTarget') &&
+      fs.readFileSync(path.join(rootDir, 'docs', 'PATCH_NOTES.md'), 'utf8').includes('제17차 자아성찰 심층 점검') &&
+      fs.readFileSync(path.join(rootDir, 'docs', 'github_release_post.md'), 'utf8').includes('17차 자아성찰 심층 점검') &&
+      bloggerDoc.includes('17차 자아성찰') &&
+      bloggerDoc.includes('탐색기에서 열기') &&
+      bloggerDoc.includes('probeSmbTarget'),
+    '17th Deep Audit & doc sync assertions failed: App.tsx strict Smart Auth policy/suppression/token guard, ClientPanel pendingClientAuthMode debounce preservation & rawCodeInput reset, LegacySharingPanel suppression & rawCodeInput reset, portableStore readUtf8WithRetrySync, main.js export writeProtected propagation, or updated docs missing'
+  );
   pass('LICENSE, CRLF .bat scripts, Inno Setup, Win 7 isolation & Chromium 106 CSS, Cross-OS sync, location profiles & accessibility verified');
 
 // 9. Functional unit test of portableUpdater.js (runtime detection, edition matching, URL allowlist, PE verification, PS 2.0 script)
@@ -1139,6 +1339,7 @@ try {
   });
   assert.strictEqual(liteRuntime.isPortable, true);
   assert.strictEqual(liteRuntime.canSelfReplace, true);
+  assert.strictEqual(liteRuntime.writeProtected, false);
   assert.strictEqual(liteRuntime.edition, 'lite');
 
   assert.strictEqual(
@@ -1199,8 +1400,13 @@ try {
     targetExePath: path.join(tmpUpdaterDir, 'AhBiShare_OneClick-Lite_v1.1.0.exe'),
     stagingDir: tmpUpdaterDir,
   });
+  const probeIdx = psSelfScript.indexOf('.ahbishare_update_probe_');
+  const removeOldIdx = psSelfScript.indexOf('Remove-Item -LiteralPath $oldExe -Force');
   assert(
-    psSelfScript.includes('Remove-Item -LiteralPath $oldExe -Force') &&
+    probeIdx >= 0 &&
+      removeOldIdx > probeIdx &&
+      psSelfScript.includes('exit 4') &&
+      psSelfScript.includes('Remove-Item -LiteralPath $oldExe -Force') &&
       psSelfScript.includes('Copy-Item -LiteralPath $stagedExe -Destination $targetExe -Force') &&
       psSelfScript.includes('old_portable_backup.exe') &&
       psSelfScript.includes('Test-ValidPeExe $targetExe') &&
@@ -1209,9 +1415,33 @@ try {
       psSelfScript.includes("''test.exe") &&
       !psSelfScript.includes('[PSCustomObject]@{') &&
       !/\s-(?:in|notin)\b/.test(psSelfScript),
-    'buildPortableSelfUpdatePsScript must be PS 2.0 compatible, backup old EXE, verify target PE MZ header with rollback, escape single quotes, delete old EXE, copy target EXE, and relaunch'
+    'buildPortableSelfUpdatePsScript must be PS 2.0 compatible, probe USB writability before modifying oldExe (exit 4), backup old EXE, verify target PE MZ header with rollback, escape single quotes, delete old EXE, copy target EXE, and relaunch'
   );
-  pass('portableUpdater.js runtime edition detection, GitHub asset allowlist, PE validation & PS 2.0 self-replacement script verified');
+
+  // Verify USB write-safety: ZERO write-protection injection patterns anywhere in app runtime/scripts, and atomic USB saves in main.js
+  assert(
+    mainJsSrc.includes('probeDirectoryWriteSafety(targetDir)') &&
+      mainJsSrc.includes('atomicWriteBuffer(outPath, fileBuf)') &&
+      mainJsSrc.includes('probeDirectoryWriteSafety(runtime.portableDir)'),
+    'main.js must verify target directory write safety and use atomicWriteBuffer in save-legacy-scripts and check portableDir write safety before portable self-update'
+  );
+  const issSrc = fs.readFileSync(path.join(rootDir, 'installer', 'setup.iss'), 'utf8');
+  for (const [label, srcText] of [
+    ['main.js', mainJsSrc],
+    ['portableStore.js', portableStoreSrc],
+    ['portableUpdater.js', fs.readFileSync(path.join(rootDir, 'portableUpdater.js'), 'utf8')],
+    ['src/services/powershellEngine.ts', psEngineSrc],
+    ['src/services/legacyScriptEngine.ts', legacyScriptEngineSrc],
+    ['src/services/shareBridge.ts', bridgeSrc],
+    ['installer/setup.iss', issSrc],
+  ]) {
+    assert(
+      !/StorageDevicePolicies|diskpart|attrib\s+\+r\b|IsReadOnly\s*=\s*\$true|Set-Disk|Set-Volume|autorun\.inf|\b0o4[04]0\b/i.test(srcText),
+      `${label} must NEVER inject USB write-protection policies, diskpart readonly attributes, attrib +R, IsReadOnly=$true, autorun.inf, or 0o444/0o400 read-only modes`
+    );
+  }
+
+  pass('portableUpdater.js runtime edition detection, GitHub asset allowlist, PE validation, PS 2.0 pre-delete USB probe & zero write-protect injection verified');
 } finally {
   fs.rmSync(tmpUpdaterDir, { recursive: true, force: true });
 }

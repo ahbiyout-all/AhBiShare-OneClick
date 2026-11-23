@@ -131,13 +131,119 @@ function buildRehydratedConnectionCode(entry, username, password) {
   return encodeTokenPayload(payload);
 }
 
-function checkDirectoryWritable(dirPath) {
-  try {
-    fs.accessSync(dirPath, fs.constants.W_OK);
-    return { writable: true };
-  } catch (err) {
-    return { writable: false, writeError: err && err.message ? err.message : '쓰기 권한 없음' };
+function classifyUsbWriteError(err, contextLabel = 'USB 파일 쓰기') {
+  const code = String(err?.code || '').toUpperCase();
+  const rawMsg = String(err?.message || '');
+  const lowerMsg = rawMsg.toLowerCase();
+
+  if (code === 'EROFS' || lowerMsg.includes('read-only file system')) {
+    return {
+      code: code || 'EROFS',
+      writeProtected: true,
+      message:
+        'USB 또는 저장 장치가 쓰기 금지(읽기 전용) 상태입니다. USB 물리 쓰기 금지 스위치 또는 Windows 쓰기 금지(WriteProtect) 정책을 확인하세요.',
+    };
   }
+  if (code === 'EPERM' || code === 'EACCES') {
+    return {
+      code,
+      writeProtected: true,
+      message:
+        'USB 폴더 쓰기 권한이 차단되었거나 쓰기 금지(읽기 전용·보안 프로그램 차단) 상태입니다. 쓰기 금지 해제 또는 다른 폴더를 선택하세요.',
+    };
+  }
+  if (code === 'ENOSPC') {
+    return {
+      code,
+      writeProtected: false,
+      message: 'USB 저장 공간(디스크 용량)이 부족하여 안전하게 기록할 수 없습니다. 여유 공간을 확보한 뒤 다시 시도하세요.',
+    };
+  }
+  if (code === 'EBUSY' || code === 'EMFILE' || code === 'ENFILE') {
+    return {
+      code,
+      writeProtected: false,
+      message: 'USB 파일이 다른 프로그램이나 백신에 의해 사용 중(잠금)입니다. 잠시 후 다시 시도하세요.',
+    };
+  }
+  if (code === 'EIO') {
+    return {
+      code,
+      writeProtected: false,
+      message: 'USB 입출력(I/O) 오류가 발생했습니다. USB 연결 상태를 확인한 뒤 다시 시도하세요.',
+    };
+  }
+  if (code === 'ENOENT' || code === 'ENOTDIR') {
+    return {
+      code,
+      writeProtected: false,
+      message: '대상 USB 폴더 경로를 찾을 수 없습니다. 장치 연결 상태를 확인하세요.',
+    };
+  }
+  return {
+    code: code || 'UNKNOWN',
+    writeProtected: false,
+    message: rawMsg ? `${contextLabel} 실패: ${rawMsg}` : `${contextLabel}에 실패했습니다.`,
+  };
+}
+
+function probeDirectoryWriteSafety(dirPath) {
+  if (!dirPath) {
+    return {
+      writable: false,
+      writeProtected: false,
+      errorCode: 'ENOENT',
+      writeError: '대상 폴더 경로가 비어 있습니다.',
+    };
+  }
+
+  let probePath = '';
+  try {
+    const dirStat = fs.statSync(dirPath);
+    if (!dirStat.isDirectory()) {
+      return {
+        writable: false,
+        writeProtected: false,
+        errorCode: 'ENOTDIR',
+        writeError: '대상 경로가 유효한 폴더가 아닙니다.',
+      };
+    }
+
+    fs.accessSync(dirPath, fs.constants.W_OK);
+
+    // Non-destructive atomic file create+unlink probe:
+    // Windows FAT32/exFAT/NTFS drives with hardware/policy WriteProtect often pass accessSync(W_OK),
+    // so opening an exclusive 0-byte temp file reliably detects real hardware/filter write locks
+    // without touching any registry keys or modifying USB attributes.
+    tmpWriteSequence = (tmpWriteSequence + 1) % 1000000;
+    const nonce = crypto.randomBytes(4).toString('hex');
+    probePath = path.join(dirPath, `.ahbishare-write-probe-${process.pid}-${Date.now()}-${tmpWriteSequence}-${nonce}.tmp`);
+    const probeFd = fs.openSync(probePath, 'wx', 0o600);
+    try {
+      fs.closeSync(probeFd);
+    } finally {
+      try {
+        if (fs.existsSync(probePath)) fs.unlinkSync(probePath);
+      } catch {}
+    }
+
+    return { writable: true, writeProtected: false };
+  } catch (err) {
+    try {
+      if (probePath && fs.existsSync(probePath)) fs.unlinkSync(probePath);
+    } catch {}
+    const classified = classifyUsbWriteError(err, 'USB 쓰기 안전 점검');
+    return {
+      writable: false,
+      writeProtected: classified.writeProtected,
+      errorCode: classified.code,
+      writeError: classified.message,
+    };
+  }
+}
+
+function checkDirectoryWritable(dirPath) {
+  return probeDirectoryWriteSafety(dirPath);
 }
 
 function resolvePortableLocation({ env = process.env, app = null, baseDir = __dirname } = {}) {
@@ -162,6 +268,7 @@ function resolvePortableLocation({ env = process.env, app = null, baseDir = __di
     fileName: PORTABLE_FILE_NAME,
     filePath,
     writable: writeCheck.writable,
+    writeProtected: Boolean(writeCheck.writeProtected),
     ...(writeCheck.writeError ? { writeError: writeCheck.writeError } : {}),
   };
 }
@@ -560,9 +667,25 @@ function renameWithRetrySync(srcPath, destPath) {
   throw lastErr;
 }
 
-function atomicWriteJson(filePath, payloadObj) {
-  const content = JSON.stringify(payloadObj, null, 2);
-  const buf = Buffer.from(content, 'utf8');
+function readUtf8WithRetrySync(filePath) {
+  const delays = [0, 12, 28];
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i] > 0) sleepSyncMs(delays[i]);
+    try {
+      return fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientWinLockError(err)) {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
+}
+
+function atomicWriteBuffer(filePath, rawBuf) {
+  const buf = Buffer.isBuffer(rawBuf) ? rawBuf : Buffer.from(String(rawBuf || ''), 'utf8');
   const dir = path.dirname(filePath);
   const baseName = path.basename(filePath);
   tmpWriteSequence = (tmpWriteSequence + 1) % 1000000;
@@ -604,17 +727,25 @@ function atomicWriteJson(filePath, payloadObj) {
     if (committedStat.size !== buf.length) {
       throw new Error(`저장된 파일 크기 검증 실패 (${committedStat.size} !== ${buf.length})`);
     }
-    return { success: true };
+    return { success: true, writeProtected: false };
   } catch (err) {
+    const classified = classifyUsbWriteError(err, 'USB 파일 쓰기');
     return {
       success: false,
-      error: err && err.message ? err.message : 'USB 파일 쓰기에 실패했습니다.',
+      writeProtected: classified.writeProtected,
+      errorCode: classified.code,
+      error: classified.message,
     };
   } finally {
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch {}
   }
+}
+
+function atomicWriteJson(filePath, payloadObj) {
+  const content = JSON.stringify(payloadObj, null, 2);
+  return atomicWriteBuffer(filePath, Buffer.from(content, 'utf8'));
 }
 
 const LOCATIONS_DIR_NAME = 'locations';
@@ -877,8 +1008,24 @@ function createPortableStore(options = {}) {
       };
     }
 
+    let raw;
     try {
-      const raw = fs.readFileSync(loc.filePath, 'utf8').replace(/^\uFEFF/, '');
+      raw = readUtf8WithRetrySync(loc.filePath);
+    } catch (readErr) {
+      const classified = classifyUsbWriteError(readErr, 'USB 포터블 데이터 읽기');
+      return {
+        success: false,
+        document: emptyDocument(),
+        status: {
+          ...loc,
+          hasExistingFile: fs.existsSync(loc.filePath),
+          writeProtected: Boolean(loc.writeProtected || classified.writeProtected),
+          writeError: classified.message,
+        },
+      };
+    }
+
+    try {
       const parsed = JSON.parse(raw);
       const doc = hydrateRuntimeDocument(parsed);
       return {
@@ -892,18 +1039,20 @@ function createPortableStore(options = {}) {
       };
     } catch {
       let backupPath;
-      try {
-        backupPath = path.join(loc.directory, `AhBiShare_OneClick.portable.corrupt-${Date.now()}.json`);
-        fs.renameSync(loc.filePath, backupPath);
-      } catch {
-        backupPath = undefined;
+      if (!loc.writeProtected) {
+        try {
+          backupPath = path.join(loc.directory, `AhBiShare_OneClick.portable.corrupt-${Date.now()}.json`);
+          fs.renameSync(loc.filePath, backupPath);
+        } catch {
+          backupPath = undefined;
+        }
       }
       return {
         success: false,
         document: emptyDocument(),
         status: {
           ...loc,
-          hasExistingFile: false,
+          hasExistingFile: fs.existsSync(loc.filePath),
           corruptedRecovered: true,
           ...(backupPath ? { corruptedBackupPath: backupPath } : {}),
         },
@@ -925,6 +1074,7 @@ function createPortableStore(options = {}) {
           status: {
             ...loc,
             writable: false,
+            writeProtected: Boolean(writeRes.writeProtected || loc.writeProtected),
             hasExistingFile: fs.existsSync(loc.filePath),
             writeError: writeRes.error,
           },
@@ -1038,9 +1188,11 @@ function createPortableStore(options = {}) {
     try {
       fs.mkdirSync(locDir, { recursive: true });
     } catch (err) {
+      const classified = classifyUsbWriteError(err, '사용장소 보관 폴더 생성');
       return {
         success: false,
-        error: `사용장소 보관 폴더 생성 실패: ${err && err.message ? err.message : '권한 없음'}`,
+        writeProtected: classified.writeProtected,
+        error: classified.message,
       };
     }
 
@@ -1119,9 +1271,11 @@ function createPortableStore(options = {}) {
         }
         return { success: true };
       } catch (err) {
+        const classified = classifyUsbWriteError(err, '사용장소 파일 삭제');
         return {
           success: false,
-          error: `사용장소 파일 삭제 실패: ${err && err.message ? err.message : '권한 오류'}`,
+          writeProtected: classified.writeProtected,
+          error: classified.message,
         };
       }
     });
@@ -1160,12 +1314,15 @@ module.exports = {
   sanitizeLocationId,
   encryptCredentials,
   decryptCredentials,
+  classifyUsbWriteError,
+  probeDirectoryWriteSafety,
   resolvePortableLocation,
   prepareDiskDocument,
   hydrateRuntimeDocument,
   prepareLocationProfileForDisk,
   hydrateLocationProfile,
   toLocationProfileSummary,
+  atomicWriteBuffer,
   atomicWriteJson,
   createPortableStore,
 };

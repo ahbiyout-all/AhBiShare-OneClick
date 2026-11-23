@@ -37,10 +37,17 @@ import {
   LocationPreflightSubCheck,
   ExpertRegistryFetchResult,
   RawSecurityRegistrySnapshot,
+  ShareAuthProbeResult,
+  ShareAuthProbeVerdict,
+  SmartAuthAction,
+  SmartAuthConfidence,
+  SmartAuthDetectionResult,
+  SmartAuthTargetInput,
 } from '@/types/share';
 import {
   decodeConnectionCode,
   encodeConnectionCode,
+  resolveClientAccountCredentials,
   validateFolderPath,
   validateShareName,
   validateTargetHost,
@@ -57,6 +64,7 @@ import {
   buildHostGuestUnlockPsScript,
   buildRawSecurityRegistryScript,
   buildLocationPreflightScript,
+  buildShareAuthProbeScript,
 } from '@/services/powershellEngine';
 import {
   classifyOsEra,
@@ -264,6 +272,195 @@ function setCachedPassword(hostName: string, shareName: string, password?: strin
 
 function getCachedPassword(hostName: string, shareName: string): string | undefined {
   return runtimeSharePasswordCache.get(cacheKeyForShare(hostName, shareName));
+}
+
+const SMART_AUTH_CACHE_TTL_MS = 20_000;
+const smartAuthProbeCache = new Map<string, { result: ShareAuthProbeResult; cachedAt: number }>();
+const inFlightSmartProbeMap = new Map<string, Promise<ShareAuthProbeResult>>();
+const suppressedSmartAuthKeys = new Set<string>();
+const SMART_CACHEABLE_VERDICTS = new Set<ShareAuthProbeVerdict>([
+  'guest_allowed',
+  'account_required',
+  'client_guest_blocked',
+  'host_guest_denied',
+  'share_not_found',
+  'smb_protocol_mismatch',
+  'existing_session_conflict',
+]);
+
+function parseSmartAuthTarget(input: {
+  uncPath?: string;
+  targetHost?: string;
+  shareName?: string;
+}): { host: string; share: string } {
+  const tryUnc = (raw?: string): { host: string; share: string } | null => {
+    const trimmed = String(raw || '')
+      .trim()
+      .replace(/\//g, '\\')
+      .replace(/\\+$/, '');
+    const m = trimmed.match(/^\\\\([^\\]+)\\([^\\]+)/);
+    if (m) {
+      return { host: m[1].trim(), share: m[2].trim() };
+    }
+    return null;
+  };
+
+  let host = String(input.targetHost || '').trim();
+  let share = String(input.shareName || '').trim();
+
+  if (host.startsWith('\\\\') || host.startsWith('//')) {
+    const parsedFromHost = tryUnc(host);
+    if (parsedFromHost) {
+      host = parsedFromHost.host;
+      if (!share) share = parsedFromHost.share;
+    }
+  }
+
+  if ((!host || !share) && input.uncPath) {
+    const parsedFromUnc = tryUnc(input.uncPath);
+    if (parsedFromUnc) {
+      if (!host) host = parsedFromUnc.host;
+      if (!share) share = parsedFromUnc.share;
+    }
+  }
+
+  return { host, share };
+}
+
+function collectHostCandidatesForSmartAuth(
+  targetHost: string,
+  peers: DiscoveredPeer[] = []
+): string[] {
+  const norm = (val?: string) => String(val || '').trim().toLowerCase();
+  const targetNorm = norm(targetHost);
+  const matchedPeer = targetNorm
+    ? peers.find((p) => norm(p.ipAddress) === targetNorm || norm(p.hostName) === targetNorm)
+    : undefined;
+  return Array.from(
+    new Set(
+      [targetHost, matchedPeer?.hostName, matchedPeer?.ipAddress]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function resolveKnownSmartAuthHint(
+  host: string,
+  share: string,
+  input: Pick<
+    SmartAuthTargetInput,
+    | 'peers'
+    | 'savedLocationTargets'
+    | 'locationSavedShares'
+    | 'locationHostPreset'
+    | 'portableShares'
+    | 'activeShares'
+  >
+): {
+  hintAuthMode: AuthMode | null;
+  hintSource: string;
+  username?: string;
+  password?: string;
+  credentialSource?: string;
+} {
+  const hostCandidates = collectHostCandidatesForSmartAuth(host, input.peers);
+  const resolvedCreds = resolveClientAccountCredentials({
+    targetHost: host,
+    hostCandidates,
+    shareName: share,
+    requireAccountOnly: true,
+    savedLocationTargets: input.savedLocationTargets,
+    locationSavedShares: input.locationSavedShares,
+    locationHostPreset: input.locationHostPreset,
+    portableShares: input.portableShares,
+    activeShares: input.activeShares,
+  });
+
+  let password = resolvedCreds?.password || '';
+  let username = resolvedCreds?.username || '';
+  let credentialSource = resolvedCreds?.source || '';
+
+  if (!password) {
+    for (const candidate of hostCandidates) {
+      const cached = getCachedPassword(candidate, share);
+      if (cached) {
+        password = cached;
+        if (!credentialSource) credentialSource = 'runtime_cache';
+        break;
+      }
+    }
+  }
+
+  const norm = (v?: string) => String(v || '').trim().toLowerCase();
+  const hostSet = new Set(hostCandidates.map(norm));
+  const shareLower = norm(share);
+
+  // Check peer shareCode or peer authModeHint
+  if (input.peers?.length) {
+    const matchedPeer = input.peers.find(
+      (p) => hostSet.has(norm(p.ipAddress)) || hostSet.has(norm(p.hostName))
+    );
+    const exactShareCode = matchedPeer?.shareCodes?.[share];
+    if (exactShareCode) {
+      const decoded = decodeConnectionCode(exactShareCode);
+      if (decoded) {
+        return {
+          hintAuthMode: decoded.authMode,
+          hintSource: '탐색된 피어 연결 코드',
+          username: username || decoded.username,
+          password: password || decoded.password,
+          credentialSource: credentialSource || 'peer_code',
+        };
+      }
+    }
+    if (matchedPeer?.authModeHint === 'account' || matchedPeer?.authModeHint === 'guest') {
+      return {
+        hintAuthMode: matchedPeer.authModeHint,
+        hintSource: 'LAN 피어 탐색 이력',
+        ...(username ? { username } : {}),
+        ...(password ? { password } : {}),
+        ...(credentialSource ? { credentialSource } : {}),
+      };
+    }
+  }
+
+  // Check saved location targets or active shares
+  const savedTarget = (input.savedLocationTargets || []).find(
+    (t) => hostSet.has(norm(t.targetHost)) && norm(t.shareName) === shareLower
+  );
+  if (savedTarget) {
+    return {
+      hintAuthMode: savedTarget.authMode,
+      hintSource: '저장된 사용장소 연결 대상',
+      username: username || savedTarget.username,
+      password: password || savedTarget.password,
+      credentialSource: credentialSource || 'location_target',
+    };
+  }
+
+  const knownShare = [...(input.locationSavedShares || []), ...(input.portableShares || []), ...(input.activeShares || [])].find(
+    (s) =>
+      norm(s.shareName) === shareLower &&
+      (hostSet.has(norm(s.sourceIp)) || hostSet.has(norm(s.sourceHostName)))
+  );
+  if (knownShare) {
+    return {
+      hintAuthMode: knownShare.authMode,
+      hintSource: '저장된 호스트 공유 메타데이터',
+      username: username || knownShare.username,
+      password: password || ('restoredPassword' in knownShare ? knownShare.restoredPassword : undefined),
+      credentialSource: credentialSource || 'saved_share',
+    };
+  }
+
+  return {
+    hintAuthMode: null,
+    hintSource: '',
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {}),
+    ...(credentialSource ? { credentialSource } : {}),
+  };
 }
 
 const DEFAULT_MOCK_PEERS: DiscoveredPeer[] = [
@@ -1082,13 +1279,22 @@ export const shareBridge = {
   },
 
   async openLocalOrUncPath(pathToOpen: string): Promise<{ success: boolean; message: string }> {
+    const target = String(pathToOpen || '').trim();
+    if (!target) {
+      return { success: false, message: '열 경로가 비어 있습니다.' };
+    }
     if (window.ahbiShareElectron?.openPath) {
-      const res = await window.ahbiShareElectron.openPath(pathToOpen);
-      return { success: res.success, message: res.error || `Opened ${pathToOpen}` };
+      const res = await window.ahbiShareElectron.openPath(target);
+      return {
+        success: res.success,
+        message: res.success
+          ? `Windows 탐색기에서 열었습니다: ${target}`
+          : res.error || `경로를 열지 못했습니다: ${target}`,
+      };
     }
     return {
       success: true,
-      message: `웹 미리보기 모드: Windows 실행 환경에서는 탐색기(${pathToOpen})가 즉시 열립니다.`,
+      message: `웹 미리보기 모드: Windows 실행 환경에서는 탐색기(${target})가 즉시 열립니다.`,
     };
   },
 
@@ -1339,6 +1545,7 @@ export const shareBridge = {
     );
 
     const portableSave = await this.persistPortableHostShares(updated, netInfo);
+    this.clearSmartAuthCache();
 
     return { success: true, share: newShare, steps, portableStatus: portableSave.status };
   },
@@ -1380,6 +1587,7 @@ export const shareBridge = {
     } else {
       writeStore(STORAGE_SHARES_KEY, updated);
     }
+    this.clearSmartAuthCache();
     return updated;
   },
 
@@ -1475,6 +1683,7 @@ export const shareBridge = {
     writeStore(STORAGE_MOUNTS_KEY, updated);
 
     await this.persistPortableLastClientTarget(config);
+    this.clearSmartAuthCache(trimmedHost, trimmedShare);
 
     return { success: true, mount, steps };
   },
@@ -1509,10 +1718,12 @@ export const shareBridge = {
     }
     const updated = readStore<MountedDrive[]>(STORAGE_MOUNTS_KEY, []).filter((m) => m.driveLetter.toUpperCase() !== clean);
     writeStore(STORAGE_MOUNTS_KEY, updated);
+    this.clearSmartAuthCache();
     return updated;
   },
 
   async rollbackPolicies(scope: 'host' | 'client', netInfo?: LocalNetworkInfo): Promise<{ success: boolean; message: string }> {
+    this.clearSmartAuthCache();
     if (window.ahbiShareElectron?.runPowerShell) {
       const res = await window.ahbiShareElectron.runPowerShell(buildRollbackScript(scope));
       if (!res.success) return { success: false, message: res.error || '원복 명령 실행 실패' };
@@ -1935,6 +2146,7 @@ export const shareBridge = {
   },
 
   async applyOsCompatibilityPatch(mode: PolicyPatchMode, netInfo?: LocalNetworkInfo): Promise<PolicyApplyResult> {
+    this.clearSmartAuthCache();
     if (mode === 'legacy_bridge_compat' || mode === 'legacy_smb1_enable') {
       const current = await this.inspectOsNetworkPolicy(netInfo);
       if (!this.getLegacyRollbackSnapshot()) {
@@ -4312,4 +4524,425 @@ export const shareBridge = {
       details,
     };
   },
+
+  clearSmartAuthCache(targetHost?: string, shareName?: string): void {
+    if (targetHost && shareName) {
+      const key = cacheKeyForShare(targetHost, shareName);
+      smartAuthProbeCache.delete(key);
+      return;
+    }
+    smartAuthProbeCache.clear();
+  },
+
+  isSmartAuthSuppressed(targetHost: string, shareName: string): boolean {
+    const cleanHost = String(targetHost || '').trim();
+    const cleanShare = String(shareName || '').trim();
+    if (!cleanHost || !cleanShare) return false;
+    return suppressedSmartAuthKeys.has(cacheKeyForShare(cleanHost, cleanShare));
+  },
+
+  setSmartAuthSuppressed(targetHost: string, shareName: string, suppressed: boolean): void {
+    const cleanHost = String(targetHost || '').trim();
+    const cleanShare = String(shareName || '').trim();
+    if (!cleanHost || !cleanShare) return;
+    const key = cacheKeyForShare(cleanHost, cleanShare);
+    if (suppressed) {
+      suppressedSmartAuthKeys.add(key);
+    } else {
+      suppressedSmartAuthKeys.delete(key);
+    }
+  },
+
+  evaluateSmartAuthDecision(
+    probe: ShareAuthProbeResult,
+    input: Pick<
+      SmartAuthTargetInput,
+      | 'currentAuthMode'
+      | 'hasTypedPassword'
+      | 'autoSwitchEnabled'
+      | 'suppressed'
+      | 'hasValidAbshareToken'
+      | 'peers'
+      | 'savedLocationTargets'
+      | 'locationSavedShares'
+      | 'locationHostPreset'
+      | 'portableShares'
+      | 'activeShares'
+    >,
+    fromCache = false
+  ): SmartAuthDetectionResult {
+    const currentAuthMode: AuthMode = input.currentAuthMode === 'account' ? 'account' : 'guest';
+    const autoSwitchEnabled = input.autoSwitchEnabled !== false;
+    const suppressed =
+      Boolean(input.suppressed) ||
+      Boolean(
+        probe.targetHost &&
+          probe.shareName &&
+          suppressedSmartAuthKeys.has(cacheKeyForShare(probe.targetHost, probe.shareName))
+      );
+    const hasValidAbshareToken = Boolean(input.hasValidAbshareToken);
+    const hasTypedPassword = Boolean(input.hasTypedPassword);
+
+    const known = resolveKnownSmartAuthHint(probe.targetHost, probe.shareName, input);
+
+    let recommendedAuthMode: AuthMode | null = probe.recommendedAuthMode ?? null;
+    let action: SmartAuthAction = 'none';
+    let switchToMode: AuthMode | null = null;
+    let switchedFromMode: AuthMode | null = null;
+    let confidence: SmartAuthConfidence = 'none';
+    let reason = probe.detail;
+
+    if (probe.verdict === 'account_required' || probe.verdict === 'host_guest_denied') {
+      recommendedAuthMode = 'account';
+      confidence = 'confirmed';
+      if (currentAuthMode === 'guest') {
+        if (autoSwitchEnabled && !suppressed && !hasValidAbshareToken) {
+          action = 'auto_switch';
+          switchToMode = 'account';
+          switchedFromMode = 'guest';
+          reason = known.password
+            ? '대상이 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환하고 저장된 자격증명을 불러왔습니다.'
+            : '대상이 게스트·익명 접근을 거부해 보안 계정 모드로 자동 전환했습니다.';
+        } else {
+          action = 'recommend';
+          reason = suppressed
+            ? '사용자가 무비밀번호 유지를 선택했으나 대상 서버는 보안 계정 인증을 권장합니다.'
+            : '대상이 게스트 접근을 거부했습니다. 보안 계정 모드로 전환하세요.';
+        }
+      } else {
+        action = 'keep';
+        reason = '대상 공유폴더의 보안 계정 인증 요구와 현재 연결 모드가 일치합니다.';
+      }
+    } else if (probe.verdict === 'guest_allowed') {
+      recommendedAuthMode = 'guest';
+      confidence = 'confirmed';
+      if (currentAuthMode === 'account') {
+        if (!hasTypedPassword && autoSwitchEnabled && !suppressed && !hasValidAbshareToken) {
+          action = 'auto_switch';
+          switchToMode = 'guest';
+          switchedFromMode = 'account';
+          reason = '대상이 무비밀번호(Guest) 연결을 허용하여 간편 무비밀번호 모드로 자동 전환했습니다.';
+        } else {
+          action = 'recommend';
+          reason = hasTypedPassword
+            ? '대상이 무비밀번호 연결을 허용하지만 입력된 암호를 보호하기 위해 자동 전환하지 않았습니다.'
+            : '대상이 무비밀번호 연결을 허용합니다. 필요 시 무비밀번호 모드로 전환할 수 있습니다.';
+        }
+      } else {
+        action = 'keep';
+        reason = '대상 공유폴더의 무비밀번호 허용 정책과 현재 연결 모드가 일치합니다.';
+      }
+    } else if (probe.verdict === 'client_guest_blocked') {
+      recommendedAuthMode = 'account';
+      confidence = 'confirmed';
+      if (currentAuthMode === 'guest') {
+        action = 'recommend';
+        reason =
+          '로컬 PC의 Win 11 게스트 차단 정책이 활성 상태입니다. 보안 계정으로 연결하거나 호환성 매트릭스에서 게스트 차단을 해제하세요.';
+      } else {
+        action = 'keep';
+        reason = '로컬 PC가 게스트 연결을 차단 중이며 현재 보안 계정 모드로 설정되어 있습니다.';
+      }
+    } else if (probe.verdict === 'existing_session_conflict' && probe.existingSessionMode) {
+      recommendedAuthMode = probe.existingSessionMode;
+      confidence = 'confirmed';
+      if (currentAuthMode !== probe.existingSessionMode) {
+        action = 'recommend';
+        reason = `이미 연결된 SMB 세션(${
+          probe.existingSessionMode === 'account' ? '보안 계정' : '무비밀번호'
+        })과 인증 모드를 일치시켜 오류 1219를 방지하는 것을 권장합니다.`;
+      } else {
+        action = 'keep';
+        reason = '기존 활성 SMB 세션과 동일한 인증 모드로 설정되어 있습니다.';
+      }
+    } else if ((probe.verdict === 'unknown' || probe.verdict === 'unreachable') && known.hintAuthMode) {
+      recommendedAuthMode = known.hintAuthMode;
+      confidence = 'hint';
+      action = currentAuthMode !== known.hintAuthMode ? 'recommend' : 'keep';
+      reason = `${known.hintSource} 기준으로 ${
+        known.hintAuthMode === 'account' ? '보안 계정' : '무비밀번호'
+      } 인증 방식이 권장됩니다.`;
+    }
+
+    return {
+      probe,
+      recommendedAuthMode,
+      action,
+      switchToMode,
+      switchedFromMode,
+      confidence,
+      reason,
+      ...(known.username ? { suggestedUsername: known.username } : {}),
+      ...(known.password ? { suggestedPassword: known.password } : {}),
+      ...(known.credentialSource ? { credentialSource: known.credentialSource } : {}),
+      fromCache,
+    };
+  },
+
+  async detectSmartShareAuth(input: SmartAuthTargetInput): Promise<SmartAuthDetectionResult> {
+    const { host, share } = parseSmartAuthTarget(input);
+    const key = host && share ? cacheKeyForShare(host, share) : '';
+    const existingCache = key ? smartAuthProbeCache.get(key) : undefined;
+    const isCacheFresh =
+      !input.forceProbe &&
+      Boolean(existingCache && Date.now() - existingCache.cachedAt < SMART_AUTH_CACHE_TTL_MS);
+
+    const probe = await this.probeShareAuthMode(host, share, { force: input.forceProbe });
+    return this.evaluateSmartAuthDecision(probe, input, isCacheFresh);
+  },
+
+  async probeSmbTarget(
+    targetHost: string,
+    shareName = 'WorkDocs',
+    options?: Partial<SmartAuthTargetInput>
+  ): Promise<SmartAuthDetectionResult> {
+    return this.detectSmartShareAuth({
+      targetHost,
+      shareName: shareName.trim() || 'WorkDocs',
+      currentAuthMode: options?.currentAuthMode || 'guest',
+      hasTypedPassword: options?.hasTypedPassword,
+      autoSwitchEnabled: options?.autoSwitchEnabled,
+      suppressed: options?.suppressed,
+      hasValidAbshareToken: options?.hasValidAbshareToken,
+      forceProbe: options?.forceProbe,
+      peers: options?.peers,
+      savedLocationTargets: options?.savedLocationTargets,
+      locationSavedShares: options?.locationSavedShares,
+      locationHostPreset: options?.locationHostPreset,
+      portableShares: options?.portableShares,
+      activeShares: options?.activeShares,
+    });
+  },
+
+  async probeShareAuthMode(
+    targetHost: string,
+    shareName: string,
+    options?: { force?: boolean }
+  ): Promise<ShareAuthProbeResult> {
+    const cleanHost = String(targetHost || '').trim();
+    const cleanShare = String(shareName || '').trim();
+    const targetUnc = `\\\\${cleanHost}\\${cleanShare}`;
+    const checkedAt = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+
+    const buildProbeCopy = (
+      verdict: ShareAuthProbeVerdict,
+      win32Code: number | null,
+      recommendedAuthMode: AuthMode | null,
+      rawDetail = '',
+      existingSessionMode: AuthMode | null = null,
+      probeMethod = ''
+    ): ShareAuthProbeResult => {
+      let summary = '인증 방식 미확인';
+      let detail = `${targetUnc}의 인증 방식을 확정할 수 없습니다${rawDetail ? ` (${rawDetail})` : ''}. 수동으로 모드를 선택해 연결하세요.`;
+      switch (verdict) {
+        case 'guest_allowed':
+          summary = '무비밀번호 허용';
+          detail = `${targetUnc} 공유폴더가 게스트·익명 접근을 허용합니다. 비밀번호 없이 바로 연결할 수 있습니다.`;
+          break;
+        case 'account_required':
+          summary = '보안 계정 필수';
+          detail = `${targetUnc} 대상(NAS 또는 호스트)이 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다${
+            win32Code ? ` (Win32 오류 ${win32Code})` : ''
+          }. 보안 계정 모드로 아이디·암호를 입력해 연결하세요.`;
+          break;
+        case 'client_guest_blocked':
+          summary = '로컬 PC 게스트 차단됨';
+          detail = `현재 PC의 Win 11 24H2~26H2 게스트 차단 정책으로 무비밀번호 확인이 거부되었습니다${
+            win32Code ? ` (오류 ${win32Code})` : ''
+          }. 보안 계정으로 연결하거나 호환성 매트릭스에서 로컬 게스트 차단을 해제한 뒤 재확인하세요.`;
+          break;
+        case 'host_guest_denied':
+          summary = '호스트 게스트 로그온 거부';
+          detail = `대상 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)이 게스트 네트워크 로그온을 거부했습니다 (오류 1385). 보안 계정으로 연결하거나 호스트에서 게스트 정책을 개방하세요.`;
+          break;
+        case 'share_not_found':
+          summary = '공유폴더 없음';
+          detail = `대상 서버(${cleanHost})는 응답하지만 '${cleanShare}' 공유폴더 이름을 찾을 수 없습니다 (오류 67). 공유 이름 철자와 공유 상태를 확인하세요.`;
+          break;
+        case 'existing_session_conflict':
+          summary = '기존 SMB 세션 활성 중';
+          detail = `${cleanHost}에 이미 연결된 SMB 세션(${
+            rawDetail || targetUnc
+          })을 보호하기 위해 게스트 시험을 생략했습니다${
+            existingSessionMode
+              ? ` (현재 세션: ${existingSessionMode === 'account' ? '보안 계정' : '무비밀번호'})`
+              : ''
+          }.`;
+          break;
+        case 'smb_protocol_mismatch':
+          summary = 'SMB 프로토콜 불일치';
+          detail = `대상 장치와 SMB 암호화·서명 또는 프로토콜 협상에 실패했습니다 (오류 58). OS 호환성 매트릭스 또는 구형 OS 브릿지를 확인하세요.`;
+          break;
+        case 'unreachable':
+          summary = 'TCP 445 미응답';
+          detail = `${cleanHost}의 SMB 포트(445)에 도달할 수 없습니다. IP 주소, 대상 전원, 또는 방화벽 규칙을 확인하세요.`;
+          break;
+        default:
+          break;
+      }
+      return {
+        targetHost: cleanHost,
+        shareName: cleanShare,
+        targetUnc,
+        verdict,
+        recommendedAuthMode,
+        win32Code,
+        summary,
+        detail,
+        existingSessionMode,
+        probeMethod,
+        checkedAt,
+      };
+    };
+
+    const hostErr = validateTargetHost(cleanHost);
+    const shareErr = validateShareName(cleanShare);
+    if (hostErr || shareErr) {
+      return buildProbeCopy('unknown', null, null, hostErr || shareErr || '입력값 확인 필요', null, 'Validation');
+    }
+
+    const cacheKey = cacheKeyForShare(cleanHost, cleanShare);
+    if (options?.force) {
+      smartAuthProbeCache.delete(cacheKey);
+    } else {
+      const cached = smartAuthProbeCache.get(cacheKey);
+      if (cached && Date.now() - cached.cachedAt < SMART_AUTH_CACHE_TTL_MS) {
+        return cached.result;
+      }
+    }
+
+    const existingInFlight = inFlightSmartProbeMap.get(cacheKey);
+    if (existingInFlight && !options?.force) {
+      return existingInFlight;
+    }
+
+    const runProbe = async (): Promise<ShareAuthProbeResult> => {
+      let finalResult: ShareAuthProbeResult;
+
+      if (window.ahbiShareElectron?.runPowerShell) {
+        const script = buildShareAuthProbeScript(cleanHost, cleanShare);
+        const res = await window.ahbiShareElectron.runPowerShell(script);
+        if (res.success && res.output) {
+          const parsed = parseLastJsonObject<{
+            reachable445?: boolean;
+            verdict?: ShareAuthProbeVerdict;
+            win32Code?: number | null;
+            recommendedAuthMode?: AuthMode | null;
+            existingSessionMode?: AuthMode | null;
+            probeMethod?: string;
+            detail?: string;
+          }>(res.output);
+          if (parsed && parsed.verdict) {
+            const code = typeof parsed.win32Code === 'number' ? parsed.win32Code : null;
+            const recMode: AuthMode | null =
+              parsed.recommendedAuthMode === 'account' || parsed.recommendedAuthMode === 'guest'
+                ? parsed.recommendedAuthMode
+                : null;
+            const sessMode: AuthMode | null =
+              parsed.existingSessionMode === 'account' || parsed.existingSessionMode === 'guest'
+                ? parsed.existingSessionMode
+                : null;
+            finalResult = buildProbeCopy(
+              parsed.verdict,
+              code,
+              recMode,
+              parsed.detail || '',
+              sessMode,
+              parsed.probeMethod || ''
+            );
+          } else {
+            finalResult = buildProbeCopy('unknown', null, null, '프로브 응답 파싱 실패', null, 'PowerShell');
+          }
+        } else {
+          finalResult = buildProbeCopy('unknown', null, null, res.error || '프로브 응답 파싱 실패', null, 'PowerShell');
+        }
+      } else {
+        // Web Preview deterministic simulation
+        await new Promise((r) => setTimeout(r, 180));
+        const lowerHost = cleanHost.toLowerCase();
+        const lowerShare = cleanShare.toLowerCase();
+
+        const currentMounts = readStore<MountedDrive[]>(STORAGE_MOUNTS_KEY, []);
+        const activeOnHost = currentMounts.find(
+          (m) => m.targetHost.trim().toLowerCase() === lowerHost
+        );
+        if (activeOnHost) {
+          finalResult = buildProbeCopy(
+            'existing_session_conflict',
+            1219,
+            activeOnHost.authMode,
+            activeOnHost.uncPath,
+            activeOnHost.authMode,
+            'WebSimSession'
+          );
+        } else if (lowerHost.endsWith('.254') || lowerHost.includes('offline') || lowerHost.includes('down')) {
+          finalResult = buildProbeCopy('unreachable', 53, null, 'TCP 445 timeout', null, 'WebSimTcp');
+        } else if (lowerShare.includes('missing') || lowerShare.includes('notfound') || lowerShare === 'none') {
+          finalResult = buildProbeCopy('share_not_found', 67, null, 'ERROR_BAD_NET_NAME', null, 'WebSimWNet');
+        } else if (lowerShare.includes('err58') || lowerHost.includes('err58')) {
+          finalResult = buildProbeCopy('smb_protocol_mismatch', 58, null, 'ERROR_BAD_NET_RESP', null, 'WebSimWNet');
+        } else if (lowerHost.includes('hostdenied') || lowerShare.includes('1385')) {
+          finalResult = buildProbeCopy('host_guest_denied', 1385, 'account', 'SeDenyNetworkLogonRight', null, 'WebSimWNet');
+        } else if (lowerHost.includes('guestblocked') || lowerShare.includes('1272')) {
+          finalResult = buildProbeCopy('client_guest_blocked', 1272, 'account', 'AllowInsecureGuestAuth=0', null, 'WebSimWNet');
+        } else {
+          const savedShares = this.getSavedShares();
+          const matchedLocalShare = savedShares.find(
+            (s) =>
+              s.shareName.toLowerCase() === lowerShare &&
+              (!s.sourceIp || s.sourceIp.toLowerCase() === lowerHost || (s.sourceHostName || '').toLowerCase() === lowerHost)
+          );
+          if (matchedLocalShare) {
+            finalResult =
+              matchedLocalShare.authMode === 'account'
+                ? buildProbeCopy('account_required', 86, 'account', 'Host Share ACL', null, 'WebSimLocal')
+                : buildProbeCopy('guest_allowed', 0, 'guest', 'Host Share Guest', null, 'WebSimLocal');
+          } else {
+            const matchedMockPeer = DEFAULT_MOCK_PEERS.find(
+              (p) => p.ipAddress.toLowerCase() === lowerHost || p.hostName.toLowerCase() === lowerHost
+            );
+            if (matchedMockPeer?.authModeHint === 'account') {
+              finalResult = buildProbeCopy('account_required', 86, 'account', 'WNet-Guest:86', null, 'WebSimPeer');
+            } else if (matchedMockPeer?.authModeHint === 'guest') {
+              finalResult = buildProbeCopy('guest_allowed', 0, 'guest', 'WNet-Guest:0', null, 'WebSimPeer');
+            } else if (
+              lowerHost === '192.168.219.112' ||
+              lowerHost.includes('nas') ||
+              lowerHost.includes('synology') ||
+              lowerHost.includes('qnap') ||
+              lowerShare.includes('movie') ||
+              lowerShare.includes('secure') ||
+              lowerShare.includes('private') ||
+              lowerShare.includes('render')
+            ) {
+              finalResult = buildProbeCopy(
+                'account_required',
+                86,
+                'account',
+                'WNet-Guest:86 | WNet-Null:5',
+                null,
+                'WebSimWNet'
+              );
+            } else {
+              finalResult = buildProbeCopy('guest_allowed', 0, 'guest', 'WNet-Guest:0', null, 'WebSimWNet');
+            }
+          }
+        }
+      }
+
+      if (SMART_CACHEABLE_VERDICTS.has(finalResult.verdict)) {
+        smartAuthProbeCache.set(cacheKey, { result: finalResult, cachedAt: Date.now() });
+      }
+      return finalResult;
+    };
+
+    const probePromise = runProbe().finally(() => {
+      if (inFlightSmartProbeMap.get(cacheKey) === probePromise) {
+        inFlightSmartProbeMap.delete(cacheKey);
+      }
+    });
+    inFlightSmartProbeMap.set(cacheKey, probePromise);
+    return probePromise;
+  },
 };
+

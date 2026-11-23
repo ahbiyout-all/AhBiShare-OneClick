@@ -57,6 +57,8 @@ import {
   PortableHostShareEntry,
   PortableStorageStatus,
   RoleMode,
+  ShareAuthProbeResult,
+  SmartAuthDetectionResult,
 } from '@/types/share';
 import { LEGACY_COMPARISON_MATRIX, buildLegacyScriptBundle } from '@/services/legacyScriptEngine';
 import { classifyFailureDiagnostics, formatEraShortLabel } from '@/services/networkEvolution';
@@ -64,6 +66,7 @@ import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
 import {
   decodeConnectionCode,
   generateSecureSharePassword,
+  resolveActiveShareUncPath,
   resolveClientAccountCredentials,
   validateAccountUsername,
   validateFolderPath,
@@ -73,6 +76,7 @@ import {
 import { shareBridge } from '@/services/shareBridge';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
+import { ShareAuthProbeBar } from './ShareAuthProbeBar';
 
 interface LegacySharingPanelProps {
   netInfo: LocalNetworkInfo;
@@ -321,6 +325,28 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   const [showLegacyClientPass, setShowLegacyClientPass] = useState(false);
   const [hostCmdCopied, setHostCmdCopied] = useState(false);
   const hostCmdTimerRef = useRef<number | null>(null);
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('ahbishare_auto_probe_switch') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [probeResult, setProbeResult] = useState<ShareAuthProbeResult | null>(null);
+  const [smartResult, setSmartResult] = useState<SmartAuthDetectionResult | null>(null);
+  const [isProbingAuth, setIsProbingAuth] = useState(false);
+  const [autoSwitchedTo, setAutoSwitchedTo] = useState<'guest' | 'account' | null>(null);
+  const [autoSwitchedFrom, setAutoSwitchedFrom] = useState<'guest' | 'account' | null>(null);
+  const probeSeqRef = useRef(0);
+  const probeTimerRef = useRef<number | null>(null);
+  const inFlightProbeRef = useRef<{
+    key: string;
+    seq: number;
+    promise: Promise<ShareAuthProbeResult | null>;
+  } | null>(null);
+  const completedProbeRef = useRef<{ key: string; result: ShareAuthProbeResult | null } | null>(null);
+  const suppressedAutoSwitchKeysRef = useRef<Set<string>>(new Set());
+
   const [clientConfig, setClientConfig] = useState<ClientTargetConfig>({
     targetHost: '192.168.0.10',
     shareName: 'WorkDocs',
@@ -330,6 +356,14 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     password: '',
     persistent: true,
   });
+  const clientConfigRef = useRef(clientConfig);
+  clientConfigRef.current = clientConfig;
+  const autoSwitchEnabledRef = useRef(autoSwitchEnabled);
+  autoSwitchEnabledRef.current = autoSwitchEnabled;
+  const rawCodeRef = useRef(rawCodeInput);
+  rawCodeRef.current = rawCodeInput;
+  const codeParseStateRef = useRef(codeParseState);
+  codeParseStateRef.current = codeParseState;
 
   // 2-step risk confirmation states (SMB 1.0 & Reboot)
   const [smb1StepOpen, setSmb1StepOpen] = useState(false);
@@ -355,13 +389,26 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   const [matrixSearch, setMatrixSearch] = useState('');
 
   useEffect(() => {
+    const onAutoSwitchSync = (ev: Event) => {
+      const customEv = ev as CustomEvent<boolean>;
+      if (typeof customEv.detail === 'boolean') {
+        setAutoSwitchEnabled(customEv.detail);
+      }
+    };
+    window.addEventListener('ahbishare:autoswitch-changed', onAutoSwitchSync);
     return () => {
+      window.removeEventListener('ahbishare:autoswitch-changed', onAutoSwitchSync);
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current);
       }
       if (hostCmdTimerRef.current !== null) {
         window.clearTimeout(hostCmdTimerRef.current);
       }
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+      }
+      probeSeqRef.current += 1;
+      inFlightProbeRef.current = null;
     };
   }, []);
 
@@ -609,6 +656,8 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       const username = entry.authMode === 'account' ? entry.username || decoded?.username || resolved?.username || 'AhBiShare' : '';
       const password = entry.authMode === 'account' ? entry.password || decoded?.password || resolved?.password || '' : '';
 
+      setAutoSwitchedTo(null);
+      setAutoSwitchedFrom(null);
       setClientConfig((prev) => ({
         ...prev,
         targetHost,
@@ -640,6 +689,8 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     const decoded = decodeConnectionCode(val);
     if (decoded) {
       setCodeParseState('valid');
+      setAutoSwitchedTo(null);
+      setAutoSwitchedFrom(null);
       const resolved = decoded.authMode === 'account' ? resolveClientAccountCredentials({
         targetHost: decoded.ip || decoded.hostName,
         hostCandidates: getHostCandidates(decoded.ip || decoded.hostName, [decoded.ip, decoded.hostName]),
@@ -661,8 +712,224 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
     }
   };
 
+  const makeLegacyTargetKey = (host: string, share: string) =>
+    `${String(host || '').trim().toLowerCase()}::${String(share || '').trim().toLowerCase()}`;
+
+  const switchToAccountMode = useCallback(
+    (hostOverride?: unknown, shareOverride?: unknown) => {
+      const targetHost = typeof hostOverride === 'string' ? hostOverride : clientConfigRef.current.targetHost;
+      const shareName = typeof shareOverride === 'string' ? shareOverride : clientConfigRef.current.shareName;
+      setClientValidationError(null);
+      const resolved = resolveClientAccountCredentials({
+        targetHost,
+        hostCandidates: getHostCandidates(targetHost),
+        shareName,
+        requireAccountOnly: true,
+        portableShares,
+        activeShares: shares,
+      });
+      setClientConfig((prev) => ({
+        ...prev,
+        authMode: 'account',
+        username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+        password: prev.password ? prev.password : resolved?.password || '',
+      }));
+    },
+    [getHostCandidates, portableShares, shares]
+  );
+
+  const handleToggleAutoSwitch = (next: boolean) => {
+    setAutoSwitchEnabled(next);
+    autoSwitchEnabledRef.current = next;
+    try {
+      window.localStorage.setItem('ahbishare_auto_probe_switch', next ? 'true' : 'false');
+    } catch {}
+    try {
+      window.dispatchEvent(new CustomEvent<boolean>('ahbishare:autoswitch-changed', { detail: next }));
+    } catch {}
+  };
+
+  const runLegacyShareAuthProbe = useCallback(
+    async (
+      hostArg?: string,
+      shareArg?: string,
+      options?: { manual?: boolean; allowAutoSwitch?: boolean }
+    ): Promise<ShareAuthProbeResult | null> => {
+      const host = String(hostArg ?? clientConfigRef.current.targetHost).trim();
+      const share = String(shareArg ?? clientConfigRef.current.shareName).trim();
+      if (!host || !share || validateTargetHost(host) || validateShareName(share)) {
+        completedProbeRef.current = null;
+        inFlightProbeRef.current = null;
+        setProbeResult(null);
+        setSmartResult(null);
+        setAutoSwitchedTo(null);
+        setAutoSwitchedFrom(null);
+        return null;
+      }
+
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+
+      const key = makeLegacyTargetKey(host, share);
+      if (options?.manual) {
+        suppressedAutoSwitchKeysRef.current.delete(key);
+        shareBridge.setSmartAuthSuppressed(host, share, false);
+        completedProbeRef.current = null;
+      }
+
+      const seq = (probeSeqRef.current += 1);
+      setIsProbingAuth(true);
+
+      const probeTask = (async (): Promise<ShareAuthProbeResult | null> => {
+        try {
+          const initialCfg = clientConfigRef.current;
+          const initialValidAbshare =
+            rawCodeRef.current.trim().startsWith('ABSHARE://') && codeParseStateRef.current === 'valid';
+          const isSuppressed =
+            suppressedAutoSwitchKeysRef.current.has(key) || shareBridge.isSmartAuthSuppressed(host, share);
+          const initialDetection = await shareBridge.detectSmartShareAuth({
+            targetHost: host,
+            shareName: share,
+            currentAuthMode: initialCfg.authMode,
+            hasTypedPassword: Boolean(initialCfg.password),
+            autoSwitchEnabled: options?.allowAutoSwitch !== false && autoSwitchEnabledRef.current,
+            suppressed: isSuppressed,
+            hasValidAbshareToken: initialValidAbshare,
+            forceProbe: Boolean(options?.manual),
+            peers,
+            portableShares,
+            activeShares: shares,
+          });
+          if (seq !== probeSeqRef.current) return null;
+
+          const curCfg = clientConfigRef.current;
+          const stillSameTarget = makeLegacyTargetKey(curCfg.targetHost, curCfg.shareName) === key;
+          const hasValidAbshareToken =
+            rawCodeRef.current.trim().startsWith('ABSHARE://') && codeParseStateRef.current === 'valid';
+          const decision = stillSameTarget
+            ? shareBridge.evaluateSmartAuthDecision(
+                initialDetection.probe,
+                {
+                  currentAuthMode: curCfg.authMode,
+                  hasTypedPassword: Boolean(curCfg.password),
+                  autoSwitchEnabled: options?.allowAutoSwitch !== false && autoSwitchEnabledRef.current,
+                  suppressed:
+                    suppressedAutoSwitchKeysRef.current.has(key) || shareBridge.isSmartAuthSuppressed(host, share),
+                  hasValidAbshareToken,
+                  peers,
+                  portableShares,
+                  activeShares: shares,
+                },
+                initialDetection.fromCache
+              )
+            : initialDetection;
+
+          completedProbeRef.current = { key, result: decision.probe };
+          setIsProbingAuth(false);
+          setProbeResult(decision.probe);
+          setSmartResult(decision);
+
+          if (stillSameTarget && decision.action === 'auto_switch' && decision.switchToMode) {
+            if (decision.switchToMode === 'account') {
+              setClientValidationError(null);
+              setClientConfig((prev) => ({
+                ...prev,
+                authMode: 'account',
+                username: prev.username.trim() ? prev.username : decision.suggestedUsername || 'AhBiShare',
+                password: prev.password ? prev.password : decision.suggestedPassword || '',
+              }));
+              setAutoSwitchedTo('account');
+              setAutoSwitchedFrom(decision.switchedFromMode || 'guest');
+            } else if (decision.switchToMode === 'guest') {
+              setClientConfig((prev) => ({ ...prev, authMode: 'guest' }));
+              setAutoSwitchedTo('guest');
+              setAutoSwitchedFrom(decision.switchedFromMode || 'account');
+            }
+          } else {
+            setAutoSwitchedTo(null);
+            setAutoSwitchedFrom(null);
+          }
+
+          return decision.probe;
+        } catch {
+          if (seq === probeSeqRef.current) {
+            setIsProbingAuth(false);
+          }
+          return null;
+        } finally {
+          if (inFlightProbeRef.current?.seq === seq) {
+            inFlightProbeRef.current = null;
+          }
+        }
+      })();
+
+      inFlightProbeRef.current = { key, seq, promise: probeTask };
+      return probeTask;
+    },
+    [peers, portableShares, shares]
+  );
+
+  useEffect(() => {
+    if (legacyStep !== 'client') {
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+      probeSeqRef.current += 1;
+      inFlightProbeRef.current = null;
+      setIsProbingAuth(false);
+      return;
+    }
+    const cleanHost = clientConfig.targetHost.trim();
+    const cleanShare = clientConfig.shareName.trim();
+    if (!cleanHost || !cleanShare || validateTargetHost(cleanHost) || validateShareName(cleanShare)) {
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+      probeSeqRef.current += 1;
+      inFlightProbeRef.current = null;
+      completedProbeRef.current = null;
+      setIsProbingAuth(false);
+      setProbeResult(null);
+      setSmartResult(null);
+      setAutoSwitchedTo(null);
+      setAutoSwitchedFrom(null);
+      return;
+    }
+
+    const key = makeLegacyTargetKey(cleanHost, cleanShare);
+    if (inFlightProbeRef.current?.key === key || completedProbeRef.current?.key === key) {
+      return;
+    }
+
+    setProbeResult(null);
+    setSmartResult(null);
+    setAutoSwitchedTo(null);
+    setAutoSwitchedFrom(null);
+
+    if (probeTimerRef.current !== null) {
+      window.clearTimeout(probeTimerRef.current);
+    }
+    probeTimerRef.current = window.setTimeout(() => {
+      probeTimerRef.current = null;
+      void runLegacyShareAuthProbe(cleanHost, cleanShare);
+    }, 650);
+
+    return () => {
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+    };
+  }, [legacyStep, clientConfig.targetHost, clientConfig.shareName, runLegacyShareAuthProbe]);
+
   const handleSelectPeerShare = (peer: DiscoveredPeer, shareName: string) => {
     setClientValidationError(null);
+    setAutoSwitchedTo(null);
+    setAutoSwitchedFrom(null);
     const exactCode = peer.shareCodes?.[shareName];
     if (exactCode) {
       handleCodeChange(exactCode);
@@ -680,35 +947,38 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       activeShares: shares,
     });
     const authMode = peer.authModeHint === 'account' || resolved?.authMode === 'account' ? 'account' : 'guest';
-    setClientConfig((prev) => ({
-      ...prev,
+    const nextCfg: ClientTargetConfig = {
+      ...clientConfigRef.current,
       targetHost,
       shareName,
       authMode,
       username: authMode === 'account' ? resolved?.username || 'AhBiShare' : '',
       password: authMode === 'account' ? resolved?.password || '' : '',
-    }));
+    };
+    clientConfigRef.current = nextCfg;
+    setClientConfig(nextCfg);
+    void runLegacyShareAuthProbe(targetHost, shareName);
   };
 
-  const switchToAccountMode = useCallback(() => {
-    setClientValidationError(null);
-    const resolved = resolveClientAccountCredentials({
-      targetHost: clientConfig.targetHost,
-      hostCandidates: getHostCandidates(clientConfig.targetHost),
-      shareName: clientConfig.shareName,
-      requireAccountOnly: true,
-      portableShares,
-      activeShares: shares,
-    });
-    setClientConfig((prev) => ({
-      ...prev,
-      authMode: 'account',
-      username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
-      password: prev.password ? prev.password : resolved?.password || '',
-    }));
-  }, [clientConfig.targetHost, clientConfig.shareName, getHostCandidates, portableShares, shares]);
+  const handleCopyHostGuestCmd = useCallback(async () => {
+    const cmd = buildHostGuestUnlockPsCommand(clientConfigRef.current.shareName);
+    const ok = await copyTextWithFallback(cmd);
+    if (ok) {
+      if (hostCmdTimerRef.current !== null) {
+        window.clearTimeout(hostCmdTimerRef.current);
+      }
+      setHostCmdCopied(true);
+      hostCmdTimerRef.current = window.setTimeout(() => {
+        setHostCmdCopied(false);
+        hostCmdTimerRef.current = null;
+      }, 2000);
+      onNotify?.('호스트 원클릭 복구 명령을 클립보드에 복사했습니다.');
+    } else {
+      onNotify?.('클립보드 복사에 실패했습니다. 통합 해결 가이드를 열어 복사하세요.');
+    }
+  }, [onNotify]);
 
-  const handleClientSubmit = (e: React.FormEvent) => {
+  const handleClientSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isBusy) return;
     const hostErr = validateTargetHost(clientConfig.targetHost);
@@ -721,6 +991,31 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
       setClientValidationError(shareErr);
       return;
     }
+
+    const targetKey = makeLegacyTargetKey(clientConfig.targetHost, clientConfig.shareName);
+    const hasValidAbshareToken =
+      rawCodeInput.trim().startsWith('ABSHARE://') && codeParseState === 'valid';
+    if (
+      clientConfig.authMode === 'guest' &&
+      autoSwitchEnabled &&
+      !suppressedAutoSwitchKeysRef.current.has(targetKey) &&
+      !shareBridge.isSmartAuthSuppressed(clientConfig.targetHost, clientConfig.shareName) &&
+      !hasValidAbshareToken
+    ) {
+      let preProbe: ShareAuthProbeResult | null = null;
+      if (inFlightProbeRef.current?.key === targetKey) {
+        preProbe = await inFlightProbeRef.current.promise;
+      } else if (completedProbeRef.current?.key !== targetKey) {
+        preProbe = await runLegacyShareAuthProbe(clientConfig.targetHost, clientConfig.shareName);
+      }
+      if (preProbe && (preProbe.verdict === 'account_required' || preProbe.verdict === 'host_guest_denied')) {
+        setClientValidationError(
+          '대상 공유폴더가 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환했습니다. 아이디·암호를 확인한 뒤 다시 연결하세요.'
+        );
+        return;
+      }
+    }
+
     if (clientConfig.authMode === 'account') {
       if (!clientConfig.username.trim()) {
         setClientValidationError('보안 계정 연결 모드에서는 사용자 ID를 입력하세요.');
@@ -1493,6 +1788,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
                     {shares.map((share) => {
+                      const uncTarget = resolveActiveShareUncPath(share, netInfo.primaryIp);
                       const ttlState = formatRemainingTime(share.expiresAt, nowMs);
                       return (
                         <tr key={share.shareName} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
@@ -1538,12 +1834,25 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                               </button>
                               <button
                                 type="button"
+                                disabled={!uncTarget}
+                                onClick={() => {
+                                  if (uncTarget) void onOpenPath(uncTarget);
+                                }}
+                                title={uncTarget ? `${uncTarget} UNC 경로를 Windows 탐색기에서 열기` : '유효한 UNC 경로가 없습니다'}
+                                aria-label={`${share.shareName} 탐색기에서 열기`}
+                                className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-40 rounded-md inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                탐색기에서 열기
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => void onOpenPath(share.folderPath)}
                                 className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md cursor-pointer"
-                                title="폴더 열기"
-                                aria-label={`${share.shareName} 폴더 열기`}
+                                title="로컬 폴더 열기"
+                                aria-label={`${share.shareName} 로컬 폴더 열기`}
                               >
-                                <ExternalLink className="w-4 h-4" />
+                                <FolderOpen className="w-4 h-4" />
                               </button>
                               <button
                                 type="button"
@@ -1725,7 +2034,14 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                     <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
                       <Check className="w-3.5 h-3.5 shrink-0" />
                       확인 완료 · \\{clientConfig.targetHost}\{clientConfig.shareName} (
-                      {clientConfig.authMode === 'account' ? '보안 계정 포함' : '무비밀번호 모드'})
+                      {rawCodeInput.trim().startsWith('ABSHARE://')
+                        ? clientConfig.authMode === 'account'
+                          ? '보안 계정 포함'
+                          : '무비밀번호 모드'
+                        : clientConfig.authMode === 'account'
+                          ? '보안 계정 모드'
+                          : '무비밀번호 모드'}
+                      )
                     </p>
                   )}
                   {codeParseState === 'invalid' && (
@@ -1767,7 +2083,19 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                             <tr key={peer.ipAddress} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                               <td className="py-2.5 px-3 align-top">
                                 <div className="font-semibold text-slate-900 dark:text-slate-100">{peer.hostName}</div>
-                                <div className="tabular-nums text-slate-500 dark:text-slate-400">{peer.ipAddress}</div>
+                                <div className="tabular-nums text-slate-500 dark:text-slate-400">
+                                  {peer.ipAddress}
+                                  {peer.authModeHint === 'account' && (
+                                    <span className="text-indigo-600 dark:text-indigo-400 font-medium">
+                                      {' '}· 계정 인증 추정
+                                    </span>
+                                  )}
+                                  {peer.authModeHint === 'guest' && (
+                                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                                      {' '}· 무비밀번호 응답
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td className="py-2.5 px-3">
                                 <div className="flex flex-wrap gap-1.5">
@@ -1829,7 +2157,27 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                       value={clientConfig.targetHost}
                       onChange={(e) => {
                         setClientValidationError(null);
-                        setClientConfig({ ...clientConfig, targetHost: e.target.value });
+                        if (rawCodeInput) {
+                          setRawCodeInput('');
+                          setCodeParseState('empty');
+                        }
+                        const rawVal = e.target.value;
+                        const uncMatch = rawVal.trim().replace(/\//g, '\\').match(/^\\\\([^\\]+)\\([^\\]+)/);
+                        if (uncMatch) {
+                          setClientConfig({
+                            ...clientConfig,
+                            targetHost: uncMatch[1].trim(),
+                            shareName: uncMatch[2].trim(),
+                          });
+                        } else {
+                          setClientConfig({ ...clientConfig, targetHost: rawVal });
+                        }
+                      }}
+                      onBlur={() => {
+                        const key = makeLegacyTargetKey(clientConfig.targetHost, clientConfig.shareName);
+                        if (inFlightProbeRef.current?.key !== key && completedProbeRef.current?.key !== key) {
+                          void runLegacyShareAuthProbe(clientConfig.targetHost, clientConfig.shareName);
+                        }
                       }}
                       className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
@@ -1845,7 +2193,17 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                       value={clientConfig.shareName}
                       onChange={(e) => {
                         setClientValidationError(null);
+                        if (rawCodeInput) {
+                          setRawCodeInput('');
+                          setCodeParseState('empty');
+                        }
                         setClientConfig({ ...clientConfig, shareName: e.target.value });
+                      }}
+                      onBlur={() => {
+                        const key = makeLegacyTargetKey(clientConfig.targetHost, clientConfig.shareName);
+                        if (inFlightProbeRef.current?.key !== key && completedProbeRef.current?.key !== key) {
+                          void runLegacyShareAuthProbe(clientConfig.targetHost, clientConfig.shareName);
+                        }
                       }}
                       className="w-full px-3.5 py-2 text-sm tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
@@ -1870,12 +2228,60 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                   </div>
                 </div>
 
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
+                  <ShareAuthProbeBar
+                    idPrefix="legacy-client"
+                    probeResult={probeResult}
+                    smartResult={smartResult}
+                    isProbing={isProbingAuth}
+                    autoSwitchEnabled={autoSwitchEnabled}
+                    autoSwitchedTo={autoSwitchedTo}
+                    currentAuthMode={clientConfig.authMode}
+                    targetHost={clientConfig.targetHost}
+                    shareName={clientConfig.shareName}
+                    disabled={isBusy}
+                    onToggleAutoSwitch={handleToggleAutoSwitch}
+                    onManualProbe={() => {
+                      void runLegacyShareAuthProbe(clientConfig.targetHost, clientConfig.shareName, { manual: true });
+                    }}
+                    onSwitchToAccount={() => {
+                      setAutoSwitchedTo(null);
+                      setAutoSwitchedFrom(null);
+                      switchToAccountMode(clientConfig.targetHost, clientConfig.shareName);
+                    }}
+                    onSwitchToGuest={() => {
+                      setAutoSwitchedTo(null);
+                      setAutoSwitchedFrom(null);
+                      setClientValidationError(null);
+                      setClientConfig((prev) => ({ ...prev, authMode: 'guest' }));
+                    }}
+                    onUndoAutoSwitch={() => {
+                      const key = makeLegacyTargetKey(clientConfig.targetHost, clientConfig.shareName);
+                      suppressedAutoSwitchKeysRef.current.add(key);
+                      shareBridge.setSmartAuthSuppressed(clientConfig.targetHost, clientConfig.shareName, true);
+                      if (autoSwitchedFrom) {
+                        setClientConfig((prev) => ({ ...prev, authMode: autoSwitchedFrom }));
+                      }
+                      setAutoSwitchedTo(null);
+                      setAutoSwitchedFrom(null);
+                      setClientValidationError(null);
+                    }}
+                    onOpenMatrix={onOpenMatrix}
+                    onCopyHostGuestCmd={() => {
+                      void handleCopyHostGuestCmd();
+                    }}
+                    hostCmdCopied={hostCmdCopied}
+                  />
+                </div>
+
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg">
                     <button
                       type="button"
                       onClick={() => {
                         setClientValidationError(null);
+                        setAutoSwitchedTo(null);
+                        setAutoSwitchedFrom(null);
                         setClientConfig({ ...clientConfig, authMode: 'guest' });
                       }}
                       className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
@@ -1888,7 +2294,11 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={switchToAccountMode}
+                      onClick={() => {
+                        setAutoSwitchedTo(null);
+                        setAutoSwitchedFrom(null);
+                        switchToAccountMode();
+                      }}
                       className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
                         clientConfig.authMode === 'account'
                           ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
@@ -2038,23 +2448,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                           <button
                             id="btn-legacy-failure-copy-host-cmd"
                             type="button"
-                            onClick={async () => {
-                              const cmd = buildHostGuestUnlockPsCommand(clientConfig.shareName);
-                              const ok = await copyTextWithFallback(cmd);
-                              if (ok) {
-                                if (hostCmdTimerRef.current !== null) {
-                                  window.clearTimeout(hostCmdTimerRef.current);
-                                }
-                                setHostCmdCopied(true);
-                                hostCmdTimerRef.current = window.setTimeout(() => {
-                                  setHostCmdCopied(false);
-                                  hostCmdTimerRef.current = null;
-                                }, 2000);
-                                onNotify?.('호스트 원클릭 복구 명령을 클립보드에 복사했습니다.');
-                              } else {
-                                onNotify?.('클립보드 복사에 실패했습니다. 통합 해결 가이드를 열어 복사하세요.');
-                              }
-                            }}
+                            onClick={() => void handleCopyHostGuestCmd()}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-lg cursor-pointer"
                           >
                             {hostCmdCopied ? (

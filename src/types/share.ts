@@ -390,6 +390,7 @@ export interface PortableStorageStatus {
   fileName: string;
   filePath: string;
   writable: boolean;
+  writeProtected?: boolean;
   hasExistingFile?: boolean;
   writeError?: string;
   corruptedRecovered?: boolean;
@@ -621,6 +622,63 @@ export interface LocationPreflightReport {
   items: LocationPreflightItemResult[];
 }
 
+export type ShareAuthProbeVerdict =
+  | 'guest_allowed'
+  | 'account_required'
+  | 'client_guest_blocked'
+  | 'host_guest_denied'
+  | 'share_not_found'
+  | 'existing_session_conflict'
+  | 'smb_protocol_mismatch'
+  | 'unreachable'
+  | 'unknown';
 
+export interface ShareAuthProbeResult {
+  targetHost: string;
+  shareName: string;
+  targetUnc: string;
+  verdict: ShareAuthProbeVerdict;
+  recommendedAuthMode: AuthMode | null;
+  win32Code: number | null;
+  summary: string;
+  detail: string;
+  existingSessionMode?: AuthMode | null;
+  probeMethod?: string;
+  checkedAt: string;
+}
 
+export type SmartAuthAction = 'auto_switch' | 'recommend' | 'keep' | 'none';
+export type SmartAuthConfidence = 'confirmed' | 'hint' | 'none';
+
+export interface SmartAuthTargetInput {
+  targetHost?: string;
+  shareName?: string;
+  uncPath?: string;
+  currentAuthMode: AuthMode;
+  hasTypedPassword?: boolean;
+  autoSwitchEnabled?: boolean;
+  suppressed?: boolean;
+  hasValidAbshareToken?: boolean;
+  forceProbe?: boolean;
+  peers?: DiscoveredPeer[];
+  savedLocationTargets?: LocationClientTargetEntry[];
+  locationSavedShares?: PortableHostShareEntry[];
+  locationHostPreset?: LocationHostPreset | null;
+  portableShares?: PortableHostShareEntry[];
+  activeShares?: ActiveShare[];
+}
+
+export interface SmartAuthDetectionResult {
+  probe: ShareAuthProbeResult;
+  recommendedAuthMode: AuthMode | null;
+  action: SmartAuthAction;
+  switchToMode: AuthMode | null;
+  switchedFromMode: AuthMode | null;
+  confidence: SmartAuthConfidence;
+  reason: string;
+  suggestedUsername?: string;
+  suggestedPassword?: string;
+  credentialSource?: string;
+  fromCache?: boolean;
+}
 

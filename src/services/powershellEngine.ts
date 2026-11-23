@@ -2491,4 +2491,308 @@ export function buildLocationPreflightScript(
   `.trim();
 }
 
+export function buildShareAuthProbeScript(targetHost: string, shareName: string): string {
+  const safeHost = escapePsSingle(targetHost.trim());
+  const safeShare = escapePsSingle(shareName.trim());
+  const unc = escapePsSingle(`\\\\${targetHost.trim()}\\${shareName.trim()}`);
+
+  return `
+    ${PS_JSON_HELPER}
+    $p_host = '${safeHost}'
+    $p_share = '${safeShare}'
+    $p_unc = '${unc}'
+    $p_hostPrefix = ('\\\\' + $p_host + '\\')
+
+    # 1. Fast TCP 445 reachability check (2000ms)
+    $tcpOk = $false
+    $tcpErr = ''
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $ar = $null
+    try {
+      $ar = $tcp.BeginConnect($p_host, 445, $null, $null)
+      if ($ar.AsyncWaitHandle.WaitOne(2000, $false)) {
+        $tcp.EndConnect($ar)
+        $tcpOk = $true
+      } else {
+        $tcpErr = 'TCP 445 timeout'
+      }
+    } catch {
+      $tcpErr = $_.Exception.Message
+    } finally {
+      if ($ar -and $ar.AsyncWaitHandle) { try { $ar.AsyncWaitHandle.Close() } catch {} }
+      try { $tcp.Close() } catch {}
+    }
+
+    if (-not $tcpOk) {
+      @{
+        reachable445 = $false
+        verdict = 'unreachable'
+        win32Code = 53
+        recommendedAuthMode = $null
+        existingSessionMode = $null
+        probeMethod = 'Tcp445'
+        detail = $tcpErr
+      } | ConvertTo-AhBiJson -Depth 3
+      return
+    }
+
+    # 2. Protect active mapped drives / SMB sessions on targetHost
+    $hasActiveSession = $false
+    $activeRemoteList = @()
+    $existingSessionMode = $null
+    $sameUncActive = $false
+
+    if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
+      try {
+        Get-SmbMapping -ErrorAction SilentlyContinue | ForEach-Object {
+          $rp = "$($_.RemotePath)"
+          if ($rp -and ($rp.ToLower().StartsWith($p_hostPrefix.ToLower()))) {
+            $hasActiveSession = $true
+            $activeRemoteList += $rp
+            if ($rp -ieq $p_unc) { $sameUncActive = $true }
+          }
+        }
+      } catch {}
+    }
+    if (Get-Command Get-SmbConnection -ErrorAction SilentlyContinue) {
+      try {
+        Get-SmbConnection -ServerName $p_host -ErrorAction SilentlyContinue | ForEach-Object {
+          $shConnName = "$($_.ShareName)".Trim()
+          if (-not $shConnName -or ($shConnName -ieq 'IPC$')) {
+            return
+          }
+          $hasActiveSession = $true
+          $connUnc = ($p_hostPrefix + $shConnName)
+          $activeRemoteList += $connUnc
+          $un = "$($_.UserName)".Trim()
+          if ($un) {
+            if ($un -match '(^|\\\\)(guest|게스트|anonymous|익명)$' -or $un -eq 'NT AUTHORITY\\ANONYMOUS LOGON') {
+              if (-not $existingSessionMode) { $existingSessionMode = 'guest' }
+            } else {
+              $existingSessionMode = 'account'
+            }
+          }
+          if ($shConnName -ieq $p_share) {
+            $sameUncActive = $true
+          }
+        }
+      } catch {}
+    }
+    if (-not $hasActiveSession) {
+      try {
+        $netLines = & net.exe use 2>$null
+        $escHost = [regex]::Escape($p_host)
+        foreach ($nl in $netLines) {
+          if ("$nl" -match ('\\\\\\\\' + $escHost + '\\\\[^\\s]+')) {
+            $matchedUnc = $matches[0]
+            if ($matchedUnc -match '\\\\IPC\\$$') {
+              continue
+            }
+            $hasActiveSession = $true
+            $activeRemoteList += $matchedUnc
+            if ($matchedUnc -ieq $p_unc) { $sameUncActive = $true }
+          }
+        }
+      } catch {}
+    }
+
+    if ($hasActiveSession) {
+      $sessionDesc = if ($activeRemoteList.Count -gt 0) { ($activeRemoteList | Select-Object -Unique) -join ', ' } else { $p_unc }
+      @{
+        reachable445 = $true
+        verdict = 'existing_session_conflict'
+        win32Code = 1219
+        recommendedAuthMode = $existingSessionMode
+        existingSessionMode = $existingSessionMode
+        probeMethod = if ($sameUncActive) { 'ExistingMapping' } else { 'ExistingSession' }
+        detail = $sessionDesc
+      } | ConvertTo-AhBiJson -Depth 3
+      return
+    }
+
+    # 3. Check local Win11 client guest auth policy state for accurate error attribution
+    $localGuestBlocked = $false
+    try {
+      $polKey = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' -ErrorAction SilentlyContinue
+      $svcKey = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' -ErrorAction SilentlyContinue
+      $polAllow = if ($polKey -and $null -ne $polKey.AllowInsecureGuestAuth) { [int]$polKey.AllowInsecureGuestAuth } else { $null }
+      $svcAllow = if ($svcKey -and $null -ne $svcKey.AllowInsecureGuestAuth) { [int]$svcKey.AllowInsecureGuestAuth } else { $null }
+      if ($polAllow -eq 0 -or ($null -eq $polAllow -and $svcAllow -ne 1)) {
+        $osVer = [System.Environment]::OSVersion.Version
+        if ($osVer.Build -ge 26100) {
+          $localGuestBlocked = $true
+        } elseif ($polAllow -eq 0) {
+          $localGuestBlocked = $true
+        }
+      }
+    } catch {}
+
+    # 4. Non-mapped Win32 WNetAddConnection2 probe (lpLocalName = $null)
+    $mprReady = $false
+    try {
+      if (-not ('AhBiMprProbe' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class AhBiMprProbe {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct NETRESOURCE {
+    public int dwScope;
+    public int dwType;
+    public int dwDisplayType;
+    public int dwUsage;
+    public string lpLocalName;
+    public string lpRemoteName;
+    public string lpComment;
+    public string lpProvider;
+  }
+  [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+  public static extern int WNetAddConnection2(ref NETRESOURCE netResource, string password, string username, int flags);
+  [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+  public static extern int WNetCancelConnection2(string name, int flags, bool force);
+}
+"@ -ErrorAction Stop | Out-Null
+      }
+      if ('AhBiMprProbe' -as [type]) { $mprReady = $true }
+    } catch {}
+
+    if (-not $mprReady) {
+      @{
+        reachable445 = $true
+        verdict = 'unknown'
+        win32Code = $null
+        recommendedAuthMode = $null
+        existingSessionMode = $null
+        probeMethod = 'MprUnavailable'
+        detail = 'Win32 mpr.dll probe type unavailable'
+      } | ConvertTo-AhBiJson -Depth 3
+      return
+    }
+
+    function Invoke-UnmappedProbe($userArg, $passArg) {
+      try {
+        $nr = New-Object AhBiMprProbe+NETRESOURCE
+        $nr.dwType = 1
+        $nr.lpLocalName = $null
+        $nr.lpRemoteName = $p_unc
+        $rc = [AhBiMprProbe]::WNetAddConnection2([ref]$nr, $passArg, $userArg, 0)
+        if ($rc -eq 0) {
+          $cancelRc = [AhBiMprProbe]::WNetCancelConnection2($p_unc, 0, $true)
+          if ($cancelRc -ne 0) {
+            & net.exe use $p_unc /delete /y 2>$null | Out-Null
+          }
+          return @{ code = 0; msg = 'OK' }
+        }
+        $wMsg = ''
+        try { $wMsg = (New-Object System.ComponentModel.Win32Exception([int]$rc)).Message } catch {}
+        return @{ code = [int]$rc; msg = $wMsg }
+      } catch {
+        return @{ code = -1; msg = $_.Exception.Message }
+      }
+    }
+
+    $probeSequence = @(
+      @{ label = 'WNet-Guest'; user = 'Guest'; pass = '' },
+      @{ label = 'WNet-HostGuest'; user = ($p_host + '\\Guest'); pass = '' },
+      @{ label = 'WNet-Null'; user = ''; pass = '' }
+    )
+
+    $codes = @()
+    $detailParts = @()
+    $guestSucceeded = $false
+    $successMethod = ''
+
+    foreach ($step in $probeSequence) {
+      $r = Invoke-UnmappedProbe $step.user $step.pass
+      $c = [int]$r.code
+      if ($c -eq 0) {
+        $guestSucceeded = $true
+        $successMethod = $step.label
+        break
+      }
+      $codes += $c
+      $detailParts += ($step.label + ':' + $c + '(' + $r.msg + ')')
+      # Short-circuit fatal target-level errors
+      if ($c -eq 67 -or $c -eq 58 -or $c -eq 53 -or $c -eq 1219) {
+        break
+      }
+    }
+
+    if ($guestSucceeded) {
+      @{
+        reachable445 = $true
+        verdict = 'guest_allowed'
+        win32Code = 0
+        recommendedAuthMode = 'guest'
+        existingSessionMode = $null
+        probeMethod = $successMethod
+        detail = 'Guest/anonymous session succeeded and was immediately closed'
+      } | ConvertTo-AhBiJson -Depth 3
+      return
+    }
+
+    $firstCode = if ($codes.Count -gt 0) { [int]$codes[0] } else { $null }
+    $hasCode67 = ($codes -contains 67)
+    $hasCode58 = ($codes -contains 58)
+    $hasCode53 = ($codes -contains 53)
+    $hasCode1219 = ($codes -contains 1219)
+    $hasCode1385 = ($codes -contains 1385)
+    $hasCode1272 = ($codes -contains 1272) -or ($codes -contains 384)
+    $hasExplicitCredReject = ($codes -contains 86) -or ($codes -contains 1326) -or ($codes -contains 2202)
+    $hasGenericAuthDeny = ($codes -contains 5) -or ($codes -contains 1223)
+
+    $verdict = 'unknown'
+    $recAuth = $null
+    $chosenCode = $firstCode
+
+    if ($hasCode67) {
+      $verdict = 'share_not_found'
+      $chosenCode = 67
+    } elseif ($hasCode58) {
+      $verdict = 'smb_protocol_mismatch'
+      $chosenCode = 58
+    } elseif ($hasCode1219) {
+      $verdict = 'existing_session_conflict'
+      $chosenCode = 1219
+    } elseif ($hasCode1385) {
+      $verdict = 'host_guest_denied'
+      $chosenCode = 1385
+      $recAuth = 'account'
+    } elseif ($hasExplicitCredReject) {
+      $verdict = 'account_required'
+      foreach ($ac in @(86, 1326, 2202)) {
+        if ($codes -contains $ac) { $chosenCode = $ac; break }
+      }
+      $recAuth = 'account'
+    } elseif ($hasCode1272) {
+      $verdict = 'client_guest_blocked'
+      $chosenCode = if ($codes -contains 1272) { 1272 } else { 384 }
+      $recAuth = 'account'
+    } elseif ($hasGenericAuthDeny) {
+      $verdict = 'account_required'
+      foreach ($ac in @(1223, 5)) {
+        if ($codes -contains $ac) { $chosenCode = $ac; break }
+      }
+      $recAuth = 'account'
+    } elseif ($hasCode53) {
+      $verdict = 'unreachable'
+      $chosenCode = 53
+    } elseif ($localGuestBlocked) {
+      $verdict = 'client_guest_blocked'
+      $recAuth = 'account'
+    }
+
+    @{
+      reachable445 = $true
+      verdict = $verdict
+      win32Code = $chosenCode
+      recommendedAuthMode = $recAuth
+      existingSessionMode = $null
+      probeMethod = 'WNetAddConnection2'
+      detail = ($detailParts -join ' | ')
+    } | ConvertTo-AhBiJson -Depth 3
+  `.trim();
+}
+
+
 

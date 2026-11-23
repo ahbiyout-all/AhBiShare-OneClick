@@ -10,7 +10,10 @@ const {
   createPortableStore,
   prepareLocationProfileForDisk,
   hydrateLocationProfile,
+  probeDirectoryWriteSafety,
+  atomicWriteBuffer,
   atomicWriteJson,
+  classifyUsbWriteError,
 } = require('./portableStore');
 const {
   detectPortableRuntimeInfo,
@@ -244,6 +247,9 @@ ipcMain.handle('select-folder', async () => {
 ipcMain.handle('open-path', async (_event, { targetPath }) => {
   if (!targetPath) return { success: false, error: 'Missing path' };
   const raw = String(targetPath).trim();
+  if (!raw || /[\0\r\n]/.test(raw)) {
+    return { success: false, error: 'Invalid path' };
+  }
   if (/^ms-settings:windowsupdate$/i.test(raw)) {
     try {
       await shell.openExternal('ms-settings:windowsupdate');
@@ -252,7 +258,41 @@ ipcMain.handle('open-path', async (_event, { targetPath }) => {
       return { success: false, error: (err && err.message) || 'Failed to open Windows Update settings' };
     }
   }
-  const normalized = process.platform === 'win32' ? raw.replace(/\//g, '\\') : raw;
+  const normalizedRaw = process.platform === 'win32' ? raw.replace(/\//g, '\\') : raw;
+  const normalized = normalizedRaw.replace(/^(\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|]+)\\+$/, '$1');
+  const isUncPath = /^\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|]+(?:\\.*)?$/.test(normalized);
+  if (process.platform === 'win32' && isUncPath) {
+    const winRoot = process.env.SystemRoot || 'C:\\Windows';
+    const candidateExe = path.join(winRoot, 'explorer.exe');
+    const explorerExe = fs.existsSync(candidateExe) ? candidateExe : 'explorer.exe';
+    const spawned = await new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (!settled) {
+          settled = true;
+          resolve(ok);
+        }
+      };
+      try {
+        const child = spawn(explorerExe, [normalized], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: false,
+        });
+        child.once('error', () => done(false));
+        child.once('spawn', () => {
+          child.unref();
+          done(true);
+        });
+        setTimeout(() => done(true), 400);
+      } catch {
+        done(false);
+      }
+    });
+    if (spawned) {
+      return { success: true, error: '' };
+    }
+  }
   const errMsg = await shell.openPath(normalized);
   return { success: !errMsg, error: errMsg || '' };
 });
@@ -434,22 +474,58 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
   async function inspectPeer(peer) {
     let hostName = peer.ip;
     let shares = [];
+    let authModeHint = 'unknown';
     if (process.platform === 'win32') {
       const res = await executePowerShellScript(
         `
           $p_ip = '${peer.ip}'
           $h = try { ([System.Net.Dns]::GetHostEntry($p_ip)).HostName.Split('.')[0] } catch { $p_ip }
-          try { [Console]::OutputEncoding = $script:__AhBiOemEnc } catch {}
-          $raw = & net.exe view "\\\\$p_ip" 2>$null
-          try { [Console]::OutputEncoding = $script:__AhBiUtf8NoBom } catch {}
+          $nvCode = -1
+          $nvText = ''
+          $raw = @()
+          try {
+            $psiNv = New-Object System.Diagnostics.ProcessStartInfo
+            $psiNv.FileName = 'net.exe'
+            $psiNv.Arguments = ('view ' + [char]34 + '\\\\' + $p_ip + [char]34)
+            $psiNv.UseShellExecute = $false
+            $psiNv.RedirectStandardInput = $true
+            $psiNv.RedirectStandardOutput = $true
+            $psiNv.RedirectStandardError = $true
+            $psiNv.CreateNoWindow = $true
+            if ($script:__AhBiOemEnc) {
+              try { $psiNv.StandardOutputEncoding = $script:__AhBiOemEnc } catch {}
+              try { $psiNv.StandardErrorEncoding = $script:__AhBiOemEnc } catch {}
+            }
+            $procNv = [System.Diagnostics.Process]::Start($psiNv)
+            if ($procNv) {
+              try { $procNv.StandardInput.Close() } catch {}
+              if (-not $procNv.WaitForExit(4000)) {
+                try { $procNv.Kill() } catch {}
+              } else {
+                $nvCode = [int]$procNv.ExitCode
+              }
+              $nvOutStr = try { $procNv.StandardOutput.ReadToEnd() } catch { '' }
+              $nvErrStr = try { $procNv.StandardError.ReadToEnd() } catch { '' }
+              $combinedNv = ($nvOutStr + [char]10 + $nvErrStr)
+              $raw = $combinedNv -split '\\r?\\n'
+              $nvText = ($combinedNv -replace '\\s+', ' ').Trim()
+            }
+          } catch {}
           $s = @()
           foreach ($line in $raw) {
-            if ($line -match '^(.+?)\\s{2,}(Disk|디스크)\\b') {
+            $lineStr = "$line"
+            if ($lineStr -match '^(.+?)\\s{2,}(Disk|디스크)\\b') {
               $name = $matches[1].Trim()
               if ($name -and $name -notmatch '\\$$') { $s += $name }
             }
           }
-          $resHash = @{ hostName = $h; shares = $s }
+          $hint = 'unknown'
+          if ($s.Count -gt 0 -and $nvCode -eq 0) {
+            $hint = 'guest'
+          } elseif ($nvCode -ne 0 -and ($nvText -match '(?<![.\\d])(?:5|86|1223|1326)(?![.\\d])|액세스|거부|로그온|암호|Access is denied|Logon failure|password is not correct')) {
+            $hint = 'account'
+          }
+          $resHash = @{ hostName = $h; shares = $s; authModeHint = $hint }
           if (Get-Command ConvertTo-Json -ErrorAction SilentlyContinue) {
             $resObj = New-Object PSObject -Property $resHash
             $resObj | ConvertTo-Json -Compress
@@ -460,8 +536,9 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
               $ser.Serialize($resHash)
             } catch {
               $escHost = "$h".Replace('\\', '\\\\').Replace('"', '\\"')
+              $escHint = "$hint".Replace('\\', '\\\\').Replace('"', '\\"')
               $escShares = ($s | ForEach-Object { '"' + ("$_".Replace('\\', '\\\\').Replace('"', '\\"')) + '"' }) -join ','
-              '{"hostName":"' + $escHost + '","shares":[' + $escShares + ']}'
+              '{"hostName":"' + $escHost + '","shares":[' + $escShares + '],"authModeHint":"' + $escHint + '"}'
             }
           }
         `,
@@ -473,6 +550,9 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
           if (parsed.hostName) hostName = parsed.hostName;
           if (Array.isArray(parsed.shares)) shares = parsed.shares;
           else if (typeof parsed.shares === 'string' && parsed.shares) shares = [parsed.shares];
+          if (parsed.authModeHint === 'guest' || parsed.authModeHint === 'account') {
+            authModeHint = parsed.authModeHint;
+          }
         } catch {}
       }
     }
@@ -482,7 +562,7 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
       latencyMs: peer.latencyMs,
       smbPortOpen: true,
       availableShares: shares,
-      authModeHint: 'unknown',
+      authModeHint,
       lastSeen: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
     };
   }
@@ -653,7 +733,7 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
     const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
     const pickerOpts = {
       properties: ['openDirectory', 'createDirectory'],
-      title: 'Win 7·8·8.1 스크립트 패키지를 저장할 USB/폴더 선택',
+      title: 'Win 7·8·8.1 스크립트 패키지를 저장할 쓰기 가능한 USB/폴더 선택',
     };
     const picked = win ? await dialog.showOpenDialog(win, pickerOpts) : await dialog.showOpenDialog(pickerOpts);
     if (picked.canceled || !picked.filePaths.length) {
@@ -675,6 +755,19 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
   }
   try {
     fs.mkdirSync(targetDir, { recursive: true });
+    const targetProbe = probeDirectoryWriteSafety(targetDir);
+    if (!targetProbe.writable) {
+      return {
+        success: false,
+        directory: targetDir,
+        savedFiles: [],
+        writeProtected: Boolean(targetProbe.writeProtected),
+        message:
+          targetProbe.writeError ||
+          '선택한 USB/폴더가 쓰기 금지(읽기 전용) 상태이므로 스크립트 파일을 저장할 수 없습니다.',
+      };
+    }
+
     const targetDirPrefix = targetDir.endsWith(path.sep) ? targetDir : targetDir + path.sep;
     const savedFiles = [];
     for (const item of files) {
@@ -683,11 +776,19 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
       const outPath = path.resolve(targetDir, safeName);
       if (!outPath.startsWith(targetDirPrefix)) continue;
       const rawContent = String(item?.content || '');
-      if (safeName.toLowerCase().endsWith('.reg')) {
-        // UTF-16LE with BOM ensures Windows 7/8/10/11 regedit.exe imports cleanly regardless of system codepage
-        fs.writeFileSync(outPath, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(rawContent, 'utf16le')]));
-      } else {
-        fs.writeFileSync(outPath, rawContent, { encoding: 'utf8' });
+      // UTF-16LE with BOM ensures Windows 7/8/10/11 regedit.exe imports cleanly regardless of system codepage
+      const fileBuf = safeName.toLowerCase().endsWith('.reg')
+        ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(rawContent, 'utf16le')])
+        : Buffer.from(rawContent, 'utf8');
+      const writeRes = atomicWriteBuffer(outPath, fileBuf);
+      if (!writeRes.success) {
+        return {
+          success: false,
+          directory: targetDir,
+          savedFiles,
+          writeProtected: Boolean(writeRes.writeProtected),
+          message: writeRes.error || '스크립트 파일 저장에 실패했습니다.',
+        };
       }
       savedFiles.push(outPath);
     }
@@ -703,14 +804,16 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
       success: true,
       directory: targetDir,
       savedFiles,
-      message: `USB 폴더(${targetDir})에 적용·원복 스크립트 ${savedFiles.length}개를 저장했습니다.`,
+      message: `USB 폴더(${targetDir})에 적용·원복 스크립트 ${savedFiles.length}개를 안전하게 저장했습니다.`,
     };
   } catch (err) {
+    const classified = classifyUsbWriteError(err, '스크립트 파일 저장');
     return {
       success: false,
       directory: targetDir,
       savedFiles: [],
-      message: `스크립트 파일 저장 실패: ${err && err.message ? err.message : '권한 또는 디스크 오류'}`,
+      writeProtected: classified.writeProtected,
+      message: classified.message,
     };
   }
 });
@@ -752,7 +855,12 @@ ipcMain.handle('export-location-profile-file', async (_event, { profile }) => {
     }
     const writeRes = atomicWriteJson(picked.filePath, diskProfile);
     if (!writeRes.success) {
-      return { success: false, error: writeRes.error, message: `파일 저장 실패: ${writeRes.error}` };
+      return {
+        success: false,
+        writeProtected: Boolean(writeRes.writeProtected),
+        error: writeRes.error,
+        message: `파일 저장 실패: ${writeRes.error}`,
+      };
     }
     return {
       success: true,
@@ -1337,6 +1445,27 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
     if (downloadState.cancelled) {
       cleanupStaging();
       return { success: false, cancelled: true, error: '사용자에 의해 다운로드가 취소되었습니다.' };
+    }
+
+    // Re-verify real write-safety on portable USB directory before closing app or modifying existing EXE
+    const preSpawnWriteCheck = probeDirectoryWriteSafety(runtime.portableDir);
+    if (!preSpawnWriteCheck.writable) {
+      cleanupStaging();
+      const preSpawnErr =
+        preSpawnWriteCheck.writeError ||
+        '포터블 USB 폴더가 쓰기 금지(읽기 전용) 상태로 변경되어 기존 실행 파일을 보호하기 위해 교체를 중단했습니다.';
+      emitUpdateProgress({
+        phase: 'error',
+        percent: 0,
+        downloadedBytes: dlRes.downloadedBytes,
+        totalBytes: dlRes.downloadedBytes,
+        message: preSpawnErr,
+      });
+      return {
+        success: false,
+        writeProtected: Boolean(preSpawnWriteCheck.writeProtected),
+        error: preSpawnErr,
+      };
     }
 
     emitUpdateProgress({

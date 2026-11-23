@@ -11,6 +11,8 @@ import {
   PipelineStep,
   PortableHostShareEntry,
   PortableStorageStatus,
+  ShareAuthProbeResult,
+  SmartAuthDetectionResult,
 } from '@/types/share';
 import { decodeConnectionCode, resolveClientAccountCredentials, validateShareName, validateTargetHost } from '@/utils/connectionCode';
 import {
@@ -20,8 +22,10 @@ import {
   formatSnapshotTimestamp,
 } from '@/services/networkEvolution';
 import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
+import { shareBridge } from '@/services/shareBridge';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
+import { ShareAuthProbeBar } from './ShareAuthProbeBar';
 
 interface ClientPanelProps {
   peers: DiscoveredPeer[];
@@ -42,13 +46,21 @@ interface ClientPanelProps {
   onClearPendingAutoFill?: () => void;
   onPortableAutoFill?: (entry: PortableHostShareEntry) => void;
   initialConfig?: ClientTargetConfig;
-  pendingClientAuthMode?: { key: string; authMode: 'guest' | 'account' } | null;
+  pendingClientAuthMode?: {
+    key: string;
+    authMode: 'guest' | 'account';
+    switchedFrom?: 'guest' | 'account';
+    targetHost?: string;
+    shareName?: string;
+    smartResult?: SmartAuthDetectionResult;
+  } | null;
   pendingLocationTarget?: { key: string; target: LocationClientTargetEntry } | null;
   savedLocationTargets?: LocationClientTargetEntry[];
   activeLocationName?: string;
   onClearPendingClientAuthMode?: () => void;
   onClearPendingLocationTarget?: () => void;
   onConfigChange?: (config: ClientTargetConfig) => void;
+  onAbshareTokenValidityChange?: (valid: boolean) => void;
   onOpenMatrix?: () => void;
   onScanLan: () => Promise<void>;
   onRefresh?: () => Promise<void>;
@@ -62,6 +74,11 @@ interface ClientPanelProps {
 }
 
 const DRIVE_LETTERS = ['Z:', 'Y:', 'X:', 'W:', 'V:', 'S:', 'M:'];
+const AUTO_PROBE_SWITCH_KEY = 'ahbishare_auto_probe_switch';
+
+function makeShareTargetKey(host: string, share: string): string {
+  return `${String(host || '').trim().toLowerCase()}::${String(share || '').trim().toLowerCase()}`;
+}
 
 export const ClientPanel: React.FC<ClientPanelProps> = ({
   peers,
@@ -89,6 +106,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onClearPendingClientAuthMode,
   onClearPendingLocationTarget,
   onConfigChange,
+  onAbshareTokenValidityChange,
   onOpenMatrix,
   onScanLan,
   onRefresh,
@@ -111,8 +129,30 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   const [deletingPortable, setDeletingPortable] = useState(false);
   const [deletingPolicySnap, setDeletingPolicySnap] = useState(false);
   const [showClientPass, setShowClientPass] = useState(false);
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(AUTO_PROBE_SWITCH_KEY) !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [probeResult, setProbeResult] = useState<ShareAuthProbeResult | null>(null);
+  const [smartResult, setSmartResult] = useState<SmartAuthDetectionResult | null>(null);
+  const [isProbingAuth, setIsProbingAuth] = useState(false);
+  const [autoSwitchedTo, setAutoSwitchedTo] = useState<'guest' | 'account' | null>(null);
+  const [autoSwitchedFrom, setAutoSwitchedFrom] = useState<'guest' | 'account' | null>(null);
+
   const hostCmdTimerRef = useRef<number | null>(null);
   const lastAuthModeSwitchKeyRef = useRef<string | null>(null);
+  const probeSeqRef = useRef(0);
+  const probeTimerRef = useRef<number | null>(null);
+  const inFlightProbeRef = useRef<{
+    key: string;
+    seq: number;
+    promise: Promise<ShareAuthProbeResult | null>;
+  } | null>(null);
+  const completedProbeRef = useRef<{ key: string; result: ShareAuthProbeResult | null } | null>(null);
+  const suppressedAutoSwitchKeysRef = useRef<Set<string>>(new Set());
 
   const mountedSet = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
 
@@ -127,19 +167,45 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       persistent: true,
     }
   );
+  const configRef = useRef(config);
+  configRef.current = config;
+  const autoSwitchEnabledRef = useRef(autoSwitchEnabled);
+  autoSwitchEnabledRef.current = autoSwitchEnabled;
+  const rawCodeRef = useRef(rawCodeInput);
+  rawCodeRef.current = rawCodeInput;
+  const codeParseStateRef = useRef(codeParseState);
+  codeParseStateRef.current = codeParseState;
   const lastLocationTargetKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
+    const onAutoSwitchSync = (ev: Event) => {
+      const customEv = ev as CustomEvent<boolean>;
+      if (typeof customEv.detail === 'boolean') {
+        setAutoSwitchEnabled(customEv.detail);
+      }
+    };
+    window.addEventListener('ahbishare:autoswitch-changed', onAutoSwitchSync);
     return () => {
+      window.removeEventListener('ahbishare:autoswitch-changed', onAutoSwitchSync);
       if (hostCmdTimerRef.current !== null) {
         window.clearTimeout(hostCmdTimerRef.current);
       }
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+      }
+      probeSeqRef.current += 1;
+      inFlightProbeRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     onConfigChange?.(config);
   }, [config, onConfigChange]);
+
+  useEffect(() => {
+    const valid = rawCodeInput.trim().startsWith('ABSHARE://') && codeParseState === 'valid';
+    onAbshareTokenValidityChange?.(valid);
+  }, [rawCodeInput, codeParseState, onAbshareTokenValidityChange]);
 
   // Automatically pick an available drive letter if the currently selected letter becomes occupied
   useEffect(() => {
@@ -159,6 +225,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     setValidationError(null);
     setRawCodeInput('');
     setCodeParseState('empty');
+    setAutoSwitchedTo(null);
+    setAutoSwitchedFrom(null);
     setConfig({
       targetHost: t.targetHost,
       shareName: t.shareName,
@@ -189,44 +257,259 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     [peers]
   );
 
-  const switchToAccountMode = useCallback(() => {
-    setValidationError(null);
-    const resolved = resolveClientAccountCredentials({
-      targetHost: config.targetHost,
-      hostCandidates: getHostCandidates(config.targetHost),
-      shareName: config.shareName,
-      requireAccountOnly: true,
+  const switchToAccountMode = useCallback(
+    (hostOverride?: unknown, shareOverride?: unknown) => {
+      const targetHost = typeof hostOverride === 'string' ? hostOverride : configRef.current.targetHost;
+      const shareName = typeof shareOverride === 'string' ? shareOverride : configRef.current.shareName;
+      setValidationError(null);
+      const resolved = resolveClientAccountCredentials({
+        targetHost,
+        hostCandidates: getHostCandidates(targetHost),
+        shareName,
+        requireAccountOnly: true,
+        savedLocationTargets,
+        locationSavedShares,
+        locationHostPreset,
+        portableShares,
+        activeShares,
+      });
+      setConfig((prev) => ({
+        ...prev,
+        authMode: 'account',
+        username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
+        password: prev.password ? prev.password : resolved?.password || '',
+      }));
+    },
+    [
+      getHostCandidates,
       savedLocationTargets,
       locationSavedShares,
       locationHostPreset,
       portableShares,
       activeShares,
-    });
-    setConfig((prev) => ({
-      ...prev,
-      authMode: 'account',
-      username: prev.username.trim() ? prev.username : resolved?.username || 'AhBiShare',
-      password: prev.password ? prev.password : resolved?.password || '',
-    }));
-  }, [
-    config.targetHost,
-    config.shareName,
-    getHostCandidates,
-    savedLocationTargets,
-    locationSavedShares,
-    locationHostPreset,
-    portableShares,
-    activeShares,
-  ]);
+    ]
+  );
+
+  const handleToggleAutoSwitch = (next: boolean) => {
+    setAutoSwitchEnabled(next);
+    autoSwitchEnabledRef.current = next;
+    try {
+      window.localStorage.setItem(AUTO_PROBE_SWITCH_KEY, next ? 'true' : 'false');
+    } catch {}
+    try {
+      window.dispatchEvent(new CustomEvent<boolean>('ahbishare:autoswitch-changed', { detail: next }));
+    } catch {}
+  };
+
+  const runShareAuthProbe = useCallback(
+    async (
+      hostArg?: string,
+      shareArg?: string,
+      options?: { manual?: boolean; allowAutoSwitch?: boolean }
+    ): Promise<ShareAuthProbeResult | null> => {
+      const host = String(hostArg ?? configRef.current.targetHost).trim();
+      const share = String(shareArg ?? configRef.current.shareName).trim();
+      if (!host || !share || validateTargetHost(host) || validateShareName(share)) {
+        completedProbeRef.current = null;
+        inFlightProbeRef.current = null;
+        setProbeResult(null);
+        setSmartResult(null);
+        setAutoSwitchedTo(null);
+        setAutoSwitchedFrom(null);
+        return null;
+      }
+
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+
+      const key = makeShareTargetKey(host, share);
+      if (options?.manual) {
+        suppressedAutoSwitchKeysRef.current.delete(key);
+        shareBridge.setSmartAuthSuppressed(host, share, false);
+        completedProbeRef.current = null;
+      }
+
+      const seq = (probeSeqRef.current += 1);
+      setIsProbingAuth(true);
+
+      const probeTask = (async (): Promise<ShareAuthProbeResult | null> => {
+        try {
+          const initialCfg = configRef.current;
+          const initialValidAbshare =
+            rawCodeRef.current.trim().startsWith('ABSHARE://') && codeParseStateRef.current === 'valid';
+          const isSuppressed =
+            suppressedAutoSwitchKeysRef.current.has(key) || shareBridge.isSmartAuthSuppressed(host, share);
+          const initialDetection = await shareBridge.detectSmartShareAuth({
+            targetHost: host,
+            shareName: share,
+            currentAuthMode: initialCfg.authMode,
+            hasTypedPassword: Boolean(initialCfg.password),
+            autoSwitchEnabled: options?.allowAutoSwitch !== false && autoSwitchEnabledRef.current,
+            suppressed: isSuppressed,
+            hasValidAbshareToken: initialValidAbshare,
+            forceProbe: Boolean(options?.manual),
+            peers,
+            savedLocationTargets,
+            locationSavedShares,
+            locationHostPreset,
+            portableShares,
+            activeShares,
+          });
+          if (seq !== probeSeqRef.current) return null;
+
+          const curCfg = configRef.current;
+          const stillSameTarget = makeShareTargetKey(curCfg.targetHost, curCfg.shareName) === key;
+          const hasValidAbshareToken =
+            rawCodeRef.current.trim().startsWith('ABSHARE://') && codeParseStateRef.current === 'valid';
+          const decision = stillSameTarget
+            ? shareBridge.evaluateSmartAuthDecision(
+                initialDetection.probe,
+                {
+                  currentAuthMode: curCfg.authMode,
+                  hasTypedPassword: Boolean(curCfg.password),
+                  autoSwitchEnabled: options?.allowAutoSwitch !== false && autoSwitchEnabledRef.current,
+                  suppressed:
+                    suppressedAutoSwitchKeysRef.current.has(key) || shareBridge.isSmartAuthSuppressed(host, share),
+                  hasValidAbshareToken,
+                  peers,
+                  savedLocationTargets,
+                  locationSavedShares,
+                  locationHostPreset,
+                  portableShares,
+                  activeShares,
+                },
+                initialDetection.fromCache
+              )
+            : initialDetection;
+
+          completedProbeRef.current = { key, result: decision.probe };
+          setIsProbingAuth(false);
+          setProbeResult(decision.probe);
+          setSmartResult(decision);
+
+          if (stillSameTarget && decision.action === 'auto_switch' && decision.switchToMode) {
+            if (decision.switchToMode === 'account') {
+              setValidationError(null);
+              setConfig((prev) => ({
+                ...prev,
+                authMode: 'account',
+                username: prev.username.trim() ? prev.username : decision.suggestedUsername || 'AhBiShare',
+                password: prev.password ? prev.password : decision.suggestedPassword || '',
+              }));
+              setAutoSwitchedTo('account');
+              setAutoSwitchedFrom(decision.switchedFromMode || 'guest');
+            } else if (decision.switchToMode === 'guest') {
+              setConfig((prev) => ({ ...prev, authMode: 'guest' }));
+              setAutoSwitchedTo('guest');
+              setAutoSwitchedFrom(decision.switchedFromMode || 'account');
+            }
+          } else {
+            setAutoSwitchedTo(null);
+            setAutoSwitchedFrom(null);
+          }
+
+          return decision.probe;
+        } catch {
+          if (seq === probeSeqRef.current) {
+            setIsProbingAuth(false);
+          }
+          return null;
+        } finally {
+          if (inFlightProbeRef.current?.seq === seq) {
+            inFlightProbeRef.current = null;
+          }
+        }
+      })();
+
+      inFlightProbeRef.current = { key, seq, promise: probeTask };
+      return probeTask;
+    },
+    [
+      peers,
+      savedLocationTargets,
+      locationSavedShares,
+      locationHostPreset,
+      portableShares,
+      activeShares,
+    ]
+  );
+
+  // Debounced auto-probe when user manually edits host or shareName
+  useEffect(() => {
+    const cleanHost = config.targetHost.trim();
+    const cleanShare = config.shareName.trim();
+    if (!cleanHost || !cleanShare || validateTargetHost(cleanHost) || validateShareName(cleanShare)) {
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+      probeSeqRef.current += 1;
+      inFlightProbeRef.current = null;
+      completedProbeRef.current = null;
+      setIsProbingAuth(false);
+      setProbeResult(null);
+      setSmartResult(null);
+      setAutoSwitchedTo(null);
+      setAutoSwitchedFrom(null);
+      return;
+    }
+
+    const key = makeShareTargetKey(cleanHost, cleanShare);
+    if (inFlightProbeRef.current?.key === key || completedProbeRef.current?.key === key) {
+      return;
+    }
+
+    setProbeResult(null);
+    setSmartResult(null);
+    setAutoSwitchedTo(null);
+    setAutoSwitchedFrom(null);
+
+    if (probeTimerRef.current !== null) {
+      window.clearTimeout(probeTimerRef.current);
+    }
+    probeTimerRef.current = window.setTimeout(() => {
+      probeTimerRef.current = null;
+      void runShareAuthProbe(cleanHost, cleanShare);
+    }, 650);
+
+    return () => {
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+    };
+  }, [config.targetHost, config.shareName, runShareAuthProbe]);
 
   useEffect(() => {
     if (!pendingClientAuthMode || pendingClientAuthMode.key === lastAuthModeSwitchKeyRef.current) return;
     lastAuthModeSwitchKeyRef.current = pendingClientAuthMode.key;
     if (pendingClientAuthMode.authMode === 'account') {
-      switchToAccountMode();
+      switchToAccountMode(pendingClientAuthMode.targetHost, pendingClientAuthMode.shareName);
     } else {
       setValidationError(null);
       setConfig((prev) => ({ ...prev, authMode: 'guest' }));
+    }
+    if (pendingClientAuthMode.smartResult) {
+      const hostKey = pendingClientAuthMode.targetHost || configRef.current.targetHost;
+      const shareKey = pendingClientAuthMode.shareName || configRef.current.shareName;
+      const targetKey = makeShareTargetKey(hostKey, shareKey);
+      if (probeTimerRef.current !== null) {
+        window.clearTimeout(probeTimerRef.current);
+        probeTimerRef.current = null;
+      }
+      probeSeqRef.current += 1;
+      inFlightProbeRef.current = null;
+      completedProbeRef.current = { key: targetKey, result: pendingClientAuthMode.smartResult.probe };
+      setIsProbingAuth(false);
+      setProbeResult(pendingClientAuthMode.smartResult.probe);
+      setSmartResult(pendingClientAuthMode.smartResult);
+      setAutoSwitchedTo(pendingClientAuthMode.authMode);
+      setAutoSwitchedFrom(
+        pendingClientAuthMode.switchedFrom ||
+          (pendingClientAuthMode.authMode === 'account' ? 'guest' : 'account')
+      );
     }
     onClearPendingClientAuthMode?.();
   }, [pendingClientAuthMode, switchToAccountMode, onClearPendingClientAuthMode]);
@@ -264,6 +547,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       const username = entry.authMode === 'account' ? entry.username || decoded?.username || resolved?.username || 'AhBiShare' : '';
       const password = entry.authMode === 'account' ? entry.password || decoded?.password || resolved?.password || '' : '';
 
+      setAutoSwitchedTo(null);
+      setAutoSwitchedFrom(null);
       setConfig((prev) => ({
         ...prev,
         targetHost,
@@ -311,6 +596,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     const decoded = decodeConnectionCode(val);
     if (decoded) {
       setCodeParseState('valid');
+      setAutoSwitchedTo(null);
+      setAutoSwitchedFrom(null);
       const resolved = decoded.authMode === 'account' ? resolveClientAccountCredentials({
         targetHost: decoded.ip || decoded.hostName,
         hostCandidates: getHostCandidates(decoded.ip || decoded.hostName, [decoded.ip, decoded.hostName]),
@@ -337,6 +624,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
   const handleSelectPeerShare = (peer: DiscoveredPeer, shareName: string) => {
     setValidationError(null);
+    setAutoSwitchedTo(null);
+    setAutoSwitchedFrom(null);
     const exactCode = peer.shareCodes?.[shareName];
     if (exactCode) {
       handleCodeChange(exactCode);
@@ -357,17 +646,56 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       activeShares,
     });
     const authMode = peer.authModeHint === 'account' || resolved?.authMode === 'account' ? 'account' : 'guest';
-    setConfig((prev) => ({
-      ...prev,
+    const nextCfg: ClientTargetConfig = {
+      ...configRef.current,
       targetHost,
       shareName,
       authMode,
       username: authMode === 'account' ? resolved?.username || 'AhBiShare' : '',
       password: authMode === 'account' ? resolved?.password || '' : '',
-    }));
+    };
+    configRef.current = nextCfg;
+    setConfig(nextCfg);
+    void runShareAuthProbe(targetHost, shareName);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleCopyHostGuestCmd = useCallback(async () => {
+    const cmd = buildHostGuestUnlockPsCommand(configRef.current.shareName);
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(cmd);
+        ok = true;
+      }
+    } catch {}
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = cmd;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
+    }
+    if (ok) {
+      if (hostCmdTimerRef.current !== null) {
+        window.clearTimeout(hostCmdTimerRef.current);
+      }
+      setHostCmdCopied(true);
+      hostCmdTimerRef.current = window.setTimeout(() => {
+        setHostCmdCopied(false);
+        hostCmdTimerRef.current = null;
+      }, 2000);
+    }
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isConnecting || isRefreshing) return;
     const hostErr = validateTargetHost(config.targetHost);
@@ -380,6 +708,31 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       setValidationError(shareErr);
       return;
     }
+
+    const targetKey = makeShareTargetKey(config.targetHost, config.shareName);
+    const hasValidAbshareToken =
+      rawCodeInput.trim().startsWith('ABSHARE://') && codeParseState === 'valid';
+    if (
+      config.authMode === 'guest' &&
+      autoSwitchEnabled &&
+      !suppressedAutoSwitchKeysRef.current.has(targetKey) &&
+      !shareBridge.isSmartAuthSuppressed(config.targetHost, config.shareName) &&
+      !hasValidAbshareToken
+    ) {
+      let preProbe: ShareAuthProbeResult | null = null;
+      if (inFlightProbeRef.current?.key === targetKey) {
+        preProbe = await inFlightProbeRef.current.promise;
+      } else if (completedProbeRef.current?.key !== targetKey) {
+        preProbe = await runShareAuthProbe(config.targetHost, config.shareName);
+      }
+      if (preProbe && (preProbe.verdict === 'account_required' || preProbe.verdict === 'host_guest_denied')) {
+        setValidationError(
+          '대상 공유폴더가 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환했습니다. 아이디·암호를 확인한 뒤 [원클릭 공유폴더 연결]을 다시 실행하세요.'
+        );
+        return;
+      }
+    }
+
     if (config.authMode === 'account') {
       if (!config.username.trim()) {
         setValidationError('보안 계정 연결 모드에서는 사용자 ID를 입력하세요.');
@@ -665,7 +1018,15 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               {codeParseState === 'valid' && (
                 <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
                   <Check className="w-3.5 h-3.5 shrink-0" />
-                  연결 코드 확인 완료 · 대상: \\{config.targetHost}\{config.shareName} ({config.authMode === 'account' ? '보안 계정 포함' : '무비밀번호 모드'})
+                  연결 코드 확인 완료 · 대상: \\{config.targetHost}\{config.shareName} (
+                  {rawCodeInput.trim().startsWith('ABSHARE://')
+                    ? config.authMode === 'account'
+                      ? '보안 계정 포함'
+                      : '무비밀번호 모드'
+                    : config.authMode === 'account'
+                      ? '보안 계정 모드'
+                      : '무비밀번호 모드'}
+                  )
                 </p>
               )}
               {codeParseState === 'invalid' && (
@@ -696,6 +1057,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         setValidationError(null);
                         setRawCodeInput('');
                         setCodeParseState('empty');
+                        setAutoSwitchedTo(null);
+                        setAutoSwitchedFrom(null);
                         const resolved = target.authMode === 'account' ? resolveClientAccountCredentials({
                           targetHost: target.targetHost,
                           hostCandidates: getHostCandidates(target.targetHost),
@@ -757,7 +1120,19 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         <tr key={peer.ipAddress} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                           <td className="py-2.5 px-3 align-top">
                             <div className="font-semibold text-slate-900 dark:text-slate-100">{peer.hostName}</div>
-                            <div className="tabular-data text-slate-500 dark:text-slate-400">{peer.ipAddress}</div>
+                            <div className="tabular-data text-slate-500 dark:text-slate-400">
+                              {peer.ipAddress}
+                              {peer.authModeHint === 'account' && (
+                                <span className="text-indigo-600 dark:text-indigo-400 font-medium">
+                                  {' '}· 계정 인증 추정
+                                </span>
+                              )}
+                              {peer.authModeHint === 'guest' && (
+                                <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                                  {' '}· 무비밀번호 응답
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-2.5 px-3">
                             <div className="flex flex-wrap gap-1.5">
@@ -817,7 +1192,27 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   value={config.targetHost}
                   onChange={(e) => {
                     setValidationError(null);
-                    setConfig({ ...config, targetHost: e.target.value });
+                    if (rawCodeInput) {
+                      setRawCodeInput('');
+                      setCodeParseState('empty');
+                    }
+                    const rawVal = e.target.value;
+                    const uncMatch = rawVal.trim().replace(/\//g, '\\').match(/^\\\\([^\\]+)\\([^\\]+)/);
+                    if (uncMatch) {
+                      setConfig({
+                        ...config,
+                        targetHost: uncMatch[1].trim(),
+                        shareName: uncMatch[2].trim(),
+                      });
+                    } else {
+                      setConfig({ ...config, targetHost: rawVal });
+                    }
+                  }}
+                  onBlur={() => {
+                    const key = makeShareTargetKey(config.targetHost, config.shareName);
+                    if (inFlightProbeRef.current?.key !== key && completedProbeRef.current?.key !== key) {
+                      void runShareAuthProbe(config.targetHost, config.shareName);
+                    }
                   }}
                   className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
@@ -833,7 +1228,17 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   value={config.shareName}
                   onChange={(e) => {
                     setValidationError(null);
+                    if (rawCodeInput) {
+                      setRawCodeInput('');
+                      setCodeParseState('empty');
+                    }
                     setConfig({ ...config, shareName: e.target.value });
+                  }}
+                  onBlur={() => {
+                    const key = makeShareTargetKey(config.targetHost, config.shareName);
+                    if (inFlightProbeRef.current?.key !== key && completedProbeRef.current?.key !== key) {
+                      void runShareAuthProbe(config.targetHost, config.shareName);
+                    }
                   }}
                   className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
@@ -858,12 +1263,60 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               </div>
             </div>
 
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
+              <ShareAuthProbeBar
+                idPrefix="client"
+                probeResult={probeResult}
+                smartResult={smartResult}
+                isProbing={isProbingAuth}
+                autoSwitchEnabled={autoSwitchEnabled}
+                autoSwitchedTo={autoSwitchedTo}
+                currentAuthMode={config.authMode}
+                targetHost={config.targetHost}
+                shareName={config.shareName}
+                disabled={isConnecting || isRefreshing}
+                onToggleAutoSwitch={handleToggleAutoSwitch}
+                onManualProbe={() => {
+                  void runShareAuthProbe(config.targetHost, config.shareName, { manual: true });
+                }}
+                onSwitchToAccount={() => {
+                  setAutoSwitchedTo(null);
+                  setAutoSwitchedFrom(null);
+                  switchToAccountMode(config.targetHost, config.shareName);
+                }}
+                onSwitchToGuest={() => {
+                  setAutoSwitchedTo(null);
+                  setAutoSwitchedFrom(null);
+                  setValidationError(null);
+                  setConfig((prev) => ({ ...prev, authMode: 'guest' }));
+                }}
+                onUndoAutoSwitch={() => {
+                  const key = makeShareTargetKey(config.targetHost, config.shareName);
+                  suppressedAutoSwitchKeysRef.current.add(key);
+                  shareBridge.setSmartAuthSuppressed(config.targetHost, config.shareName, true);
+                  if (autoSwitchedFrom) {
+                    setConfig((prev) => ({ ...prev, authMode: autoSwitchedFrom }));
+                  }
+                  setAutoSwitchedTo(null);
+                  setAutoSwitchedFrom(null);
+                  setValidationError(null);
+                }}
+                onOpenMatrix={onOpenMatrix}
+                onCopyHostGuestCmd={() => {
+                  void handleCopyHostGuestCmd();
+                }}
+                hostCmdCopied={hostCmdCopied}
+              />
+            </div>
+
             <div className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg">
                 <button
                   type="button"
                   onClick={() => {
                     setValidationError(null);
+                    setAutoSwitchedTo(null);
+                    setAutoSwitchedFrom(null);
                     setConfig({ ...config, authMode: 'guest' });
                   }}
                   className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
@@ -876,7 +1329,11 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={switchToAccountMode}
+                  onClick={() => {
+                    setAutoSwitchedTo(null);
+                    setAutoSwitchedFrom(null);
+                    switchToAccountMode();
+                  }}
                   className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors sm:whitespace-nowrap cursor-pointer ${
                     config.authMode === 'account'
                       ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
@@ -1033,41 +1490,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       <button
                         id="btn-failure-copy-host-cmd"
                         type="button"
-                        onClick={async () => {
-                          const cmd = buildHostGuestUnlockPsCommand(config.shareName);
-                          let ok = false;
-                          try {
-                            if (navigator.clipboard?.writeText) {
-                              await navigator.clipboard.writeText(cmd);
-                              ok = true;
-                            }
-                          } catch {}
-                            if (!ok) {
-                            try {
-                              const ta = document.createElement('textarea');
-                              ta.value = cmd;
-                              ta.setAttribute('readonly', '');
-                              ta.style.position = 'fixed';
-                              ta.style.left = '-9999px';
-                              document.body.appendChild(ta);
-                              ta.focus();
-                              ta.select();
-                              ta.setSelectionRange(0, ta.value.length);
-                              ok = document.execCommand('copy');
-                              document.body.removeChild(ta);
-                            } catch {}
-                          }
-                          if (ok) {
-                            if (hostCmdTimerRef.current !== null) {
-                              window.clearTimeout(hostCmdTimerRef.current);
-                            }
-                            setHostCmdCopied(true);
-                            hostCmdTimerRef.current = window.setTimeout(() => {
-                              setHostCmdCopied(false);
-                              hostCmdTimerRef.current = null;
-                            }, 2000);
-                          }
-                        }}
+                        onClick={() => void handleCopyHostGuestCmd()}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-lg cursor-pointer"
                       >
                         {hostCmdCopied ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}

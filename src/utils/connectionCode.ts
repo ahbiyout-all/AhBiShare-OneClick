@@ -1,4 +1,4 @@
-import { ConnectionTokenPayload } from '@/types/share';
+import { ActiveShare, ConnectionTokenPayload } from '@/types/share';
 
 const TOKEN_PREFIX = 'ABSHARE://';
 const INVALID_SHARE_CHARS = /[\\/:*?"<>|]/;
@@ -59,6 +59,11 @@ export function validateTargetHost(host: string): string | null {
     return 'IP 주소 또는 호스트 이름에 공백이나 허용되지 않는 특수문자를 포함할 수 없습니다.';
   }
   return null;
+}
+
+export function isValidIpv4Address(value: string): boolean {
+  const trimmed = String(value || '').trim();
+  return /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/.test(trimmed);
 }
 
 export function validateAccountUsername(username: string): string | null {
@@ -354,3 +359,23 @@ export function resolveClientAccountCredentials(params: {
 
   return null;
 }
+
+export function resolveActiveShareUncPath(
+  share: Pick<ActiveShare, 'uncPath' | 'shareName' | 'sourceIp' | 'sourceHostName'>,
+  fallbackHost?: string
+): string {
+  const rawUnc = String(share.uncPath || '')
+    .trim()
+    .replace(/\//g, '\\')
+    .replace(/^(\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|]+)\\+$/, '$1');
+  if (/^\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|]+(?:\\.*)?$/.test(rawUnc)) {
+    return rawUnc;
+  }
+  const host = String(share.sourceIp || share.sourceHostName || fallbackHost || '').trim();
+  const name = String(share.shareName || '').trim();
+  if (host && name && !validateTargetHost(host) && !validateShareName(name)) {
+    return `\\\\${host}\\${name}`;
+  }
+  return '';
+}
+

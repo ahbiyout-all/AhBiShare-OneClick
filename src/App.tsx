@@ -27,10 +27,11 @@ import {
   LocationProfileSummary,
   LocationBatchApplyResult,
   LocationPreflightReport,
+  SmartAuthDetectionResult,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
-import { generateSecureSharePassword } from '@/utils/connectionCode';
+import { generateSecureSharePassword, isValidIpv4Address } from '@/utils/connectionCode';
 import { formatEraShortLabel, formatSnapshotTimestamp, getPolicyPatchLabel } from '@/services/networkEvolution';
 import { TopBar } from '@/components/TopBar';
 import { HostPanel } from '@/components/HostPanel';
@@ -181,11 +182,29 @@ export const App: React.FC = () => {
   const [pendingClientAuthMode, setPendingClientAuthMode] = useState<{
     key: string;
     authMode: 'guest' | 'account';
+    switchedFrom?: 'guest' | 'account';
+    targetHost?: string;
+    shareName?: string;
+    smartResult?: SmartAuthDetectionResult;
   } | null>(null);
   const [pendingLocationTarget, setPendingLocationTarget] = useState<{
     key: string;
     target: LocationClientTargetEntry;
   } | null>(null);
+  const clientDraftRef = useRef(clientDraft);
+  clientDraftRef.current = clientDraft;
+  const peersRef = useRef(peers);
+  peersRef.current = peers;
+  const sharesRef = useRef(shares);
+  sharesRef.current = shares;
+  const portableSharesRef = useRef(portableShares);
+  portableSharesRef.current = portableShares;
+  const initialClientHostRef = useRef(clientDraft.targetHost);
+  const hasUserEditedClientHostRef = useRef(false);
+  const hasValidAbshareTokenRef = useRef(false);
+  const skipNextIpProbeHostRef = useRef<string | null>(null);
+  const smbProbeSeqRef = useRef(0);
+  const lastNotifiedSmbSwitchRef = useRef('');
 
   useEffect(() => {
     const root = document.documentElement;
@@ -228,6 +247,134 @@ export const App: React.FC = () => {
       toastTimerRef.current = null;
     }, 3200);
   }, []);
+
+  const probeSmbTarget = useCallback(
+    async (targetIp: string) => {
+      const cleanIp = String(targetIp || '').trim();
+      if (!isValidIpv4Address(cleanIp)) return;
+
+      const seq = (smbProbeSeqRef.current += 1);
+      const latestDraft = clientDraftRef.current;
+      const targetShare = latestDraft.shareName.trim() || 'WorkDocs';
+      const activeLoc = activeLocationProfileRef.current;
+      let autoSwitchPref = true;
+      try {
+        autoSwitchPref = window.localStorage.getItem('ahbishare_auto_probe_switch') !== 'false';
+      } catch {}
+
+      try {
+        const detection = await shareBridge.probeSmbTarget(
+          cleanIp,
+          targetShare,
+          {
+            currentAuthMode: latestDraft.authMode,
+            hasTypedPassword: Boolean(latestDraft.password),
+            autoSwitchEnabled: autoSwitchPref,
+            suppressed: shareBridge.isSmartAuthSuppressed(cleanIp, targetShare),
+            hasValidAbshareToken: hasValidAbshareTokenRef.current,
+            peers: peersRef.current,
+            savedLocationTargets: activeLoc?.clientTargets || [],
+            locationSavedShares: activeLoc?.savedShares || [],
+            locationHostPreset: activeLoc?.hostPreset || null,
+            portableShares: portableSharesRef.current,
+            activeShares: sharesRef.current,
+          }
+        );
+        if (seq !== smbProbeSeqRef.current) return;
+
+        const currentAfterProbe = clientDraftRef.current;
+        const currentShareAfterProbe = currentAfterProbe.shareName.trim() || 'WorkDocs';
+        if (currentAfterProbe.targetHost.trim() !== cleanIp) return;
+
+        const finalDecision = shareBridge.evaluateSmartAuthDecision(
+          detection.probe,
+          {
+            currentAuthMode: currentAfterProbe.authMode,
+            hasTypedPassword: Boolean(currentAfterProbe.password),
+            autoSwitchEnabled: autoSwitchPref,
+            suppressed: shareBridge.isSmartAuthSuppressed(cleanIp, currentShareAfterProbe),
+            hasValidAbshareToken: hasValidAbshareTokenRef.current,
+            peers: peersRef.current,
+            savedLocationTargets: activeLoc?.clientTargets || [],
+            locationSavedShares: activeLoc?.savedShares || [],
+            locationHostPreset: activeLoc?.hostPreset || null,
+            portableShares: portableSharesRef.current,
+            activeShares: sharesRef.current,
+          },
+          detection.fromCache
+        );
+
+        if (finalDecision.action !== 'auto_switch' || !finalDecision.switchToMode) return;
+        const detectedMode = finalDecision.switchToMode;
+        if (detectedMode === currentAfterProbe.authMode) return;
+        const previousMode = currentAfterProbe.authMode;
+
+        setClientDraft((prev) => {
+          if (prev.targetHost.trim() !== cleanIp || prev.authMode === detectedMode) {
+            return prev;
+          }
+          if (detectedMode === 'account') {
+            return {
+              ...prev,
+              authMode: 'account',
+              username: prev.username.trim()
+                ? prev.username
+                : finalDecision.suggestedUsername || 'AhBiShare',
+              password: prev.password ? prev.password : finalDecision.suggestedPassword || '',
+            };
+          }
+          return {
+            ...prev,
+            authMode: 'guest',
+          };
+        });
+
+        setPendingClientAuthMode({
+          key: `probe-smb-${cleanIp}-${detectedMode}-${Date.now()}`,
+          authMode: detectedMode,
+          switchedFrom: previousMode,
+          targetHost: cleanIp,
+          shareName: currentShareAfterProbe,
+          smartResult: finalDecision,
+        });
+
+        const notifyKey = `${cleanIp}:${previousMode}->${detectedMode}`;
+        if (lastNotifiedSmbSwitchRef.current !== notifyKey) {
+          lastNotifiedSmbSwitchRef.current = notifyKey;
+          showToast(
+            detectedMode === 'account'
+              ? `스마트 인증 감지(${cleanIp}): 보안 계정 인증이 감지되어 '보안 계정' 모드로 자동 전환했습니다.`
+              : `스마트 인증 감지(${cleanIp}): 무비밀번호(Guest) 접근이 허용되어 '무비밀번호' 모드로 자동 전환했습니다.`
+          );
+        }
+      } catch {
+        // Silent fallback: manual probe bar remains available in ClientPanel
+      }
+    },
+    [showToast]
+  );
+
+  useEffect(() => {
+    const cleanTargetIp = clientDraft.targetHost.trim();
+    if (skipNextIpProbeHostRef.current && skipNextIpProbeHostRef.current === cleanTargetIp) {
+      skipNextIpProbeHostRef.current = null;
+      return;
+    }
+    if (cleanTargetIp !== initialClientHostRef.current) {
+      hasUserEditedClientHostRef.current = true;
+    }
+    if (!hasUserEditedClientHostRef.current || !isValidIpv4Address(cleanTargetIp)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void probeSmbTarget(cleanTargetIp);
+    }, 450);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [clientDraft.targetHost, probeSmbTarget]);
 
   const appendLog = useCallback((role: string, summary: string, status: 'success' | 'error') => {
     setActivityLog((prev) => [
@@ -1823,6 +1970,7 @@ export const App: React.FC = () => {
 
       if (profile.clientTargets.length > 0) {
         const firstTarget = profile.clientTargets[0];
+        skipNextIpProbeHostRef.current = firstTarget.targetHost.trim();
         setClientDraft({
           targetHost: firstTarget.targetHost,
           shareName: firstTarget.shareName,
@@ -1845,6 +1993,7 @@ export const App: React.FC = () => {
           password: sourceShare?.password || '',
           persistent: true,
         };
+        skipNextIpProbeHostRef.current = inferredTarget.targetHost.trim();
         setClientDraft({
           targetHost: inferredTarget.targetHost,
           shareName: inferredTarget.shareName,
@@ -2383,7 +2532,7 @@ export const App: React.FC = () => {
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>
               {!portableStatus.writable
-                ? `실행 파일 폴더(${portableStatus.directory})가 쓰기 금지 상태이므로 변경 사항이 USB ${portableStatus.fileName}에 자동 저장되지 않습니다.`
+                ? `실행 파일 폴더(${portableStatus.directory})가 ${portableStatus.writeProtected ? '쓰기 금지(읽기 전용)' : '쓰기 불가'} 상태이므로 변경 사항이 USB ${portableStatus.fileName}에 자동 저장되지 않습니다.${portableStatus.writeError ? ` (${portableStatus.writeError})` : ''}`
                 : `손상된 USB 포터블 데이터 파일이 안전하게 백업 복구되었습니다. 공유를 다시 생성하면 새 설정 파일이 자동 기록됩니다.`}
             </span>
           </div>
@@ -2611,6 +2760,9 @@ export const App: React.FC = () => {
             onUnmount={handleUnmount}
             onOpenDrive={handleOpenPath}
             onTargetHostChange={setActiveTargetHost}
+            onAbshareTokenValidityChange={(valid) => {
+              hasValidAbshareTokenRef.current = valid;
+            }}
             onDeleteHostPolicySnapshot={handleDeleteHostPolicySnapshot}
             onDeletePortableShare={handleDeletePortableHostShare}
           />

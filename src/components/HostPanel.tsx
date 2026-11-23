@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { FolderOpen, Play, Copy, Check, QrCode, Trash2, RefreshCw, ExternalLink, Clock, KeyRound, Download } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { HostConfig, ActiveShare, PipelineStep, LocalNetworkInfo } from '@/types/share';
-import { generateSecureSharePassword, validateAccountUsername, validateShareName, validateFolderPath } from '@/utils/connectionCode';
+import { generateSecureSharePassword, resolveActiveShareUncPath, validateAccountUsername, validateShareName, validateFolderPath } from '@/utils/connectionCode';
 import { buildHostGuestUnlockBatchScript } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
@@ -616,6 +616,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
                 {shares.map((share) => {
+                  const uncTarget = resolveActiveShareUncPath(share, netInfo.primaryIp);
                   const ttlState = formatRemainingTime(share.expiresAt, nowMs);
                   const statusBadge = ttlState.expired
                     ? {
@@ -683,12 +684,25 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onOpenFolder(share.folderPath)}
-                          className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md cursor-pointer"
-                          title="폴더 열기"
-                          aria-label={`${share.shareName} 폴더 열기`}
+                          disabled={!uncTarget}
+                          onClick={() => {
+                            if (uncTarget) void onOpenFolder(uncTarget);
+                          }}
+                          title={uncTarget ? `${uncTarget} UNC 경로를 Windows 탐색기에서 열기` : '유효한 UNC 경로가 없습니다'}
+                          aria-label={`${share.shareName} 탐색기에서 열기`}
+                          className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-40 rounded-md inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
                         >
-                          <ExternalLink className="w-4 h-4" />
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          탐색기에서 열기
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onOpenFolder(share.folderPath)}
+                          className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md cursor-pointer"
+                          title="로컬 폴더 열기"
+                          aria-label={`${share.shareName} 로컬 폴더 열기`}
+                        >
+                          <FolderOpen className="w-4 h-4" />
                         </button>
                         <button
                           type="button"

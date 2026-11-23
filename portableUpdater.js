@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { probeDirectoryWriteSafety } = require('./portableStore');
 
 const ALLOWED_GITHUB_REPO = 'ahbiyout-all/AhBiShare-OneClick';
 
@@ -44,6 +45,7 @@ function detectPortableRuntimeInfo({
       isPackaged,
       isPortable: false,
       canSelfReplace: false,
+      writeProtected: false,
       edition,
       currentVersion,
       portableExePath: '',
@@ -62,6 +64,7 @@ function detectPortableRuntimeInfo({
         isPackaged,
         isPortable: true,
         canSelfReplace: false,
+        writeProtected: false,
         edition,
         currentVersion,
         portableExePath: resolvedExe,
@@ -70,12 +73,13 @@ function detectPortableRuntimeInfo({
         reason: '현재 실행 중인 포터블 EXE 원본 경로를 찾을 수 없습니다.',
       };
     }
-    try {
-      fs.accessSync(resolvedDir, fs.constants.W_OK);
+    const writeProbe = probeDirectoryWriteSafety(resolvedDir);
+    if (writeProbe.writable) {
       return {
         isPackaged,
         isPortable: true,
         canSelfReplace: true,
+        writeProtected: false,
         edition,
         currentVersion,
         portableExePath: resolvedExe,
@@ -83,19 +87,21 @@ function detectPortableRuntimeInfo({
         currentExeName,
         reason: '',
       };
-    } catch {
-      return {
-        isPackaged,
-        isPortable: true,
-        canSelfReplace: false,
-        edition,
-        currentVersion,
-        portableExePath: resolvedExe,
-        portableDir: resolvedDir,
-        currentExeName,
-        reason: '실행 중인 포터블 폴더에 쓰기 권한이 없어 자동 교체를 실행할 수 없습니다.',
-      };
     }
+    return {
+      isPackaged,
+      isPortable: true,
+      canSelfReplace: false,
+      writeProtected: Boolean(writeProbe.writeProtected),
+      edition,
+      currentVersion,
+      portableExePath: resolvedExe,
+      portableDir: resolvedDir,
+      currentExeName,
+      reason:
+        writeProbe.writeError ||
+        '실행 중인 포터블 USB/폴더에 쓰기 권한이 없거나 쓰기 금지 상태여서 자동 교체를 실행할 수 없습니다.',
+    };
   }
 
   if (!isPackaged) {
@@ -103,6 +109,7 @@ function detectPortableRuntimeInfo({
       isPackaged: false,
       isPortable: false,
       canSelfReplace: false,
+      writeProtected: false,
       edition,
       currentVersion,
       portableExePath: '',
@@ -116,6 +123,7 @@ function detectPortableRuntimeInfo({
     isPackaged: true,
     isPortable: false,
     canSelfReplace: false,
+    writeProtected: false,
     edition,
     currentVersion,
     portableExePath: '',
@@ -302,6 +310,23 @@ function buildPortableSelfUpdatePsScript({
     '      }',
     '    }',
     '  }',
+    '}',
+    '',
+    "$probeName = '.ahbishare_update_probe_' + $PID + '.tmp'",
+    '$probePath = Join-Path $targetDir $probeName',
+    '$targetDirWritable = $false',
+    'try {',
+    '  $pfs = [System.IO.File]::Open($probePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)',
+    '  $pfs.Close()',
+    '  if (Test-Path -LiteralPath $probePath) { Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue }',
+    '  $targetDirWritable = $true',
+    '} catch {',
+    '  try { if (Test-Path -LiteralPath $probePath) { Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue } } catch {}',
+    '  $targetDirWritable = $false',
+    '}',
+    'if (-not $targetDirWritable) {',
+    "  try { Set-Content -LiteralPath (Join-Path $stagingDir 'update_error.log') -Value 'Target portable directory is write-protected or unwritable; aborted safely before modifying existing EXE.' -Encoding UTF8 } catch {}",
+    '  exit 4',
     '}',
     '',
     "$backupOldExe = Join-Path $stagingDir 'old_portable_backup.exe'",
