@@ -380,6 +380,7 @@ export interface PortableShareDocument {
   shares: PortableHostShareEntry[];
   hostPolicies?: Record<string, HostPolicySnapshot>;
   pendingHostActions?: Record<string, PendingHostPolicyTask>;
+  troubleshootTickets?: TroubleshootTicket[];
   lastClientTarget?: PortableLastClientTarget;
 }
 
@@ -681,4 +682,68 @@ export interface SmartAuthDetectionResult {
   credentialSource?: string;
   fromCache?: boolean;
 }
+
+export type TroubleshootTicketStatus = 'open' | 'host_fixed' | 'client_fixed' | 'resolved';
+export type TroubleshootStepStatus = 'pending' | 'completed' | 'skipped' | 'failed';
+export type TroubleshootExecutorId =
+  | 'host_guest_unlock_and_reopen'
+  | 'apply_safe_compat'
+  | 'apply_legacy_bridge'
+  | 'switch_to_account_mode'
+  | 'clear_conflicting_sessions'
+  | 'verify_port_445'
+  | 'reassign_free_drive'
+  | 'enable_smbv1_client'
+  | 'retry_mount'
+  | 'retry_host_share'
+  | 'manual_check';
+
+export interface TroubleshootWizardStep {
+  stepId: string;
+  side: 'host' | 'client';
+  order: number;
+  title: string;
+  description: string;
+  commandPreview?: string;
+  executor: TroubleshootExecutorId;
+  patchMode?: PolicyPatchMode;
+  status: TroubleshootStepStatus;
+  lastAttemptAt?: string;
+  lastMessage?: string;
+}
+
+export interface TroubleshootTicket {
+  ticketId: string;
+  schemaVersion: 1;
+  originRole: RoleMode;
+  originHostName: string;
+  originIp: string;
+  targetHostName: string;
+  targetIp: string;
+  shareName: string;
+  folderPath?: string;
+  driveLetter?: string;
+  authMode: AuthMode;
+  isLegacyOs?: boolean;
+  errorCode: string;
+  errorTitle: string;
+  rawErrorSummary: string;
+  recommendedSide: 'host' | 'client' | 'both';
+  hostSteps: TroubleshootWizardStep[];
+  clientSteps: TroubleshootWizardStep[];
+  status: TroubleshootTicketStatus;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string;
+  resolvedByHostName?: string;
+}
+
+export interface TroubleshootMatchResult {
+  currentPcActionTickets: TroubleshootTicket[];
+  waitingOtherPcTickets: TroubleshootTicket[];
+  resolvedTickets: TroubleshootTicket[];
+  primaryTicket: TroubleshootTicket | null;
+  matchedSideMap: Record<string, 'host' | 'client' | 'both' | 'none'>;
+}
+
 

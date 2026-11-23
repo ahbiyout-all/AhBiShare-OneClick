@@ -1496,6 +1496,7 @@ try {
     ['src/services/powershellEngine.ts', psEngineSrc],
     ['src/services/legacyScriptEngine.ts', legacyScriptEngineSrc],
     ['src/services/shareBridge.ts', bridgeSrc],
+    ['src/services/troubleshootPlaybook.ts', fs.readFileSync(path.join(rootDir, 'src', 'services', 'troubleshootPlaybook.ts'), 'utf8')],
     ['installer/setup.iss', issSrc],
   ]) {
     assert(
@@ -1545,6 +1546,154 @@ try {
   pass('Semantic Versioning 3-tier (MAJOR.MINOR.PATCH) sync & auto PATCH_NOTES.md recorder verified');
 } finally {
   fs.rmSync(tmpBumpRoot, { recursive: true, force: true });
+}
+
+// 11. Verify USB bidirectional troubleshootTickets persistence, credential stripping, shareBridge preservation & wizard wiring
+const tmpTroubleshootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-troubleshoot-'));
+try {
+  const tsStore = portableStore.createPortableStore({
+    env: { PORTABLE_EXECUTABLE_DIR: tmpTroubleshootDir },
+    app: { isPackaged: true, getPath: () => tmpTroubleshootDir },
+  });
+
+  // Verify credential sanitization helper strips passwords, tokens, and cmdkey /pass
+  const redactedSummary = portableStore.stripSensitiveCredentialText(
+    'Failed with ABSHARE://abcDEF12345== password=MySuperSecret! cmdkey /add:192.168.0.10 /user:Admin /pass:SecretPass99'
+  );
+  assert(!redactedSummary.includes('abcDEF12345=='), 'stripSensitiveCredentialText must redact ABSHARE:// tokens');
+  assert(!redactedSummary.includes('MySuperSecret!'), 'stripSensitiveCredentialText must redact plaintext password=');
+  assert(!redactedSummary.includes('SecretPass99'), 'stripSensitiveCredentialText must redact cmdkey /pass');
+
+  const sampleTicket = {
+    ticketId: 'ts-verify-1385',
+    schemaVersion: 1,
+    originRole: 'client',
+    originHostName: 'CLIENT-LAB-01',
+    originIp: '192.168.0.55',
+    targetHostName: 'MAIN-OFFICE-PC',
+    targetIp: '192.168.0.105',
+    shareName: 'WorkDocs',
+    driveLetter: 'Z:',
+    authMode: 'guest',
+    errorCode: 'Error 1385',
+    errorTitle: '호스트 PC 게스트 네트워크 로그온 차단',
+    rawErrorSummary: 'net use Z: \\\\192.168.0.105\\WorkDocs /user:Admin Secret999 failed: error 1385',
+    recommendedSide: 'host',
+    hostSteps: [
+      {
+        stepId: 'host-1-unlock',
+        side: 'host',
+        order: 1,
+        title: '호스트 Guest 로그온 거부 해제',
+        description: 'SeDenyNetworkLogonRight 제거',
+        executor: 'host_guest_unlock_and_reopen',
+        status: 'pending',
+      },
+    ],
+    clientSteps: [
+      {
+        stepId: 'client-1-retry',
+        side: 'client',
+        order: 1,
+        title: '클라이언트 재연결',
+        description: '호스트 조치 후 재연결',
+        executor: 'retry_mount',
+        status: 'pending',
+      },
+    ],
+    status: 'open',
+    createdAt: '2026-11-23T01:00:00.000Z',
+    updatedAt: '2026-11-23T01:00:00.000Z',
+  };
+
+  const tsSave1 = tsStore.savePortableData({
+    schemaVersion: 1,
+    updatedAt: '2026-11-23T01:00:00.000Z',
+    shares: [],
+    troubleshootTickets: [sampleTicket],
+  });
+  assert.strictEqual(tsSave1.success, true, 'Saving troubleshootTickets to .portable.json must succeed');
+
+  const rawDiskJson = JSON.parse(fs.readFileSync(path.join(tmpTroubleshootDir, portableStore.PORTABLE_FILE_NAME), 'utf8'));
+  assert.strictEqual(rawDiskJson.troubleshootTickets.length, 1);
+  assert(!rawDiskJson.troubleshootTickets[0].rawErrorSummary.includes('Secret999'), 'Disk .portable.json must not retain /user:... password');
+
+  const tsLoad1 = tsStore.loadPortableData();
+  assert.strictEqual(tsLoad1.success, true);
+  assert.strictEqual(tsLoad1.document.troubleshootTickets.length, 1);
+  assert.strictEqual(tsLoad1.document.troubleshootTickets[0].errorCode, 'Error 1385');
+  assert.strictEqual(tsLoad1.document.troubleshootTickets[0].hostSteps[0].executor, 'host_guest_unlock_and_reopen');
+
+  // Update ticket status to host_fixed -> resolved -> manual delete empty array
+  const tsSave2 = tsStore.savePortableData({
+    schemaVersion: 1,
+    updatedAt: '2026-11-23T01:05:00.000Z',
+    shares: [],
+    troubleshootTickets: [{ ...sampleTicket, status: 'host_fixed' }],
+  });
+  assert.strictEqual(tsSave2.document.troubleshootTickets[0].status, 'host_fixed');
+
+  const tsSaveCleared = tsStore.savePortableData({
+    schemaVersion: 1,
+    updatedAt: '2026-11-23T01:10:00.000Z',
+    shares: [],
+    troubleshootTickets: [],
+  });
+  assert.strictEqual(tsSaveCleared.document.troubleshootTickets, undefined, 'Manual ticket cleanup must omit empty troubleshootTickets on disk');
+
+  const playbookSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'troubleshootPlaybook.ts'), 'utf8');
+  const bannerSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TroubleshootHandoffBanner.tsx'), 'utf8');
+  const wizardSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TroubleshootWizardModal.tsx'), 'utf8');
+  const appSrc = fs.readFileSync(path.join(rootDir, 'src', 'App.tsx'), 'utf8');
+  const hostPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'HostPanel.tsx'), 'utf8');
+  const clientPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'ClientPanel.tsx'), 'utf8');
+
+  for (const sym of ['buildTroubleshootTicketDraft', 'upsertTroubleshootTicketList', 'recomputeTroubleshootTicketStatus', 'evaluateTroubleshootTicketsForPc', 'detectTicketMatchSideForPc']) {
+    assert(playbookSrc.includes(sym), `troubleshootPlaybook.ts missing ${sym}`);
+  }
+  for (const bridgeSym of ['recordTroubleshootError(', 'updateTroubleshootTicket(', 'deleteTroubleshootTicket(', 'clearResolvedTroubleshootTickets(', 'runHostGuestUnlockDirect(', 'clearConflictingSmbSessions(']) {
+    assert(bridgeSrc.includes(bridgeSym), `shareBridge.ts missing ${bridgeSym}`);
+  }
+  // Ensure every savePortableData call site in shareBridge.ts preserves troubleshootTickets
+  const saveCallCount = (bridgeSrc.match(/savePortableData\(/g) || []).length;
+  const preserveFieldCount = (bridgeSrc.match(/troubleshootTickets/g) || []).length;
+  assert(
+    saveCallCount >= 8 && preserveFieldCount >= saveCallCount + 8,
+    'shareBridge.ts must preserve troubleshootTickets across all savePortableData call sites'
+  );
+  assert(
+    bannerSrc.includes('troubleshoot-handoff-banner') &&
+      bannerSrc.includes('btn-open-troubleshoot-wizard') &&
+      bannerSrc.includes('btn-clear-resolved-troubleshoot'),
+    'TroubleshootHandoffBanner.tsx missing required IDs/actions'
+  );
+  assert(
+    wizardSrc.includes('troubleshoot-wizard-backdrop') &&
+      wizardSrc.includes('btn-wizard-stage-1') &&
+      wizardSrc.includes('btn-wizard-stage-2') &&
+      wizardSrc.includes('btn-wizard-stage-3') &&
+      wizardSrc.includes('btn-wizard-verify-445') &&
+      wizardSrc.includes('btn-wizard-mark-resolved') &&
+      wizardSrc.includes('btn-wizard-delete-ticket'),
+    'TroubleshootWizardModal.tsx missing 3-step wizard controls'
+  );
+  assert(
+    appSrc.includes('TroubleshootHandoffBanner') &&
+      appSrc.includes('TroubleshootWizardModal') &&
+      appSrc.includes('captureTroubleshootFailure') &&
+      appSrc.includes('autoOpenedTroubleshootKeysRef'),
+    'App.tsx missing USB error handoff capture, banner, or auto-open wizard wiring'
+  );
+  assert(hostPanelSrc.includes('btn-host-failure-open-wizard'), 'HostPanel.tsx missing wizard trigger button');
+  assert(clientPanelSrc.includes('btn-failure-open-wizard'), 'ClientPanel.tsx missing wizard trigger button');
+  assert(
+    legacyPanelSrc.includes('btn-legacy-host-failure-open-wizard') && legacyPanelSrc.includes('btn-legacy-failure-open-wizard'),
+    'LegacySharingPanel.tsx missing host/client wizard trigger buttons'
+  );
+
+  pass('USB bidirectional troubleshootTickets persistence, credential stripping, cross-PC matcher & 3-step wizard verified');
+} finally {
+  fs.rmSync(tmpTroubleshootDir, { recursive: true, force: true });
 }
 
 console.log('=======================================================');

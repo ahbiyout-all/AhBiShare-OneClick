@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff, RefreshCw, Wrench } from 'lucide-react';
 import {
   ActiveShare,
   ClientTargetConfig,
@@ -69,6 +69,7 @@ interface ClientPanelProps {
   onOpenDrive: (drivePath: string) => Promise<void>;
   onTargetHostChange?: (host: string) => void;
   onOpenDiagnostics?: (errorText?: string) => void;
+  onOpenTroubleshootWizard?: () => void;
   onDeleteHostPolicySnapshot?: (hostName: string) => Promise<void>;
   onDeletePortableShare?: (sourceHostName: string, shareName: string) => Promise<void>;
 }
@@ -115,6 +116,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onOpenDrive,
   onTargetHostChange,
   onOpenDiagnostics,
+  onOpenTroubleshootWizard,
   onDeleteHostPolicySnapshot,
   onDeletePortableShare,
 }) => {
@@ -1509,6 +1511,17 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         {diag.actionLabel}
                       </button>
                     )
+                  )}
+                  {onOpenTroubleshootWizard && (
+                    <button
+                      id="btn-failure-open-wizard"
+                      type="button"
+                      onClick={onOpenTroubleshootWizard}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer shadow-sm"
+                    >
+                      <Wrench className="w-3.5 h-3.5" />
+                      단계별 해결 마법사 열기
+                    </button>
                   )}
                 </div>
               </div>

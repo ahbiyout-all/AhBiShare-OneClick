@@ -416,6 +416,99 @@ function sanitizePendingHostActionsMap(rawMap) {
   return count > 0 ? out : undefined;
 }
 
+const VALID_TICKET_STATUSES = new Set(['open', 'host_fixed', 'client_fixed', 'resolved']);
+const VALID_STEP_STATUSES = new Set(['pending', 'completed', 'skipped', 'failed']);
+const VALID_RECOMMENDED_SIDES = new Set(['host', 'client', 'both']);
+
+function stripSensitiveCredentialText(rawText, maxLength = 500) {
+  if (rawText === undefined || rawText === null) return '';
+  let text = String(rawText).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ');
+  text = text
+    .replace(/ABSHARE:\/\/[A-Za-z0-9+/=_-]+/gi, 'ABSHARE://[REDACTED]')
+    .replace(/(cmdkey(?:\.exe)?\s+\/add:\S+\s+\/user:\S+\s+\/pass:)\S+/gi, '$1[REDACTED]')
+    .replace(/(\/pass(?:word)?\s*:\s*)\S+/gi, '$1[REDACTED]')
+    .replace(/(\/user(?:name)?\s*:\s*\S+\s+)([^\s\/"']+|"[^"]*"|'[^']*')/gi, '$1[REDACTED]')
+    .replace(/(ConvertTo-SecureString\s+)(?:-String\s+)?(['"])[^'"]*\2/gi, "$1'[REDACTED]'")
+    .replace(/\b(password|passwd|pwd|pw|암호|비밀번호)\s*([:=])\s*(?!\[REDACTED\])(['"]?)[^\s,;'"|\)]+\3/gi, '$1$2[REDACTED]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (maxLength > 0 && text.length > maxLength) {
+    text = text.slice(0, maxLength - 3).trimEnd() + '...';
+  }
+  return text;
+}
+
+function sanitizeTroubleshootWizardSteps(rawSteps, defaultSide) {
+  if (!Array.isArray(rawSteps)) return [];
+  const clean = [];
+  for (let i = 0; i < rawSteps.length && clean.length < 16; i++) {
+    const s = rawSteps[i];
+    if (!s || typeof s !== 'object' || !s.title) continue;
+    const side = s.side === 'host' || s.side === 'client' ? s.side : defaultSide;
+    const status = VALID_STEP_STATUSES.has(s.status) ? s.status : 'pending';
+    const commandPreview = s.commandPreview ? stripSensitiveCredentialText(s.commandPreview, 600) : '';
+    const lastMessage = s.lastMessage ? stripSensitiveCredentialText(s.lastMessage, 320) : '';
+    clean.push({
+      stepId: String(s.stepId || `${side}-step-${i + 1}`),
+      side,
+      order: Number.isFinite(Number(s.order)) && Number(s.order) > 0 ? Math.floor(Number(s.order)) : clean.length + 1,
+      title: String(s.title).slice(0, 160),
+      description: stripSensitiveCredentialText(s.description || '', 420),
+      ...(commandPreview ? { commandPreview } : {}),
+      executor: String(s.executor || 'manual_check'),
+      ...(s.patchMode ? { patchMode: String(s.patchMode) } : {}),
+      status,
+      ...(s.lastAttemptAt ? { lastAttemptAt: String(s.lastAttemptAt) } : {}),
+      ...(lastMessage ? { lastMessage } : {}),
+    });
+  }
+  return clean;
+}
+
+function sanitizeTroubleshootTickets(rawList) {
+  if (!Array.isArray(rawList)) return undefined;
+  const out = [];
+  const seenIds = new Set();
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object' || !item.ticketId) continue;
+    const ticketId = String(item.ticketId).trim();
+    if (!ticketId || seenIds.has(ticketId)) continue;
+    seenIds.add(ticketId);
+    const originRole = item.originRole === 'host' ? 'host' : 'client';
+    const authMode = item.authMode === 'account' ? 'account' : 'guest';
+    const recommendedSide = VALID_RECOMMENDED_SIDES.has(item.recommendedSide) ? item.recommendedSide : 'both';
+    const status = VALID_TICKET_STATUSES.has(item.status) ? item.status : 'open';
+    const nowIso = new Date().toISOString();
+    out.push({
+      ticketId,
+      schemaVersion: 1,
+      originRole,
+      originHostName: String(item.originHostName || '').trim(),
+      originIp: String(item.originIp || '').trim(),
+      targetHostName: String(item.targetHostName || '').trim(),
+      targetIp: String(item.targetIp || '').trim(),
+      shareName: String(item.shareName || 'AhBiShared').trim(),
+      ...(item.folderPath ? { folderPath: String(item.folderPath).trim() } : {}),
+      ...(item.driveLetter ? { driveLetter: String(item.driveLetter).trim() } : {}),
+      authMode,
+      ...(typeof item.isLegacyOs === 'boolean' ? { isLegacyOs: item.isLegacyOs } : {}),
+      errorCode: String(item.errorCode || 'Mount Diagnostic').trim().slice(0, 64),
+      errorTitle: stripSensitiveCredentialText(item.errorTitle || '연결/공유 오류', 180),
+      rawErrorSummary: stripSensitiveCredentialText(item.rawErrorSummary || '', 500),
+      recommendedSide,
+      hostSteps: sanitizeTroubleshootWizardSteps(item.hostSteps, 'host'),
+      clientSteps: sanitizeTroubleshootWizardSteps(item.clientSteps, 'client'),
+      status,
+      createdAt: String(item.createdAt || nowIso),
+      updatedAt: String(item.updatedAt || item.createdAt || nowIso),
+      ...(item.resolvedAt ? { resolvedAt: String(item.resolvedAt) } : {}),
+      ...(item.resolvedByHostName ? { resolvedByHostName: String(item.resolvedByHostName).trim() } : {}),
+    });
+    if (out.length >= 30) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function prepareDiskDocument(doc) {
   const nowIso = new Date().toISOString();
   const inputShares = Array.isArray(doc?.shares) ? doc.shares : [];
@@ -461,12 +554,14 @@ function prepareDiskDocument(doc) {
 
   const hostPolicies = sanitizeHostPoliciesMap(doc?.hostPolicies);
   const pendingHostActions = sanitizePendingHostActionsMap(doc?.pendingHostActions);
+  const troubleshootTickets = sanitizeTroubleshootTickets(doc?.troubleshootTickets);
   const out = {
     schemaVersion: 1,
     updatedAt: doc?.updatedAt || nowIso,
     shares: serializedShares,
     ...(hostPolicies ? { hostPolicies } : {}),
     ...(pendingHostActions ? { pendingHostActions } : {}),
+    ...(troubleshootTickets ? { troubleshootTickets } : {}),
   };
   if (doc?.lastClientTarget && doc.lastClientTarget.targetHost && doc.lastClientTarget.shareName) {
     out.lastClientTarget = {
@@ -528,12 +623,14 @@ function hydrateRuntimeDocument(diskDoc) {
 
   const hostPolicies = sanitizeHostPoliciesMap(diskDoc?.hostPolicies);
   const pendingHostActions = sanitizePendingHostActionsMap(diskDoc?.pendingHostActions);
+  const troubleshootTickets = sanitizeTroubleshootTickets(diskDoc?.troubleshootTickets);
   const runtimeDoc = {
     schemaVersion: 1,
     updatedAt: String(diskDoc?.updatedAt || ''),
     shares,
     ...(hostPolicies ? { hostPolicies } : {}),
     ...(pendingHostActions ? { pendingHostActions } : {}),
+    ...(troubleshootTickets ? { troubleshootTickets } : {}),
   };
   if (diskDoc?.lastClientTarget) {
     runtimeDoc.lastClientTarget = diskDoc.lastClientTarget;
@@ -1324,5 +1421,7 @@ module.exports = {
   toLocationProfileSummary,
   atomicWriteBuffer,
   atomicWriteJson,
+  stripSensitiveCredentialText,
+  sanitizeTroubleshootTickets,
   createPortableStore,
 };

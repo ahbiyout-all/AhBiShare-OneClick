@@ -36,6 +36,9 @@
 - **`ActiveShare` 리스트 `'탐색기에서 열기'`(UNC 바로 열기) & USB 쓰기 안전성 강화 (`v1.2.1`)**:
   - 메인 PC 공유 개설 및 구형 OS 1단계 활성 공유 목록(`ActiveShare`)에 **`탐색기에서 열기`** 버튼을 추가해 `resolveActiveShareUncPath`(`\\IP\공유명`) 경로를 Windows 탐색기(`explorer.exe`)로 즉시 열 수 있습니다.
   - USB 휴대 실행 시 쓰기 금지 요소(`StorageDevicePolicies`, `diskpart readonly`, `attrib +R`, `IsReadOnly=$true`, `autorun.inf` 등)를 일절 주입하지 않으며, 비파괴 0바이트 `wx` 배타 프로브(`probeDirectoryWriteSafety`)·`EROFS`/`EPERM`/`ENOSPC` 오류 분류·레거시 USB 키트 `atomicWriteBuffer` 원자적 기록 및 포터블 업데이트 전 `exit 4` 쓰기 보호 가드로 USB 데이터 무결성을 보호합니다.
+- **USB 양방향 오류 전달 & 3단계 단계별 해결 마법사 (`troubleshootTickets` · `TroubleshootHandoffBanner` · `TroubleshootWizardModal`) (`v1.2.1`)**:
+  - 메인 PC·클라이언트 PC·구형 OS 실행 중 발생한 연결/개설 오류 티켓을 별도 파일 없이 기존 **`AhBiShare_OneClick.portable.json` 내부(`troubleshootTickets`)에 통합 저장**하며, `stripSensitiveCredentialText`로 `ABSHARE://` 토큰 및 `/pass:` 평문 비밀번호를 자동 마스킹합니다.
+  - USB를 반대편 PC에 연결해 실행·새로고침하면 `evaluateTroubleshootTicketsForPc`가 대상 PC와 일치하는 미해결 티켓(`open` / `host_fixed` / `client_fixed`)을 감지해 **상단 배너 표시 및 3단계 해결 마법사(`01. 원인 및 양단 현황` · `02. 단계별 해결 실행` · `03. 검증 및 전달 · 완료`)를 자동 오픈**합니다. `Error 1385`·`1223`·`0x80070035/1272`·`5/86/1326`·`58`·`53`·`1219`·`85` 및 호스트 개설 실패에 대한 양측 원클릭 복구(`지금 적용`·`건너뛰기`·`명령 복사`·`445 도달성 점검`)를 지원하고, 완료 후 사용자가 직접 정리할 때까지 이력을 보존합니다.
 
 - **실시간 작업 진행 모션창 (`WorkProgressModal`) — 주요 작업 11종 전면 적용 (`v1.2.0`)**:
   - 공유 개설·해제, 네트워크 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS(Win 7/8) 통합 개설·접속, 사용장소 일괄 적용, 호스트·클라이언트·만료 보안 원복까지 모든 주요 작업 시 **듀얼 링 SVG 회전 모션 + 실시간 단계 진행 타임라인 + 경과 시간 표시창**을 제공합니다.
@@ -92,7 +95,7 @@
   - Tailwind CSS v4 `oklch()` 색상을 `chrome106`/`chrome100` 타깃으로 컴파일 변환해 Win 7(Electron 21) 검은 화면 문제를 해결하고, PowerShell 2.0 `$PSDefaultParameterValues`·`[Console]` 핸들 예외·`$null` NetBT 루프를 가드했습니다.
 - **GitHub 저장소 Core Tree 정비 & 무결성 검증 체계**:
   - `.gitignore` 전면 개편을 통해 로컬 전용 스크립트(`push_github*.bat`, `build_release.bat`), 플랫폼 메타/첨부 이미지(`.aistudio/`, `metadata.json`, `/public/assets/aistudio/`), 업데이터 임시 파일(`_ahbishare_update/`, `*.part`, `*apply_portable_update.ps1`), 런타임 프로필·생성 키트(`*.portable.json`, `*.location.json`, `locations/`, `AhBiShare_*.bat`/`.reg`)를 업로드 대상에서 엄격히 분리했습니다.
-  - CI 및 로컬 빌드 전 `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (10대 포터블·암호화·업데이터·SemVer 무결성 스위트) 통과를 의무화했습니다.
+  - CI 및 로컬 빌드 전 `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (11대 포터블·암호화·업데이터·SemVer·오류전달 무결성 스위트) 통과를 의무화했습니다.
 
 ---
 
@@ -107,7 +110,7 @@
 ```bash
 npm install
 npm run lint                 # TypeScript 정적 타입 검증
-npm run verify               # 10개 독립 무결성·보안·업데이터·SemVer 검증 스위트
+npm run verify               # 11개 독립 무결성·보안·업데이터·SemVer 검증 스위트
 npm run build                # Windows 7 Chromium 106 호환 프로덕션 번들 (dist/)
 npm run version:bump -- patch --summary "패치 요약" --note "세부 기록"
 ```
@@ -117,7 +120,7 @@ npm run version:bump -- patch --summary "패치 요약" --note "세부 기록"
 ---
 
 ## 📜 릴리즈 이력 요약
-- **`v1.2.1` (2026-11-22 · `PATCH`)**: 10대 보안 원복 심층 감사 보고서·호스트 불일치 색상 배지·전문가 레지스트리 원시 값 비교 뷰(`ExpertComparisonView`)·저장된 `.location.json` 프로필 내용 직접 수정 에디터·사용장소 일괄 적용 사전 검증(`LocationPreflightModal`)·클라이언트 비밀번호 가시성 토글·5종 숫자 암호 프리셋(`PresetPasswordGrid`)·전 탭 통합 새로고침 버튼·**수동 NAS/공유폴더 SMB 인증 방식 사전 탐지 · 고지 · 자동 전환(`ShareAuthProbeBar` · `probeShareAuthMode`)** 추가 및 7~16차 자아성찰·구형 OS 전수 검증 심층 점검(`IPC$` 오탐 및 `onBlur`/`onSubmit` 경합 수정, Win32 판정 우선순위·`net view` 4초 타임아웃, 구형 OS 토폴로지 방향/방화벽/`.bat` `[char]34`·선초기화 복원/`Error 58`/보안 계정 무개방, 모달 `onCloseRef` 안정화, `Enter` 중복 제출 가드, SAM 계정 검증, 업데이터 취소 경합 차단, NTLM 복원 및 자격증명 보존 개선)
+- **`v1.2.1` (2026-11-22 · `PATCH`)**: 10대 보안 원복 심층 감사 보고서·호스트 불일치 색상 배지·전문가 레지스트리 원시 값 비교 뷰(`ExpertComparisonView`)·저장된 `.location.json` 프로필 내용 직접 수정 에디터·사용장소 일괄 적용 사전 검증(`LocationPreflightModal`)·클라이언트 비밀번호 가시성 토글·5종 숫자 암호 프리셋(`PresetPasswordGrid`)·전 탭 통합 새로고침 버튼·**수동 NAS/공유폴더 스마트 SMB 인증 감지(`detectSmartShareAuth` · `probeSmbTarget` · IPv4 자동 탐지 `useEffect`)**·**`ActiveShare` `'탐색기에서 열기'`(UNC)**·**USB 쓰기 안전성 강화**·**USB 양방향 오류 전달(`.portable.json` 통합 `troubleshootTickets`) & 3단계 해결 마법사(`TroubleshootHandoffBanner` · `TroubleshootWizardModal`)** 추가 및 7~17차 자아성찰·구형 OS 전수 검증 심층 점검 반영
 - **`v1.2.0` (2026-11-19 · `MINOR`)**: 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·실시간 단계 목록·경과 시간·1.5초 자동 닫힘/오류 유지·포커스/스크롤 잠금) 주요 작업 11종 도입 및 6차 자아성찰 심층 점검(`handleExpirySecurityRollback`·`handleApplyOsPatch` 오류 검증, `applyLocationProfileBatch` `validShares` 인덱스 정렬, `prefers-reduced-motion` 개선)
 - **`v1.1.5` (2026-11-19 · `PATCH`)**: 5차 자아성찰 심층 점검 — `secedit` INF `[System.Text.Encoding]::Unicode` 명시 & `SeDenyNetworkLogonRight` 비게스트 따옴표 보존, `c_mount` `/`·`*` 암호 `net.exe` 충돌 회피 및 Guest Win32 Null 세션(`''`/`''`) 폴백 추가, `syncLiveState` 공유 `folderPath`·드라이브 UNC 변경 감지 강화
 - **`v1.1.4` (2026-11-19 · `PATCH`)**: 4차 심층 점검 — 무비밀번호(Guest) 마운트 `Guest: 시스템 오류 86`·`1223` 근본 해결 (`WNetAddConnection2` · `ProcessStartInfo` 원시 빈 암호 전달, 호스트 `*-501` 빈 암호(`/passwordreq:no`)·`S-1-5-7` 공유 권한, `LimitBlankPasswordUse=0` 정렬, `secedit` UTF-16LE INF `ReadAllLines` 보강)

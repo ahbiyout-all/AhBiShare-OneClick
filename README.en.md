@@ -23,6 +23,9 @@
 - **GitHub Auto-Update Detection & USB-Safe Portable Self-Replace (`v1.2.1`)**:
   - Checks GitHub Releases (REST API + fault-tolerant Atom/`expanded_assets` fallback) and displays an update confirmation modal.
   - Detects the running portable edition (`Standard`, `Lite`, or `Win7`), verifies official GitHub download URLs and Windows PE (`MZ`) headers with cancel-race protection, enforces **USB write-safety hardening (zero write-protection injections, `wx` writability probes with `exit 4` self-update abort guard, and AV-lock safe `loadPortableData` without false `.corrupt` quarantining)**, and **terminates/removes the old portable EXE, replaces it with the new EXE, and relaunches automatically** while preserving `.portable.json` and `locations/`.
+- **USB Bidirectional Error Handoff & 3-Step Troubleshooting Wizard (`v1.2.1`)**:
+  - Saves sanitized host/client connection error tickets (`troubleshootTickets`, with `ABSHARE://` tokens and `/pass:` credentials masked) directly inside `AhBiShare_OneClick.portable.json`.
+  - Moving the USB drive to the matching Host or Client PC automatically surfaces a top handoff banner and opens the **3-step interactive wizard** (`Cause & Status` · `Step-by-Step Host/Client Fixes` · `TCP 445 Verification & Completion`), preserving resolved ticket history until manually cleared by the user.
 
 ## Build, Verification & Semantic Versioning
 
@@ -31,7 +34,7 @@ npm install
 npm run dev                  # Vite web dev server (http://localhost:3000)
 npm run lint                 # TypeScript type-check (tsc --noEmit)
 npm run build                # Production bundle (dist/, Chromium 106 compatible)
-npm run verify               # 10-suite integrity, security, updater & SemVer verifier
+npm run verify               # 11-suite integrity, security, updater & SemVer verifier
 npm run electron:build       # Standard portable & NSIS EXE (AhBiShare_OneClick_v1.2.1.exe)
 npm run electron:build:lite  # Size-reduced Lite portable EXE (AhBiShare_OneClick-Lite_v1.2.1.exe)
 npm run electron:build:win7  # Windows 7 SP1~8.1 portable EXE (AhBiShare_OneClick_Win7_v1.2.1.exe)

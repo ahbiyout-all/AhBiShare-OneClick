@@ -28,11 +28,17 @@ import {
   LocationBatchApplyResult,
   LocationPreflightReport,
   SmartAuthDetectionResult,
+  TroubleshootTicket,
+  TroubleshootWizardStep,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
 import { generateSecureSharePassword, isValidIpv4Address } from '@/utils/connectionCode';
 import { formatEraShortLabel, formatSnapshotTimestamp, getPolicyPatchLabel } from '@/services/networkEvolution';
+import {
+  evaluateTroubleshootTicketsForPc,
+  recomputeTroubleshootTicketStatus,
+} from '@/services/troubleshootPlaybook';
 import { TopBar } from '@/components/TopBar';
 import { HostPanel } from '@/components/HostPanel';
 import { ClientPanel } from '@/components/ClientPanel';
@@ -42,6 +48,8 @@ import { LegacySharingPanel } from '@/components/LegacySharingPanel';
 import { LocationProfileBar } from '@/components/LocationProfileBar';
 import { LocationManagerModal } from '@/components/LocationManagerModal';
 import { LocationPreflightModal } from '@/components/LocationPreflightModal';
+import { TroubleshootHandoffBanner } from '@/components/TroubleshootHandoffBanner';
+import { TroubleshootWizardModal } from '@/components/TroubleshootWizardModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
 import { WorkProgressModal, ProgressJobState } from './components/WorkProgressModal';
@@ -118,6 +126,11 @@ export const App: React.FC = () => {
   const [isApplyingPendingHostTask, setIsApplyingPendingHostTask] = useState(false);
   const [confirmingDismissPendingTask, setConfirmingDismissPendingTask] = useState(false);
   const [pendingAutoFillEntry, setPendingAutoFillEntry] = useState<PortableHostShareEntry | null>(null);
+  const [troubleshootTickets, setTroubleshootTickets] = useState<TroubleshootTicket[]>([]);
+  const [troubleshootWizardOpen, setTroubleshootWizardOpen] = useState(false);
+  const [selectedTroubleshootTicketId, setSelectedTroubleshootTicketId] = useState<string | null>(null);
+  const autoOpenedTroubleshootKeysRef = useRef<Set<string>>(new Set());
+  const createdInSessionTicketIdsRef = useRef<Set<string>>(new Set());
 
   const [nowMs, setNowMs] = useState(() => Date.now());
   const warned5MinRef = useRef<Set<string>>(new Set());
@@ -505,6 +518,7 @@ export const App: React.FC = () => {
     setPortableStatus(snap.status);
     setHostPolicySnapshots(snap.document.hostPolicies ? { ...snap.document.hostPolicies } : {});
     setPendingHostActions(snap.document.pendingHostActions ? { ...snap.document.pendingHostActions } : {});
+    setTroubleshootTickets(snap.document.troubleshootTickets ? [...snap.document.troubleshootTickets] : []);
   }, []);
 
   const refreshLocationProfiles = useCallback(async () => {
@@ -532,6 +546,7 @@ export const App: React.FC = () => {
         setPortableStatus(synced.portable.status);
         setHostPolicySnapshots(synced.portable.document.hostPolicies || {});
         setPendingHostActions(synced.portable.document.pendingHostActions || {});
+        setTroubleshootTickets(synced.portable.document.troubleshootTickets || []);
         if (options?.scanLan) {
           try {
             const found = await shareBridge.scanLanPeers(freshNet);
@@ -587,6 +602,7 @@ export const App: React.FC = () => {
         setPortableStatus(synced.portable.status);
         setHostPolicySnapshots(synced.portable.document.hostPolicies || {});
         setPendingHostActions(synced.portable.document.pendingHostActions || {});
+        setTroubleshootTickets(synced.portable.document.troubleshootTickets || []);
         if (sortedPortable.length > 0) {
           appendLog(
             'USB 포터블',
@@ -1006,6 +1022,403 @@ export const App: React.FC = () => {
     ]
   );
 
+  const troubleshootMatch = React.useMemo(
+    () => evaluateTroubleshootTicketsForPc(troubleshootTickets, netInfo, shares, mounts, portableShares),
+    [troubleshootTickets, netInfo, shares, mounts, portableShares]
+  );
+
+  useEffect(() => {
+    const primary = troubleshootMatch.primaryTicket;
+    if (!primary || troubleshootWizardOpen) return;
+    if (
+      progressJob.isOpen ||
+      diagOpen ||
+      updateModalOpen ||
+      locationModalOpen ||
+      preflightModalOpen ||
+      isRefreshingTab ||
+      isHostExecuting ||
+      isClientConnecting
+    ) {
+      return;
+    }
+
+    const fromOtherPc =
+      (primary.originHostName || '').trim().toLowerCase() !== netInfo.hostname.trim().toLowerCase();
+    const isResumingAfterOppositeFix =
+      primary.status === 'host_fixed' || primary.status === 'client_fixed';
+    const createdInsideThisSession = createdInSessionTicketIdsRef.current.has(primary.ticketId);
+    if (createdInsideThisSession && !fromOtherPc && !isResumingAfterOppositeFix) {
+      return;
+    }
+
+    const openKey = `${primary.ticketId}::${primary.status}::${netInfo.hostname}`;
+    if (autoOpenedTroubleshootKeysRef.current.has(openKey)) return;
+    autoOpenedTroubleshootKeysRef.current.add(openKey);
+    setSelectedTroubleshootTicketId(primary.ticketId);
+    setTroubleshootWizardOpen(true);
+    appendLog(
+      'USB 오류 마법사',
+      `이 PC(${netInfo.hostname})와 일치하는 미해결 티켓(${primary.errorCode})을 감지해 해결 마법사를 자동 열었습니다.`,
+      'success'
+    );
+  }, [
+    troubleshootMatch.primaryTicket,
+    troubleshootWizardOpen,
+    progressJob.isOpen,
+    diagOpen,
+    updateModalOpen,
+    locationModalOpen,
+    preflightModalOpen,
+    isRefreshingTab,
+    isHostExecuting,
+    isClientConnecting,
+    netInfo.hostname,
+    appendLog,
+  ]);
+
+  const captureTroubleshootFailure = useCallback(
+    async (params: {
+      originRole: RoleMode;
+      netInfoSnap: LocalNetworkInfo;
+      errorMessage: string;
+      targetHost?: string;
+      shareName?: string;
+      folderPath?: string;
+      driveLetter?: string;
+      authMode: 'guest' | 'account';
+      isLegacyOs?: boolean;
+    }) => {
+      try {
+        const saved = await shareBridge.recordTroubleshootError({
+          originRole: params.originRole,
+          netInfo: params.netInfoSnap,
+          errorMessage: params.errorMessage,
+          targetHost: params.targetHost,
+          shareName: params.shareName,
+          folderPath: params.folderPath,
+          driveLetter: params.driveLetter,
+          authMode: params.authMode,
+          isLegacyOs: params.isLegacyOs,
+          portableShares: portableSharesRef.current,
+          hostPolicySnapshots,
+          peers: peersRef.current,
+          activeShares: sharesRef.current,
+        });
+        createdInSessionTicketIdsRef.current.add(saved.ticket.ticketId);
+        setTroubleshootTickets(saved.tickets);
+        setSelectedTroubleshootTicketId(saved.ticket.ticketId);
+        refreshPortableSnapshot(params.netInfoSnap.hostname);
+        appendLog(
+          'USB 오류 티켓',
+          saved.portableStatus.writable
+            ? `오류 티켓(${saved.ticket.errorCode} · ${saved.ticket.shareName})을 USB 포터블 파일에 저장했습니다.`
+            : `오류 티켓(${saved.ticket.errorCode})을 세션에 기록했습니다 (USB 읽기 전용).`,
+          'success'
+        );
+      } catch {}
+    },
+    [hostPolicySnapshots, refreshPortableSnapshot, appendLog]
+  );
+
+  const handleOpenTroubleshootWizard = useCallback(
+    (ticketId?: string) => {
+      const targetId =
+        ticketId ||
+        troubleshootMatch.primaryTicket?.ticketId ||
+        troubleshootTickets[0]?.ticketId ||
+        null;
+      setSelectedTroubleshootTicketId(targetId);
+      setTroubleshootWizardOpen(true);
+    },
+    [troubleshootMatch.primaryTicket, troubleshootTickets]
+  );
+
+  const handleExecuteTroubleshootStep = useCallback(
+    async (
+      ticket: TroubleshootTicket,
+      step: TroubleshootWizardStep
+    ): Promise<{ success: boolean; message: string }> => {
+      let ok = false;
+      let message = '';
+      let resolvedImmediately = false;
+      let nextDriveLetter = ticket.driveLetter;
+
+      try {
+        if (
+          step.executor === 'apply_safe_compat' ||
+          step.executor === 'apply_legacy_bridge' ||
+          step.executor === 'enable_smbv1_client'
+        ) {
+          const mode: PolicyPatchMode =
+            step.patchMode ||
+            (step.executor === 'apply_legacy_bridge'
+              ? 'legacy_bridge_compat'
+              : step.executor === 'enable_smbv1_client'
+                ? 'enable_smbv1_client'
+                : 'safe_compat');
+          const res = await shareBridge.applyOsCompatibilityPatch(mode, netInfo);
+          setLastPatchResult(res);
+          setPolicyStatus(res.updatedPolicy);
+          setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+          ok = res.success;
+          message = `${res.summary} (${res.rebootJudgment.title})`;
+        } else if (step.executor === 'host_guest_unlock_and_reopen') {
+          const res = await shareBridge.runHostGuestUnlockDirect(ticket.shareName, netInfo);
+          if (res.updatedPolicy) {
+            setPolicyStatus(res.updatedPolicy);
+          }
+          ok = res.success;
+          message = res.message;
+        } else if (step.executor === 'clear_conflicting_sessions') {
+          const res = await shareBridge.clearConflictingSmbSessions(ticket.targetIp || ticket.targetHostName);
+          ok = res.success;
+          message = res.message;
+        } else if (step.executor === 'verify_port_445') {
+          const pingTarget = ticket.targetIp || ticket.targetHostName || netInfo.primaryIp;
+          const pingRes = await shareBridge.pingHost(pingTarget);
+          ok = pingRes.reachable && pingRes.smbPortOpen;
+          message = pingRes.detail;
+        } else if (step.executor === 'switch_to_account_mode') {
+          const targetHost = ticket.targetIp || ticket.targetHostName || clientDraftRef.current.targetHost;
+          setClientDraft((prev) => ({
+            ...prev,
+            targetHost,
+            shareName: ticket.shareName || prev.shareName,
+            authMode: 'account',
+            username: prev.username.trim() || 'AhBiShare',
+          }));
+          setPendingClientAuthMode({
+            key: `wizard-acc-${Date.now()}`,
+            authMode: 'account',
+            switchedFrom: ticket.authMode,
+            targetHost,
+            shareName: ticket.shareName,
+          });
+          setRoleMode('client');
+          setActiveSection('workspace');
+          ok = true;
+          message = '클라이언트 인증 모드를 보안 계정 모드로 전환했습니다. 계정·암호 확인 후 재연결하세요.';
+        } else if (step.executor === 'reassign_free_drive') {
+          const usedSet = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
+          const currentDl = (ticket.driveLetter || clientDraftRef.current.driveLetter || 'Z:').toUpperCase();
+          const candidates = ['Z:', 'Y:', 'X:', 'W:', 'V:', 'S:', 'M:', 'N:', 'P:'];
+          const freeDrive = candidates.find((d) => !usedSet.has(d) && d !== currentDl) || candidates.find((d) => !usedSet.has(d)) || 'Y:';
+          nextDriveLetter = freeDrive;
+          setClientDraft((prev) => ({ ...prev, driveLetter: freeDrive }));
+          ok = true;
+          message = `사용 가능한 빈 드라이브 문자(${freeDrive})로 자동 변경했습니다.`;
+        } else if (step.executor === 'retry_mount') {
+          const latestDraft = clientDraftRef.current;
+          const targetHost = ticket.targetIp || ticket.targetHostName || latestDraft.targetHost;
+          const sameEndpoint =
+            latestDraft.targetHost.trim().toLowerCase() === targetHost.trim().toLowerCase() &&
+            latestDraft.shareName.trim().toLowerCase() === ticket.shareName.trim().toLowerCase();
+          const mountCfg: ClientTargetConfig = {
+            targetHost,
+            shareName: ticket.shareName,
+            driveLetter: nextDriveLetter || (sameEndpoint ? latestDraft.driveLetter : 'Z:'),
+            authMode: sameEndpoint ? latestDraft.authMode : ticket.authMode,
+            username: sameEndpoint ? latestDraft.username : '',
+            password: sameEndpoint ? latestDraft.password : '',
+            persistent: latestDraft.persistent,
+          };
+          const mountRes = await shareBridge.runClientOneClick(
+            mountCfg,
+            (steps) => setClientSteps(steps),
+            netInfo.osEra
+          );
+          if (mountRes.success && mountRes.mount) {
+            setMounts(shareBridge.getSavedMounts());
+            ok = true;
+            resolvedImmediately = true;
+            message = `${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 재연결 성공`;
+          } else {
+            const failedStep = mountRes.steps.find((s) => s.status === 'error');
+            ok = false;
+            message = failedStep?.error || '네트워크 드라이브 재연결에 실패했습니다.';
+          }
+        } else if (step.executor === 'retry_host_share') {
+          const shareLower = ticket.shareName.trim().toLowerCase();
+          const matchedExistingShare = sharesRef.current.find((s) => s.shareName.trim().toLowerCase() === shareLower);
+          const sameDraft = hostDraft.shareName.trim().toLowerCase() === shareLower;
+          const hostCfg: HostConfig = {
+            folderPath: ticket.folderPath || matchedExistingShare?.folderPath || (sameDraft ? hostDraft.folderPath : 'C:\\AhBiShared'),
+            shareName: ticket.shareName,
+            authMode: matchedExistingShare?.authMode || ticket.authMode,
+            permission: matchedExistingShare?.permission || (sameDraft ? hostDraft.permission : 'full'),
+            username: matchedExistingShare?.username || hostDraft.username || 'AhBiShare',
+            password: hostDraft.password || generateSecureSharePassword(10),
+            ttlMinutes: sameDraft ? hostDraft.ttlMinutes : 0,
+            autoRevokeOnExpiry: sameDraft ? hostDraft.autoRevokeOnExpiry : true,
+          };
+          const shareRes = await shareBridge.runHostOneClick(
+            hostCfg,
+            netInfo,
+            (steps) => setHostSteps(steps)
+          );
+          if (shareRes.success && shareRes.share) {
+            setShares(shareBridge.getSavedShares());
+            ok = true;
+            if (ticket.originRole === 'host') resolvedImmediately = true;
+            message = `'${shareRes.share.shareName}' 공유폴더 재개설 및 USB 동기화 완료`;
+          } else {
+            const failedStep = shareRes.steps.find((s) => s.status === 'error');
+            ok = false;
+            message = failedStep?.error || '호스트 공유폴더 재개설에 실패했습니다.';
+          }
+        } else {
+          ok = true;
+          message = '수동 확인 완료로 표시했습니다.';
+        }
+      } catch (err) {
+        ok = false;
+        message = err instanceof Error ? err.message : '단계 실행 중 예외가 발생했습니다.';
+      }
+
+      const nowIso = new Date().toISOString();
+      const updateStepArr = (arr: TroubleshootWizardStep[]) =>
+        arr.map((item) => {
+          if (item.stepId === step.stepId) {
+            return {
+              ...item,
+              status: ok ? ('completed' as const) : ('failed' as const),
+              lastAttemptAt: nowIso,
+              lastMessage: message,
+            };
+          }
+          if (resolvedImmediately && item.status === 'pending') {
+            return {
+              ...item,
+              status: 'skipped' as const,
+              lastAttemptAt: nowIso,
+              lastMessage: '재연결 성공으로 후속/대체 단계 건너뜀',
+            };
+          }
+          return item;
+        });
+
+      const updatedBase: TroubleshootTicket = {
+        ...ticket,
+        ...(nextDriveLetter ? { driveLetter: nextDriveLetter } : {}),
+        hostSteps: updateStepArr(ticket.hostSteps),
+        clientSteps: updateStepArr(ticket.clientSteps),
+      };
+
+      let recomputed = recomputeTroubleshootTicketStatus(updatedBase, netInfo.hostname);
+      if (resolvedImmediately) {
+        recomputed = {
+          ...recomputed,
+          status: 'resolved',
+          resolvedAt: recomputed.resolvedAt || nowIso,
+          resolvedByHostName: netInfo.hostname,
+          updatedAt: nowIso,
+        };
+      }
+
+      const saved = await shareBridge.updateTroubleshootTicket(recomputed);
+      setTroubleshootTickets(saved.tickets);
+      refreshPortableSnapshot(netInfo.hostname);
+      appendLog('USB 오류 마법사', `[${step.title}] ${message}`, ok ? 'success' : 'error');
+      showToast(message);
+      return { success: ok, message };
+    },
+    [netInfo, mounts, hostDraft, refreshPortableSnapshot, appendLog, showToast]
+  );
+
+  const handleSkipTroubleshootStep = useCallback(
+    async (ticket: TroubleshootTicket, step: TroubleshootWizardStep) => {
+      const nowIso = new Date().toISOString();
+      const skipArr = (arr: TroubleshootWizardStep[]) =>
+        arr.map((item) =>
+          item.stepId === step.stepId
+            ? {
+                ...item,
+                status: 'skipped' as const,
+                lastAttemptAt: nowIso,
+                lastMessage: '사용자 건너뛰기 선택',
+              }
+            : item
+        );
+      const updated = recomputeTroubleshootTicketStatus(
+        {
+          ...ticket,
+          hostSteps: skipArr(ticket.hostSteps),
+          clientSteps: skipArr(ticket.clientSteps),
+        },
+        netInfo.hostname
+      );
+      const saved = await shareBridge.updateTroubleshootTicket(updated);
+      setTroubleshootTickets(saved.tickets);
+      refreshPortableSnapshot(netInfo.hostname);
+    },
+    [netInfo.hostname, refreshPortableSnapshot]
+  );
+
+  const handleVerifyTroubleshootTarget = useCallback(
+    async (ticket: TroubleshootTicket) => {
+      const target = ticket.targetIp || ticket.targetHostName || netInfo.primaryIp;
+      const res = await shareBridge.pingHost(target);
+      appendLog('USB 오류 마법사', `445 도달성 점검 (${target}): ${res.detail}`, res.reachable && res.smbPortOpen ? 'success' : 'error');
+      return {
+        reachable: res.reachable,
+        smbPortOpen: res.smbPortOpen,
+        detail: res.detail,
+      };
+    },
+    [netInfo.primaryIp, appendLog]
+  );
+
+  const handleMarkTroubleshootResolved = useCallback(
+    async (ticket: TroubleshootTicket) => {
+      const nowIso = new Date().toISOString();
+      const updated: TroubleshootTicket = {
+        ...ticket,
+        status: 'resolved',
+        resolvedAt: nowIso,
+        resolvedByHostName: netInfo.hostname,
+        updatedAt: nowIso,
+      };
+      const saved = await shareBridge.updateTroubleshootTicket(updated);
+      setTroubleshootTickets(saved.tickets);
+      refreshPortableSnapshot(netInfo.hostname);
+      appendLog('USB 오류 마법사', `티켓(${ticket.errorCode})을 해결 완료 상태로 표시했습니다.`, 'success');
+      showToast('해결 완료로 표시했습니다. 이력 정리 전까지 USB에 안전하게 보존됩니다.');
+    },
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+  );
+
+  const handleDeleteTroubleshootTicket = useCallback(
+    async (ticketId: string) => {
+      const res = await shareBridge.deleteTroubleshootTicket(ticketId);
+      setTroubleshootTickets(res.tickets);
+      refreshPortableSnapshot(netInfo.hostname);
+      if (selectedTroubleshootTicketId === ticketId) {
+        setSelectedTroubleshootTicketId(res.tickets[0]?.ticketId || null);
+      }
+      if (res.tickets.length === 0) {
+        setTroubleshootWizardOpen(false);
+      }
+      appendLog('USB 오류 마법사', '선택한 USB 오류 티켓을 삭제했습니다.', 'success');
+      showToast('USB 오류 티켓을 삭제했습니다.');
+    },
+    [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, appendLog, showToast]
+  );
+
+  const handleClearResolvedTroubleshootTickets = useCallback(async () => {
+    const res = await shareBridge.clearResolvedTroubleshootTickets();
+    setTroubleshootTickets(res.tickets);
+    refreshPortableSnapshot(netInfo.hostname);
+    if (res.tickets.length === 0) {
+      setTroubleshootWizardOpen(false);
+      setSelectedTroubleshootTicketId(null);
+    } else if (selectedTroubleshootTicketId && !res.tickets.some((t) => t.ticketId === selectedTroubleshootTicketId)) {
+      setSelectedTroubleshootTicketId(res.tickets[0].ticketId);
+    }
+    appendLog('USB 오류 마법사', `해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`, 'success');
+    showToast(`해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`);
+  }, [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, appendLog, showToast]);
+
   const handleDeletePortableHostShare = useCallback(
     async (sourceHostName: string, shareName: string) => {
       try {
@@ -1107,18 +1520,31 @@ export const App: React.FC = () => {
         completeProgressJob(jobKey, `공유폴더 '${res.share.shareName}' 개설 완료 (${res.share.uncPath})`, res.steps);
       } else {
         const failedStep = res.steps.find((s) => s.status === 'error');
+        const errMsg = failedStep?.error || '공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.';
         appendLog('메인 PC', `공유폴더(${config.shareName}) 구성 중 오류가 발생했습니다.`, 'error');
         showToast('공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.');
-        failProgressJob(
-          jobKey,
-          failedStep?.error || '공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.',
-          res.steps
-        );
+        void captureTroubleshootFailure({
+          originRole: 'host',
+          netInfoSnap: freshNet,
+          errorMessage: errMsg,
+          shareName: config.shareName,
+          folderPath: config.folderPath,
+          authMode: config.authMode,
+        });
+        failProgressJob(jobKey, errMsg, res.steps);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
       appendLog('메인 PC', `공유폴더 구성 예외: ${msg}`, 'error');
       showToast('공유폴더 구성 중 예외가 발생했습니다.');
+      void captureTroubleshootFailure({
+        originRole: 'host',
+        netInfoSnap: netInfo,
+        errorMessage: msg,
+        shareName: config.shareName,
+        folderPath: config.folderPath,
+        authMode: config.authMode,
+      });
       failProgressJob(jobKey, msg, latestSteps);
     } finally {
       setIsHostExecuting(false);
@@ -1237,18 +1663,33 @@ export const App: React.FC = () => {
         );
       } else {
         const failedStep = res.steps.find((s) => s.status === 'error');
+        const errMsg = failedStep?.error || '네트워크 드라이브 연결에 실패했습니다. 원인 안내를 확인하세요.';
         appendLog('클라이언트 PC', `\\\\${config.targetHost}\\${config.shareName} 연결 실패`, 'error');
         showToast('연결에 실패했습니다. 파이프라인 단계 오류를 확인하세요.');
-        failProgressJob(
-          jobKey,
-          failedStep?.error || '네트워크 드라이브 연결에 실패했습니다. 원인 안내를 확인하세요.',
-          res.steps
-        );
+        void captureTroubleshootFailure({
+          originRole: 'client',
+          netInfoSnap: netInfo,
+          errorMessage: errMsg,
+          targetHost: config.targetHost,
+          shareName: config.shareName,
+          driveLetter: config.driveLetter,
+          authMode: config.authMode,
+        });
+        failProgressJob(jobKey, errMsg, res.steps);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
       appendLog('클라이언트 PC', `연결 예외: ${msg}`, 'error');
       showToast('연결 실행 중 예외가 발생했습니다.');
+      void captureTroubleshootFailure({
+        originRole: 'client',
+        netInfoSnap: netInfo,
+        errorMessage: msg,
+        targetHost: config.targetHost,
+        shareName: config.shareName,
+        driveLetter: config.driveLetter,
+        authMode: config.authMode,
+      });
       failProgressJob(jobKey, msg, latestSteps);
     } finally {
       setIsClientConnecting(false);
@@ -1299,6 +1740,15 @@ export const App: React.FC = () => {
       if (!bridgeRes.success) {
         appendLog('구형 OS 메인', `브릿지 정책 적용 실패: ${bridgeRes.summary}`, 'error');
         showToast('구형 OS 호환 브릿지 적용에 실패했습니다.');
+        void captureTroubleshootFailure({
+          originRole: 'host',
+          netInfoSnap: freshNet,
+          errorMessage: bridgeRes.summary,
+          shareName: config.shareName,
+          folderPath: config.folderPath,
+          authMode: config.authMode,
+          isLegacyOs: true,
+        });
         failProgressJob(jobKey, bridgeRes.summary, latestSteps);
         return;
       }
@@ -1344,13 +1794,19 @@ export const App: React.FC = () => {
         );
       } else {
         const failedStep = shareRes.steps.find((s) => s.status === 'error');
+        const errMsg = failedStep?.error || '공유폴더 개설 단계에서 오류가 발생했습니다.';
         appendLog('구형 OS 메인', `공유폴더(${config.shareName}) 개설 중 오류 발생`, 'error');
         showToast('공유폴더 개설 단계에서 오류가 발생했습니다.');
-        failProgressJob(
-          jobKey,
-          failedStep?.error || '공유폴더 개설 단계에서 오류가 발생했습니다.',
-          [bridgeStep, ...shareRes.steps]
-        );
+        void captureTroubleshootFailure({
+          originRole: 'host',
+          netInfoSnap: freshNet,
+          errorMessage: errMsg,
+          shareName: config.shareName,
+          folderPath: config.folderPath,
+          authMode: config.authMode,
+          isLegacyOs: true,
+        });
+        failProgressJob(jobKey, errMsg, [bridgeStep, ...shareRes.steps]);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
@@ -1358,6 +1814,15 @@ export const App: React.FC = () => {
       setLegacyHostSteps(errSteps);
       appendLog('구형 OS 메인', `통합 개설 예외: ${msg}`, 'error');
       showToast(`구형 OS 메인 개설 실패: ${msg}`);
+      void captureTroubleshootFailure({
+        originRole: 'host',
+        netInfoSnap: netInfo,
+        errorMessage: msg,
+        shareName: config.shareName,
+        folderPath: config.folderPath,
+        authMode: config.authMode,
+        isLegacyOs: true,
+      });
       failProgressJob(jobKey, msg, errSteps);
     } finally {
       setIsHostExecuting(false);
@@ -1416,6 +1881,16 @@ export const App: React.FC = () => {
         if (!bridgeRes.success) {
           appendLog('구형 OS 클라이언트', `브릿지 정렬 실패: ${bridgeRes.summary}`, 'error');
           showToast('구형 OS 호환 브릿지 정렬에 실패했습니다.');
+          void captureTroubleshootFailure({
+            originRole: 'client',
+            netInfoSnap: freshNet,
+            errorMessage: bridgeRes.summary,
+            targetHost: config.targetHost,
+            shareName: config.shareName,
+            driveLetter: config.driveLetter,
+            authMode: config.authMode,
+            isLegacyOs: true,
+          });
           failProgressJob(jobKey, bridgeRes.summary, latestSteps);
           return;
         }
@@ -1466,13 +1941,20 @@ export const App: React.FC = () => {
         );
       } else {
         const failedStep = mountRes.steps.find((s) => s.status === 'error');
+        const errMsg = failedStep?.error || '구형 OS 클라이언트 드라이브 연결에 실패했습니다.';
         appendLog('구형 OS 클라이언트', `\\\\${config.targetHost}\\${config.shareName} 연결 실패`, 'error');
         showToast('클라이언트 연결에 실패했습니다. 파이프라인 처방 가이드를 확인하세요.');
-        failProgressJob(
-          jobKey,
-          failedStep?.error || '구형 OS 클라이언트 드라이브 연결에 실패했습니다.',
-          [bridgeStep, ...mountRes.steps]
-        );
+        void captureTroubleshootFailure({
+          originRole: 'client',
+          netInfoSnap: freshNet,
+          errorMessage: errMsg,
+          targetHost: config.targetHost,
+          shareName: config.shareName,
+          driveLetter: config.driveLetter,
+          authMode: config.authMode,
+          isLegacyOs: true,
+        });
+        failProgressJob(jobKey, errMsg, [bridgeStep, ...mountRes.steps]);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
@@ -1480,6 +1962,16 @@ export const App: React.FC = () => {
       setLegacyClientSteps(errSteps);
       appendLog('구형 OS 클라이언트', `통합 연결 예외: ${msg}`, 'error');
       showToast(`구형 OS 클라이언트 연결 실패: ${msg}`);
+      void captureTroubleshootFailure({
+        originRole: 'client',
+        netInfoSnap: netInfo,
+        errorMessage: msg,
+        targetHost: config.targetHost,
+        shareName: config.shareName,
+        driveLetter: config.driveLetter,
+        authMode: config.authMode,
+        isLegacyOs: true,
+      });
       failProgressJob(jobKey, msg, errSteps);
     } finally {
       setIsClientConnecting(false);
@@ -2654,6 +3146,16 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        <TroubleshootHandoffBanner
+          tickets={troubleshootTickets}
+          matchResult={troubleshootMatch}
+          currentHostname={netInfo.hostname}
+          writeProtected={portableStatus.writeProtected}
+          onOpenWizard={handleOpenTroubleshootWizard}
+          onDeleteTicket={handleDeleteTroubleshootTicket}
+          onClearResolved={handleClearResolvedTroubleshootTickets}
+        />
+
         {activeSection === 'workspace' && (
           <LocationProfileBar
             profiles={locationProfiles}
@@ -2720,6 +3222,7 @@ export const App: React.FC = () => {
             onRemoveShare={handleRemoveShare}
             onOpenFolder={handleOpenPath}
             onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: '공유 개설' })}
+            onOpenTroubleshootWizard={() => handleOpenTroubleshootWizard()}
           />
         )}
 
@@ -2754,6 +3257,7 @@ export const App: React.FC = () => {
             onOpenDiagnostics={(errText) => {
               void handleOpenDiagnostics(errText);
             }}
+            onOpenTroubleshootWizard={() => handleOpenTroubleshootWizard()}
             onScanLan={handleScanLan}
             onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: '클라이언트 연결' })}
             onConnect={handleConnectClient}
@@ -2839,6 +3343,7 @@ export const App: React.FC = () => {
             onOpenDiagnostics={(errText) => {
               void handleOpenDiagnostics(errText);
             }}
+            onOpenTroubleshootWizard={() => handleOpenTroubleshootWizard()}
             onNotify={showToast}
           />
         )}
@@ -3095,6 +3600,23 @@ export const App: React.FC = () => {
           if (!preflightTargetProfile) return;
           void executeBatchApplyLocation(preflightTargetProfile, preflightReport);
         }}
+      />
+
+      <TroubleshootWizardModal
+        isOpen={troubleshootWizardOpen}
+        tickets={troubleshootTickets}
+        selectedTicketId={selectedTroubleshootTicketId}
+        matchResult={troubleshootMatch}
+        netInfo={netInfo}
+        writeProtected={portableStatus.writeProtected}
+        onSelectTicket={setSelectedTroubleshootTicketId}
+        onClose={() => setTroubleshootWizardOpen(false)}
+        onExecuteStep={handleExecuteTroubleshootStep}
+        onSkipStep={handleSkipTroubleshootStep}
+        onVerifyTargetReachability={handleVerifyTroubleshootTarget}
+        onMarkResolved={handleMarkTroubleshootResolved}
+        onDeleteTicket={handleDeleteTroubleshootTicket}
+        onClearResolved={handleClearResolvedTroubleshootTickets}
       />
 
       <WorkProgressModal

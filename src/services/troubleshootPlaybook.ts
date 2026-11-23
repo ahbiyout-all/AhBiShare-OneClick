@@ -1,0 +1,706 @@
+import {
+  ActiveShare,
+  AuthMode,
+  DiscoveredPeer,
+  HostPolicySnapshot,
+  LocalNetworkInfo,
+  MountedDrive,
+  PortableHostShareEntry,
+  RoleMode,
+  TroubleshootMatchResult,
+  TroubleshootStepStatus,
+  TroubleshootTicket,
+  TroubleshootTicketStatus,
+  TroubleshootWizardStep,
+} from '@/types/share';
+import { classifyFailureDiagnostics } from '@/services/networkEvolution';
+import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
+
+export interface BuildTroubleshootTicketInput {
+  originRole: RoleMode;
+  netInfo: LocalNetworkInfo;
+  errorMessage: string;
+  targetHost?: string;
+  targetHostNameHint?: string;
+  targetIpHint?: string;
+  shareName?: string;
+  folderPath?: string;
+  driveLetter?: string;
+  authMode: AuthMode;
+  isLegacyOs?: boolean;
+  portableShares?: PortableHostShareEntry[];
+  hostPolicySnapshots?: Record<string, HostPolicySnapshot>;
+  peers?: DiscoveredPeer[];
+  activeShares?: ActiveShare[];
+}
+
+function isIpv4Like(val?: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test((val || '').trim());
+}
+
+export function sanitizeTroubleshootErrorSummary(rawText?: string, maxLength = 500): string {
+  if (!rawText) return '';
+  let text = String(rawText).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ');
+  text = text
+    .replace(/ABSHARE:\/\/[A-Za-z0-9+/=_-]+/gi, 'ABSHARE://[REDACTED]')
+    .replace(/(cmdkey(?:\.exe)?\s+\/add:\S+\s+\/user:\S+\s+\/pass:)\S+/gi, '$1[REDACTED]')
+    .replace(/(\/pass(?:word)?\s*:\s*)\S+/gi, '$1[REDACTED]')
+    .replace(/(\/user(?:name)?\s*:\s*\S+\s+)([^\s/"']+|"[^"]*"|'[^']*')/gi, '$1[REDACTED]')
+    .replace(/(ConvertTo-SecureString\s+)(?:-String\s+)?(['"])[^'"]*\2/gi, "$1'[REDACTED]'")
+    .replace(/\b(password|passwd|pwd|pw|암호|비밀번호)\s*([:=])\s*(?!\[REDACTED\])(['"]?)[^\s,;'"|)]+\3/gi, '$1$2[REDACTED]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (maxLength > 0 && text.length > maxLength) {
+    text = `${text.slice(0, maxLength - 3).trimEnd()}...`;
+  }
+  return text;
+}
+
+function classifyHostErrorCode(errorMessage: string): { code: string; title: string } {
+  const raw = errorMessage || '';
+  if (/관리자|administrator|access is denied|액세스.*거부|권한/i.test(raw)) {
+    return {
+      code: 'Host Permission Error',
+      title: '호스트 관리자 권한 또는 폴더 ACL 접근 권한 부족',
+    };
+  }
+  if (/방화벽|firewall|445/i.test(raw)) {
+    return {
+      code: 'Host Firewall 445',
+      title: '호스트 TCP 445 인바운드 방화벽 규칙 차단',
+    };
+  }
+  if (/lanmanserver|server 서비스|srv|서비스/i.test(raw)) {
+    return {
+      code: 'Host Service Stopped',
+      title: '호스트 SMB Server(LanmanServer) 서비스 중지됨',
+    };
+  }
+  if (/폴더|경로|not found|enoent|directory/i.test(raw)) {
+    return {
+      code: 'Host Folder Missing',
+      title: '공유 대상 로컬 폴더 경로 확인 필요',
+    };
+  }
+  if (/legacy|브릿지|encryptdata|smb1|서명/i.test(raw)) {
+    return {
+      code: 'Host Legacy Bridge',
+      title: '구형 OS 호환 SMB 브릿지 정책 적용 실패',
+    };
+  }
+  return {
+    code: 'Host Setup Error',
+    title: '호스트 SMB 공유폴더 구성 단계 오류',
+  };
+}
+
+function resolveTargetIdentity(input: BuildTroubleshootTicketInput): {
+  targetHostName: string;
+  targetIp: string;
+  shareName: string;
+} {
+  const cleanShare = (input.shareName || 'AhBiShared').trim() || 'AhBiShared';
+  if (input.originRole === 'host') {
+    return {
+      targetHostName: (input.targetHostNameHint || input.netInfo.hostname || 'MAIN-HOST-PC').trim(),
+      targetIp: (input.targetIpHint || input.netInfo.primaryIp || '').trim(),
+      shareName: cleanShare,
+    };
+  }
+
+  const rawTarget = (input.targetHost || '').trim();
+  let resolvedHostName = (input.targetHostNameHint || '').trim();
+  let resolvedIp = (input.targetIpHint || '').trim();
+
+  if (isIpv4Like(rawTarget)) {
+    if (!resolvedIp) resolvedIp = rawTarget;
+  } else if (rawTarget) {
+    if (!resolvedHostName) resolvedHostName = rawTarget;
+  }
+
+  const targetLower = rawTarget.toLowerCase();
+  const shareLower = cleanShare.toLowerCase();
+
+  // Cross-reference USB portable shares
+  for (const ps of input.portableShares || []) {
+    const hostMatch =
+      (targetLower &&
+        ((ps.sourceIp || '').trim().toLowerCase() === targetLower ||
+          (ps.sourceHostName || '').trim().toLowerCase() === targetLower)) ||
+      (!targetLower && ps.shareName.trim().toLowerCase() === shareLower);
+    if (hostMatch) {
+      if (!resolvedHostName && ps.sourceHostName) resolvedHostName = ps.sourceHostName.trim();
+      if (!resolvedIp && ps.sourceIp) resolvedIp = ps.sourceIp.trim();
+      if (ps.shareName.trim().toLowerCase() === shareLower) break;
+    }
+  }
+
+  // Cross-reference discovered LAN peers
+  for (const peer of input.peers || []) {
+    const match =
+      targetLower &&
+      (peer.ipAddress.trim().toLowerCase() === targetLower || peer.hostName.trim().toLowerCase() === targetLower);
+    if (match) {
+      if (!resolvedHostName && peer.hostName) resolvedHostName = peer.hostName.trim();
+      if (!resolvedIp && peer.ipAddress) resolvedIp = peer.ipAddress.trim();
+      break;
+    }
+  }
+
+  // Cross-reference saved HostPolicySnapshot map
+  for (const snap of Object.values(input.hostPolicySnapshots || {})) {
+    const match =
+      targetLower &&
+      ((snap.sourceIp || '').trim().toLowerCase() === targetLower ||
+        snap.hostName.trim().toLowerCase() === targetLower);
+    if (match) {
+      if (!resolvedHostName && snap.hostName) resolvedHostName = snap.hostName.trim();
+      if (!resolvedIp && snap.sourceIp) resolvedIp = snap.sourceIp.trim();
+      break;
+    }
+  }
+
+  // Fallback cross-reference on activeShares
+  for (const sh of input.activeShares || []) {
+    const match =
+      targetLower &&
+      ((sh.sourceIp || '').trim().toLowerCase() === targetLower ||
+        (sh.sourceHostName || '').trim().toLowerCase() === targetLower);
+    if (match) {
+      if (!resolvedHostName && sh.sourceHostName) resolvedHostName = sh.sourceHostName.trim();
+      if (!resolvedIp && sh.sourceIp) resolvedIp = sh.sourceIp.trim();
+      break;
+    }
+  }
+
+  return {
+    targetHostName: resolvedHostName || (isIpv4Like(rawTarget) ? '' : rawTarget),
+    targetIp: resolvedIp || (isIpv4Like(rawTarget) ? rawTarget : ''),
+    shareName: cleanShare,
+  };
+}
+
+function makeStep(
+  side: 'host' | 'client',
+  order: number,
+  partial: Omit<TroubleshootWizardStep, 'stepId' | 'side' | 'order' | 'status'>
+): TroubleshootWizardStep {
+  return {
+    stepId: `${side}-${order}-${partial.executor}`,
+    side,
+    order,
+    status: 'pending',
+    ...partial,
+  };
+}
+
+export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput): TroubleshootTicket {
+  const nowIso = new Date().toISOString();
+  const { targetHostName, targetIp, shareName } = resolveTargetIdentity(input);
+  const cleanedSummary = sanitizeTroubleshootErrorSummary(input.errorMessage || '연결 또는 공유 구성 오류 발생');
+  const hostUnlockCmd = buildHostGuestUnlockPsCommand(shareName);
+  const normalizedTargetForDisplay = targetIp || targetHostName || '대상 호스트';
+
+  let errorCode = 'Mount Diagnostic';
+  let errorTitle = '네트워크 공유 연결 오류';
+  let recommendedSide: 'host' | 'client' | 'both' = 'both';
+  let hostSteps: TroubleshootWizardStep[] = [];
+  let clientSteps: TroubleshootWizardStep[] = [];
+
+  if (input.originRole === 'host') {
+    const hostDiag = classifyHostErrorCode(cleanedSummary);
+    errorCode = hostDiag.code;
+    errorTitle = hostDiag.title;
+    recommendedSide = 'host';
+
+    if (input.isLegacyOs) {
+      hostSteps.push(
+        makeStep('host', 1, {
+          executor: 'apply_legacy_bridge',
+          patchMode: 'legacy_bridge_compat',
+          title: '구형 OS SMB 2.1/3.0 호환 브릿지 정책 정렬',
+          description: 'EncryptData=0 · 서명 완화 · NTLMv2 고정 및 LanmanServer/방화벽 445 규칙을 정렬합니다.',
+        })
+      );
+    } else {
+      hostSteps.push(
+        makeStep('host', 1, {
+          executor: 'apply_safe_compat',
+          patchMode: 'safe_compat',
+          title: '호스트 SMB 서비스(LanmanServer) 및 TCP 445 방화벽 개방',
+          description: '공유 서비스 가동 상태, 개인 네트워크 프로필 전환 및 TCP 445 인바운드 규칙을 복구합니다.',
+        })
+      );
+    }
+
+    if (input.authMode === 'guest') {
+      hostSteps.push(
+        makeStep('host', hostSteps.length + 1, {
+          executor: 'host_guest_unlock_and_reopen',
+          title: '호스트 Guest 무비밀번호 차단 해제 및 ACL 권한 정렬',
+          description: 'LimitBlankPasswordUse=0 · SeDenyNetworkLogonRight 정리 · Guest 활성화 및 공유 권한을 재정렬합니다.',
+          commandPreview: hostUnlockCmd,
+        })
+      );
+    }
+
+    hostSteps.push(
+      makeStep('host', hostSteps.length + 1, {
+        executor: 'retry_host_share',
+        title: `'${shareName}' SMB 공유폴더 원클릭 재개설 실행`,
+        description: `${input.folderPath || 'C:\\AhBiShared'} 폴더 확인 후 공유 및 USB 포터블 동기화를 다시 실행합니다.`,
+      })
+    );
+
+    clientSteps = [
+      makeStep('client', 1, {
+        executor: 'verify_port_445',
+        title: `클라이언트에서 ${normalizedTargetForDisplay} TCP 445 도달성 점검`,
+        description: '호스트 공유 재개설 후 클라이언트 PC가 SMB 포트 445에 정상 도달하는지 확인합니다.',
+      }),
+    ];
+  } else {
+    const diag = classifyFailureDiagnostics(input.errorMessage);
+    errorCode = diag?.code || 'Mount Diagnostic';
+    errorTitle = diag?.title || '네트워크 드라이브 연결 실패';
+
+    if (errorCode === 'Error 1385') {
+      recommendedSide = 'host';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: 'host_guest_unlock_and_reopen',
+          title: '호스트 Guest 네트워크 로그온 거부(1385) 정책 해제',
+          description:
+            '호스트의 SeDenyNetworkLogonRight에서 Guest/Guests를 제거하고 LimitBlankPasswordUse=0 및 445 방화벽을 즉시 개방합니다.',
+          commandPreview: hostUnlockCmd,
+        }),
+        makeStep('host', 2, {
+          executor: 'apply_safe_compat',
+          patchMode: 'safe_compat',
+          title: '호스트 SMB 서명 완화 및 공유 서비스(LanmanServer) 재정렬',
+          description: 'Win 11 24H2~26H2 서버 측 SMB 서명 강제를 완화하고 공유 상태를 갱신합니다.',
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'switch_to_account_mode',
+          title: '(대안) 보안 계정 모드로 전환하여 즉시 연결 준비',
+          description: '호스트에서 Guest 개방을 원치 않는다면 보안 계정(아이디/암호) 모드로 전환해 바로 접속할 수 있습니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 네트워크 드라이브 재연결`,
+          description: '호스트 조치(또는 계정 전환) 완료 후 지정한 드라이브 문자로 다시 연결합니다.',
+        }),
+      ];
+    } else if (errorCode === 'Error 1223') {
+      recommendedSide = 'both';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: 'host_guest_unlock_and_reopen',
+          title: '호스트 익명/Guest 차단(1223) 해제 및 공유 권한 정렬',
+          description: '익명 자격 증명 요구를 일으키는 빈 암호 제한과 Guest 네트워크 로그온 차단을 호스트에서 해제합니다.',
+          commandPreview: hostUnlockCmd,
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'switch_to_account_mode',
+          title: '클라이언트 보안 계정(cmdkey) 인증 모드로 전환',
+          description: '호스트가 자격 증명을 요구하는 경우 보안 계정 모드로 전환해 계정/암호를 입력합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+          description: '호스트 개방 또는 보안 계정 입력 후 네트워크 드라이브 연결을 다시 시도합니다.',
+        }),
+      ];
+    } else if (errorCode === '0x80070035 / 1272') {
+      recommendedSide = 'both';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: 'apply_safe_compat',
+          patchMode: 'safe_compat',
+          title: '호스트 SMB 서버 서명 완화 및 게스트 인증 허용',
+          description: '호스트 측 RequireSecuritySignature=0 및 LanmanServer 구성을 호환 모드로 정렬합니다.',
+        }),
+        makeStep('host', 2, {
+          executor: 'host_guest_unlock_and_reopen',
+          title: '호스트 Guest 무비밀번호 · 빈 암호 허용 일괄 개방',
+          description: 'Guest 계정 활성화, LimitBlankPasswordUse=0 및 방화벽 TCP 445 규칙을 적용합니다.',
+          commandPreview: hostUnlockCmd,
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'apply_safe_compat',
+          patchMode: 'safe_compat',
+          title: '클라이언트 Win 11 24H2~26H2 비인증 게스트·서명 완화 적용',
+          description: 'AllowInsecureGuestAuth=1, EnableInsecureGuestLogons=1 및 SMB 클라이언트 서명 완화를 적용합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+          description: '양단 안전 호환 패치 완료 후 네트워크 드라이브를 다시 연결합니다.',
+        }),
+      ];
+    } else if (errorCode === 'Error 5 / 86 / 1326') {
+      recommendedSide = 'both';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: 'host_guest_unlock_and_reopen',
+          title: '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0) 및 ACL 정렬',
+          description: 'Guest 빈 암호 거부 또는 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
+          commandPreview: hostUnlockCmd,
+        }),
+        makeStep('host', 2, {
+          executor: 'retry_host_share',
+          title: `호스트 공유 '${shareName}' 재적용 및 상태 검증`,
+          description: '보안 계정 사용 시에도 공유 권한과 로컬 계정 상태를 갱신합니다.',
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'clear_conflicting_sessions',
+          title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
+          description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'switch_to_account_mode',
+          title: '보안 계정 모드로 전환해 정확한 아이디·암호 입력 준비',
+          description: '호스트에 설정된 전용 공유 계정(아이디/암호)으로 인증 모드를 맞춥니다.',
+        }),
+        makeStep('client', 3, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+          description: '세션 정리 및 인증 확인 후 네트워크 드라이브 연결을 다시 실행합니다.',
+        }),
+      ];
+    } else if (errorCode === 'Error 58') {
+      recommendedSide = 'both';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: 'apply_legacy_bridge',
+          patchMode: 'legacy_bridge_compat',
+          title: '호스트 구형 OS SMB 2.1/3.0 브릿지 호환 적용',
+          description: 'SMB 전송 암호화 강제(EncryptData/RejectUnencryptedAccess)를 끄고 NTLMv2 및 서명 완화를 적용합니다.',
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'apply_legacy_bridge',
+          patchMode: 'legacy_bridge_compat',
+          title: '클라이언트 구형 OS 브릿지(서명 완화·NTLMv2) 정렬',
+          description: '클라이언트 측 SMB 서명 요구와 NTLM 호환 수준을 호스트와 일치시킵니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 구형 호환 재연결 실행`,
+          description: '양단 SMB 브릿지 정렬 완료 후 네트워크 드라이브를 다시 연결합니다.',
+        }),
+      ];
+    } else if (errorCode === 'Error 53 / TCP 445') {
+      recommendedSide = 'host';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: 'apply_safe_compat',
+          patchMode: 'safe_compat',
+          title: '호스트 TCP 445 방화벽 개방 · 개인 네트워크 · LanmanServer 가동',
+          description: '호스트 방화벽에서 포트 445가 차단되었는지 점검하고 파일 및 프린터 공유 규칙을 개방합니다.',
+        }),
+        makeStep('host', 2, {
+          executor: 'retry_host_share',
+          title: `호스트 '${shareName}' 공유 활성화 상태 재확인`,
+          description: '대상 공유 폴더가 정상 개설되어 있고 네트워크 탐색이 켜져 있는지 재적용합니다.',
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'verify_port_445',
+          title: `${normalizedTargetForDisplay} Ping 및 TCP 445 포트 도달성 재검사`,
+          description: '호스트 PC와 같은 대역(LAN)에 연결되어 있고 445 포트가 열려 있는지 실시간 확인합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'enable_smbv1_client',
+          patchMode: 'enable_smbv1_client',
+          title: '(구형 장비/Win7 전용) SMBv1 클라이언트 기능 설치',
+          description: '대상 호스트가 SMB 2.0 미지원 구형 장비·NAS·레거시 PC일 경우에만 적용하세요.',
+        }),
+        makeStep('client', 3, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+          description: '네트워크 경로 및 포트 445 개방 확인 후 드라이브 연결을 재시도합니다.',
+        }),
+      ];
+    } else if (errorCode === 'Error 1219') {
+      recommendedSide = 'client';
+      hostSteps = [];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'clear_conflicting_sessions',
+          title: `${normalizedTargetForDisplay} 기존 SMB 다중 세션 · 자격 증명 정리`,
+          description: '동일 서버에 열려 있는 다른 사용자 세션(net use * /delete)과 cmdkey 캐시를 정리합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+          description: '충돌 세션 제거 후 지정한 인증 방식으로 즉시 재연결합니다.',
+        }),
+      ];
+    } else if (errorCode === 'Error 85') {
+      recommendedSide = 'client';
+      hostSteps = [];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'reassign_free_drive',
+          title: `사용 중인 드라이브(${input.driveLetter || 'Z:'})를 빈 드라이브 문자로 자동 변경`,
+          description: '이미 할당된 드라이브 문자 충돌을 피하기 위해 사용 가능한 다음 드라이브 문자로 재배정합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 새 드라이브 문자로 재연결`,
+          description: '새로 배정된 드라이브 문자로 네트워크 공유를 연결합니다.',
+        }),
+      ];
+    } else {
+      recommendedSide = 'both';
+      hostSteps = [
+        makeStep('host', 1, {
+          executor: input.isLegacyOs ? 'apply_legacy_bridge' : 'apply_safe_compat',
+          patchMode: input.isLegacyOs ? 'legacy_bridge_compat' : 'safe_compat',
+          title: '호스트 SMB 호환 정책 및 방화벽 445 정렬',
+          description: '호스트 측 서명 완화, 게스트/공유 권한 및 TCP 445 인바운드 규칙을 점검합니다.',
+        }),
+        makeStep('host', 2, {
+          executor: 'retry_host_share',
+          title: `호스트 '${shareName}' 공유 상태 재점검`,
+          description: '활성 SMB 공유 존재 여부와 폴더 접근 권한을 재적용합니다.',
+        }),
+      ];
+      clientSteps = [
+        makeStep('client', 1, {
+          executor: 'verify_port_445',
+          title: `${normalizedTargetForDisplay} TCP 445 도달성 점검`,
+          description: '클라이언트에서 호스트 IP 및 SMB 445 포트로 도달 가능한지 확인합니다.',
+        }),
+        makeStep('client', 2, {
+          executor: input.isLegacyOs ? 'apply_legacy_bridge' : 'apply_safe_compat',
+          patchMode: input.isLegacyOs ? 'legacy_bridge_compat' : 'safe_compat',
+          title: '클라이언트 SMB 클라이언트 호환 정책 정렬',
+          description: '클라이언트 측 게스트 로그온 및 SMB 서명 완화 설정을 적용합니다.',
+        }),
+        makeStep('client', 3, {
+          executor: 'retry_mount',
+          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+          description: '점검 및 정책 정렬 후 네트워크 드라이브를 다시 연결합니다.',
+        }),
+      ];
+    }
+  }
+
+  return {
+    ticketId: `ts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    schemaVersion: 1,
+    originRole: input.originRole,
+    originHostName: (input.netInfo.hostname || 'LOCAL-PC').trim(),
+    originIp: (input.netInfo.primaryIp || '').trim(),
+    targetHostName,
+    targetIp,
+    shareName,
+    ...(input.folderPath ? { folderPath: input.folderPath.trim() } : {}),
+    ...(input.driveLetter ? { driveLetter: input.driveLetter.trim() } : {}),
+    authMode: input.authMode,
+    ...(typeof input.isLegacyOs === 'boolean' ? { isLegacyOs: input.isLegacyOs } : {}),
+    errorCode,
+    errorTitle,
+    rawErrorSummary: cleanedSummary,
+    recommendedSide,
+    hostSteps,
+    clientSteps,
+    status: 'open',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
+function sameNormalizedEndpoint(a: TroubleshootTicket, b: TroubleshootTicket): boolean {
+  const hostA = (a.targetHostName || a.targetIp || '').trim().toLowerCase();
+  const hostB = (b.targetHostName || b.targetIp || '').trim().toLowerCase();
+  const ipA = (a.targetIp || '').trim().toLowerCase();
+  const ipB = (b.targetIp || '').trim().toLowerCase();
+  const hostMatch = Boolean((hostA && hostA === hostB) || (ipA && ipA === ipB));
+  return (
+    a.originRole === b.originRole &&
+    hostMatch &&
+    a.shareName.trim().toLowerCase() === b.shareName.trim().toLowerCase() &&
+    a.errorCode === b.errorCode
+  );
+}
+
+export function upsertTroubleshootTicketList(
+  existing: TroubleshootTicket[],
+  incoming: TroubleshootTicket
+): { list: TroubleshootTicket[]; ticket: TroubleshootTicket } {
+  const prevOpenIdx = existing.findIndex(
+    (item) => item.status !== 'resolved' && sameNormalizedEndpoint(item, incoming)
+  );
+  if (prevOpenIdx >= 0) {
+    const prev = existing[prevOpenIdx];
+    const mergedTicket: TroubleshootTicket = {
+      ...incoming,
+      ticketId: prev.ticketId,
+      createdAt: prev.createdAt,
+      targetHostName: incoming.targetHostName || prev.targetHostName,
+      targetIp: incoming.targetIp || prev.targetIp,
+      folderPath: incoming.folderPath || prev.folderPath,
+      driveLetter: incoming.driveLetter || prev.driveLetter,
+      updatedAt: incoming.updatedAt,
+    };
+    const nextList = [mergedTicket, ...existing.filter((_, i) => i !== prevOpenIdx)].slice(0, 30);
+    return { list: nextList, ticket: mergedTicket };
+  }
+  const nextList = [incoming, ...existing].slice(0, 30);
+  return { list: nextList, ticket: incoming };
+}
+
+export function recomputeTroubleshootTicketStatus(
+  ticket: TroubleshootTicket,
+  actorHostName: string
+): TroubleshootTicket {
+  const nowIso = new Date().toISOString();
+  const isDone = (s: TroubleshootStepStatus) => s === 'completed' || s === 'skipped';
+  const hostHasSteps = ticket.hostSteps.length > 0;
+  const clientHasSteps = ticket.clientSteps.length > 0;
+  const hostAllDone = !hostHasSteps || ticket.hostSteps.every((s) => isDone(s.status));
+  const clientAllDone = !clientHasSteps || ticket.clientSteps.every((s) => isDone(s.status));
+  const hostAnyCompleted = ticket.hostSteps.some((s) => s.status === 'completed');
+  const clientAnyCompleted = ticket.clientSteps.some((s) => s.status === 'completed');
+
+  let nextStatus: TroubleshootTicketStatus = 'open';
+  if (hostAllDone && clientAllDone && (hostAnyCompleted || clientAnyCompleted || ticket.status === 'resolved')) {
+    nextStatus = 'resolved';
+  } else if (hostHasSteps && hostAllDone && hostAnyCompleted) {
+    nextStatus = 'host_fixed';
+  } else if (clientHasSteps && clientAllDone && clientAnyCompleted) {
+    nextStatus = 'client_fixed';
+  }
+
+  return {
+    ...ticket,
+    status: nextStatus,
+    updatedAt: nowIso,
+    ...(nextStatus === 'resolved'
+      ? {
+          resolvedAt: ticket.resolvedAt || nowIso,
+          resolvedByHostName: ticket.resolvedByHostName || actorHostName,
+        }
+      : {
+          resolvedAt: undefined,
+          resolvedByHostName: undefined,
+        }),
+  };
+}
+
+export function detectTicketMatchSideForPc(
+  ticket: TroubleshootTicket,
+  netInfo: LocalNetworkInfo,
+  localShares: ActiveShare[] = [],
+  _localMounts: MountedDrive[] = [],
+  portableShares: PortableHostShareEntry[] = []
+): 'host' | 'client' | 'both' | 'none' {
+  const localHostLower = (netInfo.hostname || '').trim().toLowerCase();
+  const localIp = (netInfo.primaryIp || '').trim();
+  const originHostLower = (ticket.originHostName || '').trim().toLowerCase();
+  const originIp = (ticket.originIp || '').trim();
+  const targetHostLower = (ticket.targetHostName || '').trim().toLowerCase();
+  const targetIp = (ticket.targetIp || '').trim();
+  const ticketShareLower = (ticket.shareName || '').trim().toLowerCase();
+
+  const localOwnsTargetShare =
+    Boolean(ticketShareLower) &&
+    (localShares.some((s) => s.shareName.trim().toLowerCase() === ticketShareLower) ||
+      portableShares.some(
+        (p) =>
+          p.shareName.trim().toLowerCase() === ticketShareLower &&
+          ((p.sourceHostName || '').trim().toLowerCase() === localHostLower ||
+            (Boolean(localIp) && (p.sourceIp || '').trim() === localIp))
+      ));
+
+  const matchesHostDirect =
+    (Boolean(targetHostLower) && targetHostLower === localHostLower) ||
+    (Boolean(targetIp) && Boolean(localIp) && targetIp === localIp) ||
+    (ticket.originRole === 'host' &&
+      ((Boolean(originHostLower) && originHostLower === localHostLower) ||
+        (Boolean(originIp) && Boolean(localIp) && originIp === localIp)));
+
+  // Fallback match: Client connected via stale IP without knowing hostname, but current PC actively owns that shareName & wasn't the client origin
+  const isOriginClient =
+    ticket.originRole === 'client' &&
+    ((Boolean(originHostLower) && originHostLower === localHostLower) ||
+      (Boolean(originIp) && Boolean(localIp) && originIp === localIp));
+
+  const matchesHostFallbackByShare =
+    !isOriginClient && localOwnsTargetShare && (!targetHostLower || targetHostLower === targetIp.toLowerCase());
+
+  const matchesHost = matchesHostDirect || matchesHostFallbackByShare;
+  const matchesClient = isOriginClient;
+
+  if (matchesHost && matchesClient) return 'both';
+  if (matchesHost) return 'host';
+  if (matchesClient) return 'client';
+  return 'none';
+}
+
+export function evaluateTroubleshootTicketsForPc(
+  tickets: TroubleshootTicket[],
+  netInfo: LocalNetworkInfo,
+  localShares: ActiveShare[] = [],
+  localMounts: MountedDrive[] = [],
+  portableShares: PortableHostShareEntry[] = []
+): TroubleshootMatchResult {
+  const currentPcActionTickets: TroubleshootTicket[] = [];
+  const waitingOtherPcTickets: TroubleshootTicket[] = [];
+  const resolvedTickets: TroubleshootTicket[] = [];
+  const matchedSideMap: Record<string, 'host' | 'client' | 'both' | 'none'> = {};
+
+  for (const ticket of tickets || []) {
+    const matchedSide = detectTicketMatchSideForPc(ticket, netInfo, localShares, localMounts, portableShares);
+    matchedSideMap[ticket.ticketId] = matchedSide;
+
+    if (ticket.status === 'resolved') {
+      resolvedTickets.push(ticket);
+      continue;
+    }
+
+    const hasPendingHost = ticket.hostSteps.some((s) => s.status === 'pending' || s.status === 'failed');
+    const hasPendingClient = ticket.clientSteps.some((s) => s.status === 'pending' || s.status === 'failed');
+
+    const needsActionOnThisHost = (matchedSide === 'host' || matchedSide === 'both') && hasPendingHost;
+    const needsActionOnThisClient = (matchedSide === 'client' || matchedSide === 'both') && hasPendingClient;
+
+    if (needsActionOnThisHost || needsActionOnThisClient) {
+      currentPcActionTickets.push(ticket);
+    } else {
+      waitingOtherPcTickets.push(ticket);
+    }
+  }
+
+  // Prioritize tickets where the opposite PC already fixed its side (handoff ready) or host tickets on a host PC
+  currentPcActionTickets.sort((a, b) => {
+    const score = (t: TroubleshootTicket) => {
+      if (t.status === 'host_fixed' || t.status === 'client_fixed') return 2;
+      return 1;
+    };
+    const diff = score(b) - score(a);
+    if (diff !== 0) return diff;
+    return Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt);
+  });
+
+  return {
+    currentPcActionTickets,
+    waitingOtherPcTickets,
+    resolvedTickets,
+    primaryTicket: currentPcActionTickets[0] || null,
+    matchedSideMap,
+  };
+}

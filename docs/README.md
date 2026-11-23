@@ -8,7 +8,7 @@
 
 | 문서 파일 | 용도 및 대상 | 주요 내용 |
 | :--- | :--- | :--- |
-| **`docs/github_release_post.md`** | GitHub 저장소 & Releases 배포 소개용 | `v1.2.1` 주요 변경점(1~17차 심층 점검 · 스마트 인증 감지 · 탐색기 UNC 열기 · USB 쓰기 안전), 4종 배포 EXE 안내, 보안·호환 아키텍처, 빌드·검증·저장소 구성 요약 |
+| **`docs/github_release_post.md`** | GitHub 저장소 & Releases 배포 소개용 | `v1.2.1` 주요 변경점(1~17차 심층 점검 · 스마트 인증 감지 · 탐색기 UNC 열기 · USB 쓰기 안전 · USB 양방향 오류 전달 마법사), 4종 배포 EXE 안내, 보안·호환 아키텍처, 빌드·검증·저장소 구성 요약 |
 | **`docs/google_blogger_post.md`** | Google Blogger 공식 블로그 포스팅용 | **`[작성 모드 (서식 있는 텍스트)]`** 및 **`[HTML 편집 모드]`** 전용 복사·붙여넣기 원고 완본, 4종 배포 표·다운로드·누적 이력 포함 |
 | **`docs/PATCH_NOTES.md`** | 패치 노트 & CI 릴리즈 본문 원본 | SemVer(`MAJOR`/`MINOR`/`PATCH`) 3단계 누적 패치 이력, 1~17차 심층 점검(Deep Audit) 및 코드 특이점 수정 기록 |
 | **`docs/VERSIONING.md`** | Semantic Versioning 버전 관리 규약 | 3단계 버전 승격 기준(`MAJOR.MINOR.PATCH`), 특이점 발생 시 자동 기록 및 전 파일 버전 동기화 절차 |
@@ -30,7 +30,7 @@ npm run version:bump -- minor --summary "기능 요약" --note "신규 기능 �
 # 메이저(MAJOR): 비호환 구조 개편 (1.1.0 -> 2.0.0)
 npm run version:bump -- major --summary "메이저 개편 요약" --note "주요 변경점"
 
-# TypeScript 검증 및 10개 릴리즈·보안·업데이터·SemVer 무결성 스위트 실행
+# TypeScript 검증 및 11개 릴리즈·보안·업데이터·SemVer 무결성 스위트 실행
 npm run lint && npm run verify
 ```
 

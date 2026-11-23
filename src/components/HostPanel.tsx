@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Play, Copy, Check, QrCode, Trash2, RefreshCw, ExternalLink, Clock, KeyRound, Download } from 'lucide-react';
+import { FolderOpen, Play, Copy, Check, QrCode, Trash2, RefreshCw, ExternalLink, Clock, KeyRound, Download, Wrench } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { HostConfig, ActiveShare, PipelineStep, LocalNetworkInfo } from '@/types/share';
 import { generateSecureSharePassword, resolveActiveShareUncPath, validateAccountUsername, validateShareName, validateFolderPath } from '@/utils/connectionCode';
@@ -23,6 +23,7 @@ interface HostPanelProps {
   onRemoveShare: (shareName: string) => Promise<void>;
   onOpenFolder: (path: string) => Promise<void>;
   onRefresh?: () => Promise<void>;
+  onOpenTroubleshootWizard?: () => void;
 }
 
 const TTL_PRESETS: Array<{ label: string; minutes: number }> = [
@@ -72,6 +73,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   onRemoveShare,
   onOpenFolder,
   onRefresh,
+  onOpenTroubleshootWizard,
 }) => {
   const [config, setConfig] = useState<HostConfig>(() =>
     initialConfig || {
@@ -583,6 +585,34 @@ export const HostPanel: React.FC<HostPanelProps> = ({
             steps={steps}
             isRunning={isExecuting}
           />
+
+          {(() => {
+            const failedHostStep = steps.find((st) => st.status === 'error' && st.error);
+            if (!failedHostStep || !onOpenTroubleshootWizard) return null;
+            return (
+              <div
+                id="host-failure-wizard-banner"
+                role="alert"
+                className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 space-y-2.5"
+              >
+                <div className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                  공유 개설 오류 감지 · 단계별 해결 마법사 준비됨
+                </div>
+                <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                  {failedHostStep.error}
+                </p>
+                <button
+                  id="btn-host-failure-open-wizard"
+                  type="button"
+                  onClick={onOpenTroubleshootWizard}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
+                >
+                  <Wrench className="w-3.5 h-3.5" />
+                  단계별 오류 해결 마법사 열기
+                </button>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

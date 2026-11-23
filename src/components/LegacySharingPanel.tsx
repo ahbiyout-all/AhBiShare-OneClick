@@ -35,6 +35,7 @@ import {
   Unplug,
   Usb,
   Upload,
+  Wrench,
   X,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -117,6 +118,7 @@ interface LegacySharingPanelProps {
   onBridgeImported?: () => Promise<void> | void;
   onOpenMatrix?: () => void;
   onOpenDiagnostics?: (errorText?: string) => void;
+  onOpenTroubleshootWizard?: () => void;
   onNotify?: (msg: string) => void;
 }
 
@@ -255,6 +257,7 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
   onBridgeImported,
   onOpenMatrix,
   onOpenDiagnostics,
+  onOpenTroubleshootWizard,
   onNotify,
 }) => {
   // Topology & 2-Step Role Tab
@@ -1754,6 +1757,34 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                 steps={hostSteps}
                 isRunning={isHostExecuting}
               />
+
+              {(() => {
+                const failedLegacyHost = hostSteps.find((st) => st.status === 'error' && st.error);
+                if (!failedLegacyHost || !onOpenTroubleshootWizard) return null;
+                return (
+                  <div
+                    id="legacy-host-failure-wizard-banner"
+                    role="alert"
+                    className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 space-y-2"
+                  >
+                    <div className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                      구형 OS 공유 개설 오류 · 단계별 해결 마법사 준비됨
+                    </div>
+                    <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                      {failedLegacyHost.error}
+                    </p>
+                    <button
+                      id="btn-legacy-host-failure-open-wizard"
+                      type="button"
+                      onClick={onOpenTroubleshootWizard}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
+                    >
+                      <Wrench className="w-3.5 h-3.5" />
+                      단계별 해결 마법사 열기
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
@@ -2471,6 +2502,17 @@ export const LegacySharingPanel: React.FC<LegacySharingPanelProps> = ({
                             {diag.actionLabel}
                           </button>
                         )
+                      )}
+                      {onOpenTroubleshootWizard && (
+                        <button
+                          id="btn-legacy-failure-open-wizard"
+                          type="button"
+                          onClick={onOpenTroubleshootWizard}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer shadow-sm"
+                        >
+                          <Wrench className="w-3.5 h-3.5" />
+                          단계별 해결 마법사 열기
+                        </button>
                       )}
                     </div>
                   </div>

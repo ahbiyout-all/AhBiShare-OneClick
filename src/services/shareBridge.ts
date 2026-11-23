@@ -43,6 +43,7 @@ import {
   SmartAuthConfidence,
   SmartAuthDetectionResult,
   SmartAuthTargetInput,
+  TroubleshootTicket,
 } from '@/types/share';
 import {
   decodeConnectionCode,
@@ -66,6 +67,11 @@ import {
   buildLocationPreflightScript,
   buildShareAuthProbeScript,
 } from '@/services/powershellEngine';
+import {
+  BuildTroubleshootTicketInput,
+  buildTroubleshootTicketDraft,
+  upsertTroubleshootTicketList,
+} from '@/services/troubleshootPlaybook';
 import {
   classifyOsEra,
   combineRebootJudgments,
@@ -683,6 +689,9 @@ async function loadWebPreviewPortable(): Promise<PortableLoadResult> {
       shares,
       ...(parsed.hostPolicies ? { hostPolicies: parsed.hostPolicies } : {}),
       ...(parsed.pendingHostActions ? { pendingHostActions: parsed.pendingHostActions } : {}),
+      ...(Array.isArray(parsed.troubleshootTickets) && parsed.troubleshootTickets.length > 0
+        ? { troubleshootTickets: parsed.troubleshootTickets }
+        : {}),
       ...(parsed.lastClientTarget ? { lastClientTarget: parsed.lastClientTarget } : {}),
     };
     return {
@@ -771,6 +780,9 @@ async function saveWebPreviewPortable(doc: PortableShareDocument): Promise<Porta
     shares: diskShares,
     ...(doc.hostPolicies ? { hostPolicies: doc.hostPolicies } : {}),
     ...(doc.pendingHostActions ? { pendingHostActions: doc.pendingHostActions } : {}),
+    ...(Array.isArray(doc.troubleshootTickets) && doc.troubleshootTickets.length > 0
+      ? { troubleshootTickets: doc.troubleshootTickets }
+      : {}),
     ...(doc.lastClientTarget ? { lastClientTarget: doc.lastClientTarget } : {}),
   };
   writeStore(STORAGE_PORTABLE_SIM_KEY, diskDoc);
@@ -781,6 +793,9 @@ async function saveWebPreviewPortable(doc: PortableShareDocument): Promise<Porta
     shares: runtimeShares,
     ...(doc.hostPolicies ? { hostPolicies: doc.hostPolicies } : {}),
     ...(doc.pendingHostActions ? { pendingHostActions: doc.pendingHostActions } : {}),
+    ...(Array.isArray(doc.troubleshootTickets) && doc.troubleshootTickets.length > 0
+      ? { troubleshootTickets: doc.troubleshootTickets }
+      : {}),
     ...(doc.lastClientTarget ? { lastClientTarget: doc.lastClientTarget } : {}),
   };
   return {
@@ -1084,6 +1099,9 @@ export const shareBridge = {
       shares: latestPortableDoc.shares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
       pendingHostActions: nextMap,
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -1117,6 +1135,9 @@ export const shareBridge = {
       shares: latestPortableDoc.shares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
       ...(Object.keys(nextMap).length > 0 ? { pendingHostActions: nextMap } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -1144,6 +1165,9 @@ export const shareBridge = {
       shares: latestPortableDoc.shares,
       hostPolicies: nextMap,
       ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -1170,6 +1194,9 @@ export const shareBridge = {
       shares: latestPortableDoc.shares,
       hostPolicies: curMap,
       ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -1187,6 +1214,9 @@ export const shareBridge = {
       shares: latestPortableDoc.shares,
       hostPolicies: {},
       ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -1214,6 +1244,9 @@ export const shareBridge = {
       shares: filteredShares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
       ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
     const res = window.ahbiShareElectron?.savePortableData
@@ -1235,6 +1268,9 @@ export const shareBridge = {
       shares: mergedShares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
       ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
     };
 
@@ -1254,6 +1290,9 @@ export const shareBridge = {
       shares: latestPortableDoc.shares,
       ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
       ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
       lastClientTarget: {
         targetHost: config.targetHost.trim(),
         shareName: config.shareName.trim(),
@@ -1268,6 +1307,210 @@ export const shareBridge = {
     latestPortableDoc = res.document;
     latestPortableStatus = res.status;
     return res;
+  },
+
+  getTroubleshootTickets(): TroubleshootTicket[] {
+    return Array.isArray(latestPortableDoc.troubleshootTickets)
+      ? [...latestPortableDoc.troubleshootTickets]
+      : [];
+  },
+
+  async persistTroubleshootTicketList(
+    nextTickets: TroubleshootTicket[]
+  ): Promise<{ success: boolean; tickets: TroubleshootTicket[]; portableStatus: PortableStorageStatus }> {
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: latestPortableDoc.shares,
+      ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      ...(latestPortableDoc.pendingHostActions ? { pendingHostActions: latestPortableDoc.pendingHostActions } : {}),
+      ...(nextTickets.length > 0 ? { troubleshootTickets: nextTickets } : {}),
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return {
+      success: res.success,
+      tickets: res.document.troubleshootTickets || nextTickets,
+      portableStatus: res.status,
+    };
+  },
+
+  async recordTroubleshootError(
+    input: BuildTroubleshootTicketInput
+  ): Promise<{
+    success: boolean;
+    ticket: TroubleshootTicket;
+    tickets: TroubleshootTicket[];
+    portableStatus: PortableStorageStatus;
+  }> {
+    const draft = buildTroubleshootTicketDraft(input);
+    const current = this.getTroubleshootTickets();
+    const { list, ticket } = upsertTroubleshootTicketList(current, draft);
+    const saved = await this.persistTroubleshootTicketList(list);
+    return {
+      success: saved.success,
+      ticket,
+      tickets: saved.tickets,
+      portableStatus: saved.portableStatus,
+    };
+  },
+
+  async updateTroubleshootTicket(
+    updatedTicket: TroubleshootTicket
+  ): Promise<{
+    success: boolean;
+    ticket: TroubleshootTicket;
+    tickets: TroubleshootTicket[];
+    portableStatus: PortableStorageStatus;
+  }> {
+    const current = this.getTroubleshootTickets();
+    const found = current.some((t) => t.ticketId === updatedTicket.ticketId);
+    const nextList = found
+      ? current.map((t) => (t.ticketId === updatedTicket.ticketId ? updatedTicket : t))
+      : [updatedTicket, ...current].slice(0, 30);
+    const saved = await this.persistTroubleshootTicketList(nextList);
+    const finalTicket = saved.tickets.find((t) => t.ticketId === updatedTicket.ticketId) || updatedTicket;
+    return {
+      success: saved.success,
+      ticket: finalTicket,
+      tickets: saved.tickets,
+      portableStatus: saved.portableStatus,
+    };
+  },
+
+  async deleteTroubleshootTicket(
+    ticketId: string
+  ): Promise<{ success: boolean; tickets: TroubleshootTicket[]; portableStatus: PortableStorageStatus }> {
+    const nextList = this.getTroubleshootTickets().filter((t) => t.ticketId !== ticketId);
+    return this.persistTroubleshootTicketList(nextList);
+  },
+
+  async clearResolvedTroubleshootTickets(): Promise<{
+    success: boolean;
+    tickets: TroubleshootTicket[];
+    removedCount: number;
+    portableStatus: PortableStorageStatus;
+  }> {
+    const current = this.getTroubleshootTickets();
+    const nextList = current.filter((t) => t.status !== 'resolved');
+    const removedCount = current.length - nextList.length;
+    const saved = await this.persistTroubleshootTicketList(nextList);
+    return {
+      ...saved,
+      removedCount,
+    };
+  },
+
+  async runHostGuestUnlockDirect(
+    shareName?: string,
+    netInfo?: LocalNetworkInfo
+  ): Promise<{ success: boolean; message: string; updatedPolicy?: OsNetworkPolicyStatus }> {
+    this.clearSmartAuthCache();
+    const resolvedNet = netInfo || (await this.getLocalNetworkInfo());
+    const hostLower = (resolvedNet.hostname || '').trim().toLowerCase();
+    const shareNames = Array.from(
+      new Set(
+        [
+          shareName || '',
+          ...this.getSavedShares().map((s) => s.shareName),
+          ...(latestPortableDoc.shares || [])
+            .filter((s) => !hostLower || (s.sourceHostName || '').trim().toLowerCase() === hostLower)
+            .map((s) => s.shareName),
+          'AhBiShared',
+        ].filter(Boolean)
+      )
+    );
+    if (window.ahbiShareElectron?.runPowerShell) {
+      const res = await window.ahbiShareElectron.runPowerShell(
+        buildHostGuestUnlockPsScript(shareNames[0] || 'AhBiShared', shareNames)
+      );
+      if (!res.success) {
+        return {
+          success: false,
+          message: res.error || 'Guest 무비밀번호 정책 개방에 실패했습니다. 관리자 권한 상태를 확인하세요.',
+        };
+      }
+      const updatedPolicy = await this.inspectOsNetworkPolicy(resolvedNet);
+      await this.persistHostPolicySnapshot(resolvedNet.hostname, updatedPolicy, resolvedNet.primaryIp);
+      return {
+        success: true,
+        message: '호스트 Guest(SID *-501) 무비밀번호 개방·LSA 빈 암호 해제·TCP 445 방화벽 정렬 완료',
+        updatedPolicy,
+      };
+    }
+    webSimPolicyBase = {
+      ...webSimPolicyBase,
+      networkProfile: 'Private',
+      allowInsecureGuestAuth: true,
+      enableInsecureGuestLogons: true,
+      guestNetworkLogonDenied: false,
+      limitBlankPasswordUse: false,
+      restrictNullSessAccess: false,
+      restrictAnonymous: false,
+      guestAccountEnabled: true,
+      firewall445Allowed: true,
+      ahbiFirewallRulePresent: true,
+      lanmanServerRunning: true,
+    };
+    const updatedPolicy = await this.inspectOsNetworkPolicy(resolvedNet);
+    await this.persistHostPolicySnapshot(resolvedNet.hostname, updatedPolicy, resolvedNet.primaryIp);
+    return {
+      success: true,
+      message: '[웹 프리뷰] 호스트 Guest 무비밀번호·SeDenyNetworkLogonRight·TCP 445 개방 시뮬레이션 적용 완료',
+      updatedPolicy,
+    };
+  },
+
+  async clearConflictingSmbSessions(
+    targetHost?: string
+  ): Promise<{ success: boolean; message: string }> {
+    this.clearSmartAuthCache();
+    const cleanHost = (targetHost || '').trim().replace(/^\\\\/, '');
+    if (window.ahbiShareElectron?.runPowerShell) {
+      const safeHostLiteral = cleanHost.replace(/'/g, "''");
+      const psScript = `
+$ErrorActionPreference = 'SilentlyContinue'
+$h = '${safeHostLiteral}'
+if ($h) {
+  cmdkey.exe /delete:$h | Out-Null
+  net.exe use "\\\\$h\\IPC$" /delete /y | Out-Null
+  net.exe use "\\\\$h" /delete /y | Out-Null
+}
+$existing = @(net.exe use 2>&1 | Where-Object { $_ -match '\\\\\\\\' })
+foreach ($line in $existing) {
+  if ($line -match '(\\\\\\\\[^\\s]+)') {
+    $unc = $Matches[1]
+    if (-not $h -or $unc -match [regex]::Escape($h)) {
+      net.exe use $unc /delete /y | Out-Null
+    }
+  }
+}
+Write-Output 'SMB_SESSION_CLEANED'
+`.trim();
+      const res = await window.ahbiShareElectron.runPowerShell(psScript);
+      if (!res.success && !/SMB_SESSION_CLEANED/i.test(res.output || '')) {
+        return {
+          success: false,
+          message: res.error || 'SMB 충돌 세션/자격 증명 정리에 실패했습니다.',
+        };
+      }
+      return {
+        success: true,
+        message: cleanHost
+          ? `'${cleanHost}' 대상의 기존 SMB 세션 및 cmdkey 자격 증명 캐시를 정리했습니다.`
+          : '기존 충돌 SMB 세션 및 자격 증명 캐시를 정리했습니다.',
+      };
+    }
+    return {
+      success: true,
+      message: cleanHost
+        ? `[웹 프리뷰] '${cleanHost}' 대상 충돌 SMB 세션·cmdkey 캐시 정리 시뮬레이션 완료`
+        : '[웹 프리뷰] 충돌 SMB 세션·cmdkey 캐시 정리 시뮬레이션 완료',
+    };
   },
 
   async selectFolder(currentPath: string): Promise<string | null> {
@@ -3046,6 +3289,21 @@ export const shareBridge = {
           ...importedPendingActions,
         };
 
+        const importedTickets: TroubleshootTicket[] =
+          hasSnapshot && Array.isArray(snapDoc.troubleshootTickets)
+            ? (snapDoc.troubleshootTickets as TroubleshootTicket[])
+            : [];
+        const mergedTicketsMap = new Map<string, TroubleshootTicket>();
+        for (const t of latestPortableDoc.troubleshootTickets || []) {
+          if (t?.ticketId) mergedTicketsMap.set(t.ticketId, t);
+        }
+        for (const t of importedTickets) {
+          if (t?.ticketId && !mergedTicketsMap.has(t.ticketId)) {
+            mergedTicketsMap.set(t.ticketId, t);
+          }
+        }
+        const mergedTickets = Array.from(mergedTicketsMap.values()).slice(0, 30);
+
         const nextDoc: PortableShareDocument = {
           schemaVersion: 1,
           updatedAt: new Date().toISOString(),
@@ -3054,6 +3312,7 @@ export const shareBridge = {
           ...(Object.keys(mergedPendingActions).length > 0
             ? { pendingHostActions: mergedPendingActions }
             : {}),
+          ...(mergedTickets.length > 0 ? { troubleshootTickets: mergedTickets } : {}),
           ...(snapDoc?.lastClientTarget
             ? { lastClientTarget: snapDoc.lastClientTarget }
             : latestPortableDoc.lastClientTarget
