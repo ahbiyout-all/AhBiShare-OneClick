@@ -420,7 +420,10 @@ try {
   assert.strictEqual(bufWriteRes.success, true, 'atomicWriteBuffer must write UTF-16LE BOM buffer cleanly');
   assert.strictEqual(Buffer.compare(fs.readFileSync(bufTarget), regPayload), 0);
 
-  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+  const isNonRootPosix =
+    process.platform !== 'win32' && (typeof process.getuid !== 'function' || process.getuid() !== 0);
+
+  if (isNonRootPosix) {
     const lockedDir = path.join(tempUsbDir, 'locked-usb-sim');
     fs.mkdirSync(lockedDir);
     fs.chmodSync(lockedDir, 0o555);
@@ -430,6 +433,31 @@ try {
       assert.strictEqual(lockedProbe.writeProtected, true, 'probeDirectoryWriteSafety must flag read-only directory as writeProtected');
     } finally {
       fs.chmodSync(lockedDir, 0o755);
+    }
+  }
+
+  // Cross-platform (including Windows NTFS where chmod 0o555 on dirs is ignored) simulation of hardware/driver WriteProtect rejecting exclusive 'wx' probe
+  {
+    const wpProbeDir = path.join(tempUsbDir, 'writeprotect-probe-sim');
+    fs.mkdirSync(wpProbeDir);
+    const origOpenSync = fs.openSync;
+    fs.openSync = function wrappedOpenSync(filePath, ...rest) {
+      if (
+        typeof filePath === 'string' &&
+        path.resolve(path.dirname(filePath)) === path.resolve(wpProbeDir) &&
+        path.basename(filePath).startsWith('.ahbishare-write-probe-')
+      ) {
+        throw Object.assign(new Error('EROFS: read-only file system (simulated USB WriteProtect)'), { code: 'EROFS' });
+      }
+      return origOpenSync.call(this, filePath, ...rest);
+    };
+    try {
+      const wpProbe = portableStore.probeDirectoryWriteSafety(wpProbeDir);
+      assert.strictEqual(wpProbe.writable, false, 'probeDirectoryWriteSafety must reject WriteProtect hardware/driver EROFS');
+      assert.strictEqual(wpProbe.writeProtected, true, 'probeDirectoryWriteSafety must flag EROFS as writeProtected');
+      assert.strictEqual(wpProbe.errorCode, 'EROFS');
+    } finally {
+      fs.openSync = origOpenSync;
     }
   }
 
@@ -450,8 +478,8 @@ try {
     const quarantinedFiles = fs.readdirSync(corruptDir).filter((f) => f.includes('.corrupt-'));
     assert.strictEqual(quarantinedFiles.length, 1, 'Genuine corrupt JSON should produce one .corrupt-*.json backup');
 
-    // Case B: writeProtected (read-only dir) + malformed JSON -> must NOT attempt rename/quarantine
-    if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+    // Case B: writeProtected (read-only dir on POSIX OR simulated WriteProtect EROFS on all OS incl. Windows) + malformed JSON -> must NOT attempt rename/quarantine
+    if (isNonRootPosix) {
       const roCorruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-ro-corrupt-'));
       try {
         const roStore = portableStore.createPortableStore({
@@ -464,7 +492,7 @@ try {
         try {
           const roLoadRes = roStore.loadPortableData();
           assert.strictEqual(roLoadRes.success, false);
-          assert.strictEqual(roLoadRes.writeProtected, true, 'Write-protected corrupt file load must report writeProtected: true');
+          assert.strictEqual(roLoadRes.status?.writeProtected, true, 'Write-protected corrupt file load must report status.writeProtected: true');
           assert.strictEqual(fs.existsSync(roPortablePath), true, 'Write-protected .portable.json must remain untouched');
           assert.strictEqual(
             fs.readdirSync(roCorruptDir).filter((f) => f.includes('.corrupt-')).length,
@@ -476,6 +504,41 @@ try {
         }
       } finally {
         fs.rmSync(roCorruptDir, { recursive: true, force: true });
+      }
+    }
+
+    {
+      const wpCorruptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-wp-corrupt-'));
+      const origOpenSync = fs.openSync;
+      try {
+        const wpStore = portableStore.createPortableStore({
+          env: { PORTABLE_EXECUTABLE_DIR: wpCorruptDir },
+          app: { isPackaged: true, getPath: () => wpCorruptDir },
+        });
+        const wpPortablePath = path.join(wpCorruptDir, portableStore.PORTABLE_FILE_NAME);
+        fs.writeFileSync(wpPortablePath, '{corrupt-wp', 'utf8');
+        fs.openSync = function wrappedOpenSync(filePath, ...rest) {
+          if (
+            typeof filePath === 'string' &&
+            path.resolve(path.dirname(filePath)) === path.resolve(wpCorruptDir) &&
+            path.basename(filePath).startsWith('.ahbishare-write-probe-')
+          ) {
+            throw Object.assign(new Error('EROFS: read-only file system (simulated USB WriteProtect)'), { code: 'EROFS' });
+          }
+          return origOpenSync.call(this, filePath, ...rest);
+        };
+        const wpLoadRes = wpStore.loadPortableData();
+        assert.strictEqual(wpLoadRes.success, false);
+        assert.strictEqual(wpLoadRes.status?.writeProtected, true, 'Write-protected corrupt file load must report status.writeProtected: true on all platforms');
+        assert.strictEqual(fs.existsSync(wpPortablePath), true, 'Write-protected .portable.json must remain untouched on all platforms');
+        assert.strictEqual(
+          fs.readdirSync(wpCorruptDir).filter((f) => f.includes('.corrupt-')).length,
+          0,
+          'Write-protected directory must not accumulate quarantine files on all platforms'
+        );
+      } finally {
+        fs.openSync = origOpenSync;
+        fs.rmSync(wpCorruptDir, { recursive: true, force: true });
       }
     }
 
