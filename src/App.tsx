@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap, RefreshCw } from 'lucide-react';
+import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap, RefreshCw, FolderOpen } from 'lucide-react';
 import {
   RoleMode,
   AppSection,
@@ -30,6 +30,7 @@ import {
   SmartAuthDetectionResult,
   TroubleshootTicket,
   TroubleshootWizardStep,
+  AppLogStatusInfo,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
@@ -37,6 +38,7 @@ import { generateSecureSharePassword, isValidIpv4Address } from '@/utils/connect
 import { formatEraShortLabel, formatSnapshotTimestamp, getPolicyPatchLabel } from '@/services/networkEvolution';
 import {
   evaluateTroubleshootTicketsForPc,
+  reclassifyTroubleshootTicketOnRetryFailure,
   recomputeTroubleshootTicketStatus,
 } from '@/services/troubleshootPlaybook';
 import { TopBar } from '@/components/TopBar';
@@ -110,6 +112,9 @@ export const App: React.FC = () => {
   const [isClientConnecting, setIsClientConnecting] = useState(false);
 
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
+  const [appLogInfo, setAppLogInfo] = useState<AppLogStatusInfo | null>(null);
+  const netInfoRef = useRef(netInfo);
+  netInfoRef.current = netInfo;
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -389,6 +394,15 @@ export const App: React.FC = () => {
     };
   }, [clientDraft.targetHost, probeSmbTarget]);
 
+  const refreshAppLogInfo = useCallback(async () => {
+    try {
+      const info = await shareBridge.getAppLogInfo();
+      if (info.supported) {
+        setAppLogInfo(info);
+      }
+    } catch {}
+  }, []);
+
   const appendLog = useCallback((role: string, summary: string, status: 'success' | 'error') => {
     setActivityLog((prev) => [
       {
@@ -400,6 +414,28 @@ export const App: React.FC = () => {
       },
       ...prev,
     ]);
+    void shareBridge
+      .appendAppLog({
+        role,
+        summary,
+        status,
+        hostName: netInfoRef.current.hostname,
+      })
+      .then((res) => {
+        if (res.success && res.directory) {
+          setAppLogInfo((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  directory: res.directory,
+                  ...(res.fileName ? { currentFileName: res.fileName } : {}),
+                  ...(res.filePath ? { currentFilePath: res.filePath } : {}),
+                }
+              : prev
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const startProgressJob = useCallback(
@@ -575,6 +611,7 @@ export const App: React.FC = () => {
             }
           }
         }
+        await refreshAppLogInfo();
         appendLog(label, `${label} 상태(네트워크·공유·드라이브·USB 프로필) 새로고침 완료`, 'success');
         showToast(`${label} 상태를 최신 정보로 새로고침했습니다.`);
       } catch (err) {
@@ -586,7 +623,7 @@ export const App: React.FC = () => {
         setIsRefreshingTab(false);
       }
     },
-    [appendLog, showToast]
+    [appendLog, refreshAppLogInfo, showToast]
   );
 
   useEffect(() => {
@@ -620,9 +657,10 @@ export const App: React.FC = () => {
         setMounts(shareBridge.getSavedMounts());
       }
       await refreshLocationProfiles();
+      await refreshAppLogInfo();
     };
     void bootstrap();
-  }, [appendLog, refreshPortableSnapshot, refreshLocationProfiles]);
+  }, [appendLog, refreshPortableSnapshot, refreshLocationProfiles, refreshAppLogInfo]);
 
   // 1-second timer tick for active timed shares
   useEffect(() => {
@@ -1143,6 +1181,8 @@ export const App: React.FC = () => {
       let message = '';
       let resolvedImmediately = false;
       let nextDriveLetter = ticket.driveLetter;
+      let nextAuthModeOverride: 'guest' | 'account' | undefined;
+      let shouldReclassifyOnRetryFailure = false;
 
       try {
         if (
@@ -1181,12 +1221,29 @@ export const App: React.FC = () => {
           message = pingRes.detail;
         } else if (step.executor === 'switch_to_account_mode') {
           const targetHost = ticket.targetIp || ticket.targetHostName || clientDraftRef.current.targetHost;
+          const shareLower = ticket.shareName.trim().toLowerCase();
+          const targetLower = targetHost.trim().toLowerCase();
+          const matchedPortable = portableSharesRef.current.find(
+            (ps) =>
+              ps.shareName.trim().toLowerCase() === shareLower &&
+              (!targetLower ||
+                (ps.sourceIp || '').trim().toLowerCase() === targetLower ||
+                (ps.sourceHostName || '').trim().toLowerCase() === targetLower)
+          );
+          const recoveredUser =
+            matchedPortable?.username || clientDraftRef.current.username.trim() || 'AhBiShare';
+          const recoveredPass =
+            clientDraftRef.current.password ||
+            matchedPortable?.password ||
+            shareBridge.getCachedSharePassword([targetHost, ticket.targetHostName || ''], ticket.shareName) ||
+            '';
           setClientDraft((prev) => ({
             ...prev,
             targetHost,
             shareName: ticket.shareName || prev.shareName,
             authMode: 'account',
-            username: prev.username.trim() || 'AhBiShare',
+            username: recoveredUser,
+            ...(recoveredPass ? { password: recoveredPass } : {}),
           }));
           setPendingClientAuthMode({
             key: `wizard-acc-${Date.now()}`,
@@ -1195,10 +1252,13 @@ export const App: React.FC = () => {
             targetHost,
             shareName: ticket.shareName,
           });
+          nextAuthModeOverride = 'account';
           setRoleMode('client');
           setActiveSection('workspace');
           ok = true;
-          message = '클라이언트 인증 모드를 보안 계정 모드로 전환했습니다. 계정·암호 확인 후 재연결하세요.';
+          message = recoveredPass
+            ? '클라이언트 인증 모드를 보안 계정 모드로 전환하고 USB 저장 자격 증명을 불러왔습니다.'
+            : '클라이언트 인증 모드를 보안 계정 모드로 전환했습니다. 계정·암호 확인 후 재연결하세요.';
         } else if (step.executor === 'reassign_free_drive') {
           const usedSet = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
           const currentDl = (ticket.driveLetter || clientDraftRef.current.driveLetter || 'Z:').toUpperCase();
@@ -1214,13 +1274,42 @@ export const App: React.FC = () => {
           const sameEndpoint =
             latestDraft.targetHost.trim().toLowerCase() === targetHost.trim().toLowerCase() &&
             latestDraft.shareName.trim().toLowerCase() === ticket.shareName.trim().toLowerCase();
-          
+          const shareLower = ticket.shareName.trim().toLowerCase();
+          const targetLower = targetHost.trim().toLowerCase();
+          const hostLower = (ticket.targetHostName || '').trim().toLowerCase();
+          const matchedPortable = portableSharesRef.current.find(
+            (ps) =>
+              ps.shareName.trim().toLowerCase() === shareLower &&
+              ((targetLower && (ps.sourceIp || '').trim().toLowerCase() === targetLower) ||
+                (hostLower && (ps.sourceHostName || '').trim().toLowerCase() === hostLower) ||
+                (!targetLower && !hostLower))
+          );
+
           let authModeToUse = sameEndpoint ? latestDraft.authMode : ticket.authMode;
-          let passToUse = sameEndpoint ? latestDraft.password : latestDraft.password || '';
-          const isHostUnlocked = ticket.status === 'host_fixed' || ticket.hostSteps.some((s) => s.executor === 'host_guest_unlock_and_reopen' && s.status === 'completed');
-          if (isHostUnlocked && authModeToUse === 'account' && !passToUse) {
+          let passToUse =
+            (sameEndpoint ? latestDraft.password : '') ||
+            matchedPortable?.password ||
+            shareBridge.getCachedSharePassword([targetHost, ticket.targetHostName || ''], ticket.shareName) ||
+            latestDraft.password ||
+            '';
+          let userToUse =
+            (sameEndpoint ? latestDraft.username : '') ||
+            matchedPortable?.username ||
+            latestDraft.username ||
+            'AhBiShare';
+
+          const isHostUnlocked =
+            ticket.hostSteps.some((s) => s.executor === 'host_guest_unlock_and_reopen' && s.status === 'completed');
+
+          if (!isHostUnlocked && authModeToUse === 'guest' && matchedPortable?.authMode === 'account' && matchedPortable.password) {
+            authModeToUse = 'account';
+            passToUse = matchedPortable.password;
+            userToUse = matchedPortable.username || userToUse;
+            nextAuthModeOverride = 'account';
+          } else if (isHostUnlocked && authModeToUse === 'account' && !passToUse) {
             authModeToUse = 'guest';
           }
+
           if (authModeToUse === 'account' && !passToUse) {
             ok = false;
             message = '보안 계정 모드에서는 비밀번호가 필수입니다. 암호를 입력하거나 Guest 모드로 전환하세요.';
@@ -1230,8 +1319,8 @@ export const App: React.FC = () => {
               shareName: ticket.shareName,
               driveLetter: nextDriveLetter || (sameEndpoint ? latestDraft.driveLetter : 'Z:'),
               authMode: authModeToUse,
-              username: sameEndpoint ? latestDraft.username : (authModeToUse === 'account' ? latestDraft.username : ''),
-              password: passToUse,
+              username: authModeToUse === 'account' ? userToUse : '',
+              password: authModeToUse === 'account' ? passToUse : '',
               persistent: latestDraft.persistent,
             };
             const mountRes = await shareBridge.runClientOneClick(
@@ -1247,20 +1336,47 @@ export const App: React.FC = () => {
             } else {
               const failedStep = mountRes.steps.find((s) => s.status === 'error');
               ok = false;
+              shouldReclassifyOnRetryFailure = true;
               message = failedStep?.error || '네트워크 드라이브 재연결에 실패했습니다.';
             }
           }
         } else if (step.executor === 'retry_host_share') {
           const shareLower = ticket.shareName.trim().toLowerCase();
           const matchedExistingShare = sharesRef.current.find((s) => s.shareName.trim().toLowerCase() === shareLower);
+          const matchedPortable = portableSharesRef.current.find(
+            (ps) =>
+              ps.shareName.trim().toLowerCase() === shareLower &&
+              ((ps.sourceHostName || '').trim().toLowerCase() === netInfo.hostname.trim().toLowerCase() ||
+                (Boolean(netInfo.primaryIp) && (ps.sourceIp || '').trim() === netInfo.primaryIp.trim()))
+          );
+          const hostUnlockedByWizard = ticket.hostSteps.some(
+            (s) => s.executor === 'host_guest_unlock_and_reopen' && s.status === 'completed'
+          );
           const sameDraft = hostDraft.shareName.trim().toLowerCase() === shareLower;
+          const effectiveAuthMode: 'guest' | 'account' = hostUnlockedByWizard
+            ? 'guest'
+            : matchedExistingShare?.authMode || ticket.authMode;
+          const preservedPassword =
+            (sameDraft ? hostDraft.password : '') ||
+            matchedPortable?.password ||
+            shareBridge.getCachedSharePassword(
+              [netInfo.hostname, netInfo.primaryIp, ticket.targetHostName, ticket.targetIp || ''],
+              ticket.shareName
+            ) ||
+            hostDraft.password ||
+            generateSecureSharePassword(10);
+
+          if (!hostUnlockedByWizard && effectiveAuthMode === 'account' && ticket.authMode === 'guest') {
+            nextAuthModeOverride = 'account';
+          }
+
           const hostCfg: HostConfig = {
             folderPath: ticket.folderPath || matchedExistingShare?.folderPath || (sameDraft ? hostDraft.folderPath : 'C:\\AhBiShared'),
             shareName: ticket.shareName,
-            authMode: matchedExistingShare?.authMode || ticket.authMode,
+            authMode: effectiveAuthMode,
             permission: matchedExistingShare?.permission || (sameDraft ? hostDraft.permission : 'full'),
-            username: matchedExistingShare?.username || hostDraft.username || 'AhBiShare',
-            password: hostDraft.password || generateSecureSharePassword(10),
+            username: matchedExistingShare?.username || matchedPortable?.username || hostDraft.username || 'AhBiShare',
+            password: preservedPassword,
             ttlMinutes: sameDraft ? hostDraft.ttlMinutes : 0,
             autoRevokeOnExpiry: sameDraft ? hostDraft.autoRevokeOnExpiry : true,
           };
@@ -1273,7 +1389,10 @@ export const App: React.FC = () => {
             setShares(shareBridge.getSavedShares());
             ok = true;
             if (ticket.originRole === 'host') resolvedImmediately = true;
-            message = `'${shareRes.share.shareName}' 공유폴더 재개설 및 USB 동기화 완료`;
+            message =
+              effectiveAuthMode === 'account' && ticket.authMode === 'guest'
+                ? `'${shareRes.share.shareName}' 보안 계정(${hostCfg.username}) 공유 재확인 및 USB 암호화 자격 증명 동기화 완료`
+                : `'${shareRes.share.shareName}' 공유폴더 재개설(${effectiveAuthMode === 'guest' ? 'Guest' : '보안 계정'}) 및 USB 동기화 완료`;
           } else {
             const failedStep = shareRes.steps.find((s) => s.status === 'error');
             ok = false;
@@ -1313,11 +1432,20 @@ export const App: React.FC = () => {
       const updatedBase: TroubleshootTicket = {
         ...ticket,
         ...(nextDriveLetter ? { driveLetter: nextDriveLetter } : {}),
+        ...(nextAuthModeOverride ? { authMode: nextAuthModeOverride } : {}),
         hostSteps: updateStepArr(ticket.hostSteps),
         clientSteps: updateStepArr(ticket.clientSteps),
       };
 
       let recomputed = recomputeTroubleshootTicketStatus(updatedBase, netInfo.hostname);
+      if (!ok && shouldReclassifyOnRetryFailure) {
+        recomputed = reclassifyTroubleshootTicketOnRetryFailure(recomputed, message, {
+          netInfo,
+          portableShares: portableSharesRef.current,
+          hostPolicySnapshots,
+          effectiveAuthMode: nextAuthModeOverride,
+        });
+      }
       if (resolvedImmediately) {
         recomputed = {
           ...recomputed,
@@ -1335,7 +1463,7 @@ export const App: React.FC = () => {
       showToast(message);
       return { success: ok, message };
     },
-    [netInfo, mounts, hostDraft, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo, mounts, hostDraft, hostPolicySnapshots, refreshPortableSnapshot, appendLog, showToast]
   );
 
   const handleSkipTroubleshootStep = useCallback(
@@ -3363,10 +3491,30 @@ export const App: React.FC = () => {
         {activeSection === 'logs' && (
           <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
-                작업 실행 이력 ({activityLog.length})
-              </h2>
-              <div className="flex items-center gap-2">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                  작업 실행 이력 ({activityLog.length})
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 font-mono break-all">
+                  {appLogInfo?.supported && appLogInfo.directory
+                    ? `로그 파일 자동 저장: ${appLogInfo.currentFilePath || appLogInfo.directory}${
+                        appLogInfo.writeProtected ? ' (쓰기 금지 감지됨)' : ''
+                      }`
+                    : '앱 실행 폴더 하위 log\\AhBiShare_YYYY-MM-DD.log 파일에 자동 기록됩니다.'}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {appLogInfo?.supported && appLogInfo.directory && (
+                  <button
+                    id="btn-open-log-folder"
+                    type="button"
+                    onClick={() => void handleOpenPath(appLogInfo.directory)}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    로그 폴더 열기
+                  </button>
+                )}
                 <button
                   id="btn-refresh-logs"
                   type="button"

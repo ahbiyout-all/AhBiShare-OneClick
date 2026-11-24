@@ -345,37 +345,81 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         }),
       ];
     } else if (errorCode === 'Error 5 / 86 / 1326') {
-      recommendedSide = 'both';
-      hostSteps = [
-        makeStep('host', 1, {
-          executor: 'host_guest_unlock_and_reopen',
-          title: '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0) 및 ACL 정렬',
-          description: 'Guest 빈 암호 거부 또는 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
-          commandPreview: hostUnlockCmd,
-        }),
-        makeStep('host', 2, {
-          executor: 'retry_host_share',
-          title: `호스트 공유 '${shareName}' 재적용 및 상태 검증`,
-          description: '보안 계정 사용 시에도 공유 권한과 로컬 계정 상태를 갱신합니다.',
-        }),
-      ];
-      clientSteps = [
-        makeStep('client', 1, {
-          executor: 'clear_conflicting_sessions',
-          title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
-          description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
-        }),
-        makeStep('client', 2, {
-          executor: 'switch_to_account_mode',
-          title: '보안 계정 모드로 전환해 정확한 아이디·암호 입력 준비',
-          description: '호스트에 설정된 전용 공유 계정(아이디/암호)으로 인증 모드를 맞춥니다.',
-        }),
-        makeStep('client', 3, {
-          executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-          description: '세션 정리 및 인증 확인 후 네트워크 드라이브 연결을 다시 실행합니다.',
-        }),
-      ];
+      const targetMatchLower = (targetHostName || targetIp || '').trim().toLowerCase();
+      const matchingPortableAccount = (input.portableShares || []).find(
+        (ps) =>
+          ps.shareName.trim().toLowerCase() === shareName.trim().toLowerCase() &&
+          ps.authMode === 'account' &&
+          (!targetMatchLower ||
+            (ps.sourceHostName || '').trim().toLowerCase() === targetMatchLower ||
+            (ps.sourceIp || '').trim().toLowerCase() === targetMatchLower)
+      );
+
+      if (input.authMode === 'account') {
+        recommendedSide = 'both';
+        hostSteps = [
+          makeStep('host', 1, {
+            executor: 'retry_host_share',
+            title: `호스트 공유 '${shareName}' 전용 계정·암호 및 권한 재동기화`,
+            description:
+              '호스트의 전용 공유 계정 암호, 폴더 NTFS 권한 및 USB 암호화 자격 증명을 최신 상태로 다시 동기화합니다.',
+          }),
+          makeStep('host', 2, {
+            executor: 'apply_safe_compat',
+            patchMode: 'safe_compat',
+            title: '호스트 NTLMv2 · UAC 원격 토큰 및 방화벽 445 정렬',
+            description: '로컬 계정 원격 로그온 및 NTLMv2 인증 협상 정책을 정렬합니다.',
+          }),
+        ];
+        clientSteps = [
+          makeStep('client', 1, {
+            executor: 'clear_conflicting_sessions',
+            title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
+            description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+          }),
+          makeStep('client', 2, {
+            executor: 'retry_mount',
+            title: `${normalizedTargetForDisplay}\\${shareName} 보안 계정 재연결 실행`,
+            description: 'USB 동기화 암호 또는 입력한 계정 비밀번호로 네트워크 드라이브 연결을 다시 실행합니다.',
+          }),
+        ];
+      } else {
+        recommendedSide = 'both';
+        hostSteps = [
+          makeStep('host', 1, {
+            executor: 'host_guest_unlock_and_reopen',
+            title: '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0) 및 ACL 정렬',
+            description: 'Guest 빈 암호 거부 또는 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
+            commandPreview: hostUnlockCmd,
+          }),
+          makeStep('host', 2, {
+            executor: 'retry_host_share',
+            title: `호스트 공유 '${shareName}' 무비밀번호(Guest) 권한 재적용`,
+            description: '공유 폴더의 Everyone/Guest 접근 권한과 로컬 Guest 계정 상태를 갱신합니다.',
+          }),
+        ];
+        clientSteps = [
+          makeStep('client', 1, {
+            executor: 'clear_conflicting_sessions',
+            title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
+            description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+          }),
+          makeStep('client', 2, {
+            executor: 'switch_to_account_mode',
+            title: matchingPortableAccount
+              ? `호스트 보안 계정('${matchingPortableAccount.username || 'AhBiShare'}') 모드로 전환 준비`
+              : '보안 계정 모드로 전환해 정확한 아이디·암호 입력 준비',
+            description: matchingPortableAccount
+              ? 'USB 포터블 기록상 호스트 공유가 보안 계정 모드로 설정되어 있습니다. 계정 모드로 전환해 바로 연결하세요.'
+              : '호스트에 설정된 전용 공유 계정(아이디/암호)으로 인증 모드를 맞춥니다.',
+          }),
+          makeStep('client', 3, {
+            executor: 'retry_mount',
+            title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+            description: '세션 정리 및 인증 확인 후 네트워크 드라이브 연결을 다시 실행합니다.',
+          }),
+        ];
+      }
     } else if (errorCode === 'Error 58') {
       recommendedSide = 'both';
       hostSteps = [
@@ -650,6 +694,101 @@ export function recomputeTroubleshootTicketStatus(
           resolvedByHostName: undefined,
         }),
   };
+}
+
+/**
+ * When client retry_mount fails with a newly revealed specific SMB/Auth error code
+ * (for example, an initial "Mount Diagnostic" timeout ticket later fails with Error 86 / 1385 / 1223),
+ * upgrade the ticket's errorCode and rebuild/append actionable remediation steps instead of staying stuck in host_fixed.
+ */
+export function reclassifyTroubleshootTicketOnRetryFailure(
+  ticket: TroubleshootTicket,
+  failureMessage: string,
+  input: {
+    netInfo: LocalNetworkInfo;
+    portableShares?: PortableHostShareEntry[];
+    hostPolicySnapshots?: Record<string, HostPolicySnapshot>;
+    effectiveAuthMode?: AuthMode;
+  }
+): TroubleshootTicket {
+  const diag = classifyFailureDiagnostics(failureMessage);
+  if (!diag || diag.code === 'Mount Diagnostic') {
+    return ticket;
+  }
+  const isGenericPrior =
+    ticket.errorCode === 'Mount Diagnostic' || ticket.errorCode === 'Error 53 / TCP 445';
+  const authChanged = Boolean(input.effectiveAuthMode && input.effectiveAuthMode !== ticket.authMode);
+  if (!isGenericPrior && diag.code === ticket.errorCode && !authChanged) {
+    return ticket;
+  }
+
+  const nextDraft = buildTroubleshootTicketDraft({
+    originRole: ticket.originRole,
+    netInfo: input.netInfo,
+    errorMessage: failureMessage,
+    targetHost: ticket.targetIp || ticket.targetHostName,
+    targetHostNameHint: ticket.targetHostName,
+    targetIpHint: ticket.targetIp,
+    shareName: ticket.shareName,
+    folderPath: ticket.folderPath,
+    driveLetter: ticket.driveLetter,
+    authMode: input.effectiveAuthMode || ticket.authMode,
+    isLegacyOs: ticket.isLegacyOs,
+    portableShares: input.portableShares,
+    hostPolicySnapshots: input.hostPolicySnapshots,
+  });
+
+  const nowIso = new Date().toISOString();
+  const prevByExec = new Map<string, TroubleshootWizardStep>();
+  for (const s of [...ticket.hostSteps, ...ticket.clientSteps]) {
+    prevByExec.set(`${s.side}:${s.executor}`, s);
+  }
+
+  const mergeSteps = (freshSteps: TroubleshootWizardStep[]) =>
+    freshSteps.map((s) => {
+      if (s.executor === 'retry_mount') {
+        return {
+          ...s,
+          status: 'failed' as const,
+          lastAttemptAt: nowIso,
+          lastMessage: failureMessage,
+        };
+      }
+      // Always keep verify_port_445 completion, and preserve apply_safe_compat/apply_legacy_bridge unless guest unlock is newly required
+      const prev = prevByExec.get(`${s.side}:${s.executor}`);
+      if (
+        prev &&
+        prev.status === 'completed' &&
+        (s.executor === 'verify_port_445' ||
+          s.executor === 'apply_safe_compat' ||
+          s.executor === 'apply_legacy_bridge' ||
+          s.executor === 'clear_conflicting_sessions')
+      ) {
+        return {
+          ...s,
+          status: prev.status,
+          lastAttemptAt: prev.lastAttemptAt,
+          lastMessage: prev.lastMessage,
+        };
+      }
+      return s;
+    });
+
+  const upgraded: TroubleshootTicket = {
+    ...ticket,
+    authMode: input.effectiveAuthMode || ticket.authMode,
+    errorCode: nextDraft.errorCode,
+    errorTitle: nextDraft.errorTitle,
+    rawErrorSummary: nextDraft.rawErrorSummary,
+    recommendedSide: nextDraft.recommendedSide,
+    hostSteps: mergeSteps(nextDraft.hostSteps),
+    clientSteps: mergeSteps(nextDraft.clientSteps),
+    updatedAt: nowIso,
+    resolvedAt: undefined,
+    resolvedByHostName: undefined,
+  };
+
+  return recomputeTroubleshootTicketStatus(upgraded, input.netInfo.hostname);
 }
 
 export function detectTicketMatchSideForPc(

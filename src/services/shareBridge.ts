@@ -44,6 +44,7 @@ import {
   SmartAuthDetectionResult,
   SmartAuthTargetInput,
   TroubleshootTicket,
+  AppLogStatusInfo,
 } from '@/types/share';
 import {
   decodeConnectionCode,
@@ -109,6 +110,14 @@ declare global {
       getPortableStatus?: () => Promise<PortableStorageStatus>;
       loadPortableData?: () => Promise<PortableLoadResult>;
       savePortableData?: (document: PortableShareDocument) => Promise<PortableSaveResult>;
+      appendAppLog?: (entry: {
+        role: string;
+        summary: string;
+        status: 'success' | 'error' | 'info' | 'warn';
+        detail?: string;
+        hostName?: string;
+      }) => Promise<{ success: boolean; directory: string; fileName?: string; filePath: string; error?: string }>;
+      getAppLogInfo?: (options?: { limit?: number }) => Promise<AppLogStatusInfo>;
       triggerSystemReboot?: () => Promise<{ success: boolean; message: string }>;
       saveLegacyScripts?: (payload: {
         folderName: string;
@@ -1402,6 +1411,73 @@ export const shareBridge = {
     return {
       ...saved,
       removedCount,
+    };
+  },
+
+  getCachedSharePassword(hosts: string[], shareName: string): string | undefined {
+    const cleanShare = (shareName || '').trim().toLowerCase();
+    if (!cleanShare) return undefined;
+    for (const h of hosts) {
+      const cleanHost = (h || '').trim();
+      if (!cleanHost) continue;
+      const hit = getCachedPassword(cleanHost, cleanShare);
+      if (hit) return hit;
+    }
+    const hostSet = new Set(hosts.map((h) => (h || '').trim().toLowerCase()).filter(Boolean));
+    for (const ps of latestPortableDoc.shares || []) {
+      if ((ps.shareName || '').trim().toLowerCase() !== cleanShare) continue;
+      if (
+        hostSet.size === 0 ||
+        hostSet.has((ps.sourceHostName || '').trim().toLowerCase()) ||
+        hostSet.has((ps.sourceIp || '').trim().toLowerCase())
+      ) {
+        if (ps.password) return ps.password;
+      }
+    }
+    return undefined;
+  },
+
+  async appendAppLog(entry: {
+    role: string;
+    summary: string;
+    status: 'success' | 'error' | 'info' | 'warn';
+    detail?: string;
+    hostName?: string;
+  }): Promise<{ success: boolean; directory: string; fileName?: string; filePath: string; error?: string }> {
+    if (window.ahbiShareElectron?.appendAppLog) {
+      try {
+        return await window.ahbiShareElectron.appendAppLog(entry);
+      } catch (err) {
+        return {
+          success: false,
+          directory: '',
+          filePath: '',
+          error: err instanceof Error ? err.message : '로그 기록 IPC 실패',
+        };
+      }
+    }
+    return {
+      success: false,
+      directory: '',
+      filePath: '',
+    };
+  },
+
+  async getAppLogInfo(limit = 100): Promise<AppLogStatusInfo> {
+    if (window.ahbiShareElectron?.getAppLogInfo) {
+      try {
+        return await window.ahbiShareElectron.getAppLogInfo({ limit });
+      } catch {}
+    }
+    return {
+      success: false,
+      supported: false,
+      directory: '',
+      currentFileName: '',
+      currentFilePath: '',
+      writable: false,
+      files: [],
+      recentLines: [],
     };
   },
 

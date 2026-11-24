@@ -77,6 +77,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  try {
+    const st = portableStore.getStatus();
+    portableStore.appendAppLog({
+      role: '시스템',
+      hostName: os.hostname(),
+      status: 'info',
+      summary: `AhBiShare OneClick v${APP_PKG_VERSION} 시작 (모드: ${st.mode}, 경로: ${st.directory})`,
+    });
+  } catch {}
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -147,6 +156,7 @@ function executePowerShellScript(script, timeoutMs = 45000) {
       '  [Console]::InputEncoding = $script:__AhBiUtf8NoBom',
       '  [Console]::OutputEncoding = $script:__AhBiUtf8NoBom',
       '} catch {}',
+      'try { if ($Host -and $Host.UI -and $Host.UI.RawUI) { $bs = $Host.UI.RawUI.BufferSize; if ($bs -and $bs.Width -lt 512) { $bs.Width = 512; $Host.UI.RawUI.BufferSize = $bs } } } catch {}',
       '$OutputEncoding = $script:__AhBiUtf8NoBom',
       "if (Get-Variable -Name PSDefaultParameterValues -ErrorAction SilentlyContinue) { $PSDefaultParameterValues['*:Encoding'] = 'utf8' }",
       script,
@@ -182,7 +192,23 @@ function executePowerShellScript(script, timeoutMs = 45000) {
         ps.kill();
       } catch {}
       cleanupTmp();
-      resolve({ success: false, output: '', error: `PowerShell execution timed out after ${Math.round(timeoutMs / 1000)}s` });
+      const partialOut = decodeWindowsBuffer(Buffer.concat(outChunks)).trim();
+      const partialErr = decodeWindowsBuffer(Buffer.concat(errChunks)).trim();
+      const timeoutMsg = `PowerShell execution timed out after ${Math.round(timeoutMs / 1000)}s`;
+      const finalTimeoutErr = partialErr ? `${timeoutMsg} (${partialErr.slice(0, 220)})` : timeoutMsg;
+      try {
+        portableStore.appendAppLog({
+          role: 'PowerShell',
+          hostName: os.hostname(),
+          status: 'error',
+          summary: finalTimeoutErr,
+        });
+      } catch {}
+      resolve({
+        success: false,
+        output: partialOut,
+        error: finalTimeoutErr,
+      });
     }, timeoutMs);
 
     ps.stdout.on('data', (d) => outChunks.push(d));
@@ -197,6 +223,16 @@ function executePowerShellScript(script, timeoutMs = 45000) {
       const errBuf = Buffer.concat(errChunks);
       const output = decodeWindowsBuffer(outBuf).trim();
       const error = decodeWindowsBuffer(errBuf).trim();
+      if (code !== 0) {
+        try {
+          portableStore.appendAppLog({
+            role: 'PowerShell',
+            hostName: os.hostname(),
+            status: 'error',
+            summary: `PowerShell 종료 코드 ${code}: ${(error || output || '오류 세부 내용 없음').slice(0, 320)}`,
+          });
+        } catch {}
+      }
       resolve({
         success: code === 0,
         output,
@@ -693,6 +729,22 @@ ipcMain.handle('load-portable-data', async () => {
 
 ipcMain.handle('save-portable-data', async (_event, { document }) => {
   return enqueuePortableStoreOp(() => portableStore.savePortableData(document));
+});
+
+ipcMain.handle('append-app-log', async (_event, entry) => {
+  return enqueuePortableStoreOp(() => portableStore.appendAppLog(entry));
+});
+
+ipcMain.handle('get-app-log-info', async (_event, options) => {
+  return enqueuePortableStoreOp(() => {
+    const info = portableStore.getAppLogInfo(options);
+    try {
+      if (info?.directory && info.writable && !fs.existsSync(info.directory)) {
+        fs.mkdirSync(info.directory, { recursive: true });
+      }
+    } catch {}
+    return info;
+  });
 });
 
 ipcMain.handle('trigger-system-reboot', async () => {

@@ -372,7 +372,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const batContent = buildHostGuestUnlockBatchScript(config.shareName).replace(/\r?\n/g, '\r\n');
+                      const batContent = buildHostGuestUnlockBatchScript(config.shareName, config.folderPath).replace(/\r?\n/g, '\r\n');
                       const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement('a');

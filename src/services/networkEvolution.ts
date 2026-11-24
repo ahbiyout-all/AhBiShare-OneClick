@@ -571,7 +571,7 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
       actionLabel: '구형 OS 호환 브릿지 정렬',
     };
   }
-  if (/(?<![.\d])53(?![.\d])|(?<![.\d])67(?![.\d])|네트워크 경로|연결 시간 초과|timeout|445/i.test(sanitized)) {
+  if (/(?<![.\d])53(?![.\d])|(?<![.\d])67(?![.\d])|네트워크 경로|연결 시간 초과|시간\s*초과|timeout|timed\s*out|445/i.test(sanitized)) {
     return {
       code: 'Error 53 / TCP 445',
       title: '네트워크 경로 차단 또는 구형 SMBv1 장비 미지원',

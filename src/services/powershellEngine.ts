@@ -624,11 +624,41 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
         }
 
         function Invoke-NetUseSafe([string[]]$netArgs) {
-          try { [Console]::OutputEncoding = [System.Text.Encoding]::Default } catch {}
-          $out = (& net.exe @netArgs 2>&1) -join ' '
-          $code = $LASTEXITCODE
-          try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-          return New-Object PSObject -Property @{ Code = $code; Output = $out }
+          try {
+            $escaped = @()
+            foreach ($a in $netArgs) {
+              if ($null -eq $a) { continue }
+              $s = "$a"
+              if ($s -match '[\s"]') {
+                $escaped += ('"' + ($s -replace '"', '\"') + '"')
+              } else {
+                $escaped += $s
+              }
+            }
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = 'net.exe'
+            $psi.Arguments = ($escaped -join ' ')
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            try { $psi.StandardOutputEncoding = [System.Text.Encoding]::Default } catch {}
+            try { $psi.StandardErrorEncoding = [System.Text.Encoding]::Default } catch {}
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            if (-not $proc) { return New-Object PSObject -Property @{ Code = -1; Output = 'Process start failed' } }
+            try { $proc.StandardInput.Close() } catch {}
+            if (-not $proc.WaitForExit(8000)) {
+              try { $proc.Kill() } catch {}
+              return New-Object PSObject -Property @{ Code = 1460; Output = 'net.exe timed out (8s)' }
+            }
+            $stdOut = $proc.StandardOutput.ReadToEnd()
+            $stdErr = $proc.StandardError.ReadToEnd()
+            $combined = (($stdOut + ' ' + $stdErr) -replace '\s+', ' ').Trim()
+            return New-Object PSObject -Property @{ Code = $proc.ExitCode; Output = $combined }
+          } catch {
+            return New-Object PSObject -Property @{ Code = -1; Output = $_.Exception.Message }
+          }
         }
 
         function Invoke-NetUseBlankPass([string]$drv, [string]$uncPath, [string]$userArg, [string]$persistArg) {
@@ -646,13 +676,13 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             $proc = [System.Diagnostics.Process]::Start($psi)
             if (-not $proc) { return New-Object PSObject -Property @{ Code = -1; Output = 'Process start failed' } }
             try { $proc.StandardInput.Close() } catch {}
+            if (-not $proc.WaitForExit(8000)) {
+              try { $proc.Kill() } catch {}
+              return New-Object PSObject -Property @{ Code = 1460; Output = 'net.exe timed out (8s)' }
+            }
             $stdOut = $proc.StandardOutput.ReadToEnd()
             $stdErr = $proc.StandardError.ReadToEnd()
-            if (-not $proc.WaitForExit(15000)) {
-              try { $proc.Kill() } catch {}
-              return New-Object PSObject -Property @{ Code = 1460; Output = 'net.exe timed out' }
-            }
-            $combined = (($stdOut + ' ' + $stdErr) -replace '\\s+', ' ').Trim()
+            $combined = (($stdOut + ' ' + $stdErr) -replace '\s+', ' ').Trim()
             return New-Object PSObject -Property @{ Code = $proc.ExitCode; Output = $combined }
           } catch {
             return New-Object PSObject -Property @{ Code = -1; Output = $_.Exception.Message }
@@ -2062,31 +2092,63 @@ export function buildOsCompatibilityPatchScript(
 
 /**
  * Standalone batch (.bat) script to completely unlock passwordless guest sharing on any host PC.
- * Fixes Error 86 (invalid password) and Error 1223 (user credential prompt) with 1 click.
+ * Ensures folder creation, NTFS/SMB Share ACLs, Win10/11 guest/signing policy, scoped firewall,
+ * explicit error visibility, and live post-verification.
  */
-export function buildHostGuestUnlockBatchScript(shareName = 'AhBiShared'): string {
+export function buildHostGuestUnlockBatchScript(
+  shareName = 'AhBiShared',
+  folderPath = 'C:\\AhBiShared'
+): string {
   const safeShare = (shareName || 'AhBiShared').trim().replace(/[\\/:*?"<>|%$&]/g, '') || 'AhBiShared';
+  const safeFolder = normalizeWindowsFolderPath(folderPath).replace(/["%$&|<>^]/g, '') || 'C:\\AhBiShared';
   const safePsShare = escapePsSingle(safeShare);
+  const safePsFolder = escapePsSingle(safeFolder);
   const psBlock = [
+    `$ErrorActionPreference='Continue'`,
+    `$warns=@()`,
     `$inf=Join-Path $env:TEMP ('ahbi_u_'+$PID+'_'+(Get-Random)+'.inf')`,
     `$sdb=Join-Path $env:TEMP ('ahbi_u_'+$PID+'_'+(Get-Random)+'.sdb')`,
     `$log=$inf+'.log'`,
     `try{`,
+    `if(Get-Command Get-NetConnectionProfile -ErrorAction SilentlyContinue){Get-NetConnectionProfile -ErrorAction SilentlyContinue|Where-Object{$_.NetworkCategory -eq 'Public'}|ForEach-Object{Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue|Out-Null;Write-Host ('  [OK] Network profile set to Private: '+$_.InterfaceAlias)}}`,
+    `$tgtDir='${safePsFolder}'`,
+    `if(-not (Test-Path -LiteralPath $tgtDir)){New-Item -Path $tgtDir -ItemType Directory -Force -ErrorAction Stop|Out-Null;Write-Host ('  [OK] Created folder: '+$tgtDir)}else{Write-Host ('  [OK] Verified folder: '+$tgtDir)}`,
+    `$icTarget=if($tgtDir -match '^[A-Za-z]:\\\\$'){$tgtDir.Substring(0,2)+'\\.'}else{$tgtDir}`,
+    `& icacls.exe $icTarget /grant '*S-1-1-0:(OI)(CI)F' /T /C /Q | Out-Null`,
+    `if($LASTEXITCODE -ne 0){$warns+=('icacls Everyone failed (code '+$LASTEXITCODE+')')}else{Write-Host '  [OK] NTFS ACL granted for Everyone'}`,
+    `& icacls.exe $icTarget /grant '*S-1-5-32-546:(OI)(CI)F' /T /C /Q 2>$null|Out-Null`,
+    `& icacls.exe $icTarget /grant '*S-1-5-7:(OI)(CI)F' /T /C /Q 2>$null|Out-Null`,
     `$g=Get-WmiObject Win32_UserAccount -Filter 'LocalAccount=True' -ErrorAction SilentlyContinue|Where-Object{$_.SID -like '*-501'}|Select-Object -First 1`,
     `$gSid=if($g -and $g.SID){'*'+$g.SID}else{''}`,
     `$gName=if($g -and $g.Name){$g.Name}else{'Guest'}`,
+    `if(Get-Command Get-SmbShare -ErrorAction SilentlyContinue){`,
+    `$sh=Get-SmbShare -Name '${safePsShare}' -ErrorAction SilentlyContinue`,
+    `if($sh -and ($sh.Path.TrimEnd('\\') -ine $tgtDir.TrimEnd('\\'))){Remove-SmbShare -Name '${safePsShare}' -Force -ErrorAction SilentlyContinue;$sh=$null}`,
+    `if(-not $sh){New-SmbShare -Name '${safePsShare}' -Path $tgtDir -FullAccess 'Everyone' -ErrorAction Stop|Out-Null;Write-Host '  [OK] Created SMB share ${safePsShare}'}else{Grant-SmbShareAccess -Name '${safePsShare}' -AccountName 'Everyone' -AccessRight Full -Force -ErrorAction SilentlyContinue|Out-Null;Write-Host '  [OK] Updated SMB share ACL for Everyone'}`,
+    `foreach($sidStr in @('S-1-5-32-546','S-1-5-7')){try{$nt=(New-Object System.Security.Principal.SecurityIdentifier($sidStr)).Translate([System.Security.Principal.NTAccount]).Value;if($nt){Grant-SmbShareAccess -Name '${safePsShare}' -AccountName $nt -AccessRight Full -Force -ErrorAction SilentlyContinue|Out-Null}}catch{}}`,
+    `if($gName){Grant-SmbShareAccess -Name '${safePsShare}' -AccountName $gName -AccessRight Full -Force -ErrorAction SilentlyContinue|Out-Null}`,
+    `}else{`,
+    `& net.exe share '${safePsShare}' /delete /y 2>$null|Out-Null`,
+    `& net.exe share ('${safePsShare}='+$tgtDir) '/GRANT:Everyone,FULL'`,
+    `if($LASTEXITCODE -ne 0){$warns+=('net share failed (code '+$LASTEXITCODE+')')}else{Write-Host '  [OK] Created legacy SMB share ${safePsShare}'}`,
+    `}`,
     `$nk='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters'`,
     `$cn=(Get-ItemProperty -Path $nk -Name NullSessionShares -ErrorAction SilentlyContinue).NullSessionShares`,
     `if($null -eq $cn){$cn=@()}elseif($cn -is [string]){$cn=@($cn)}`,
     `if($cn -notcontains '${safePsShare}'){Set-ItemProperty -Path $nk -Name NullSessionShares -Value (@($cn)+'${safePsShare}') -ErrorAction SilentlyContinue|Out-Null}`,
+    `if(Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue){try{Set-SmbServerConfiguration -RequireSecuritySignature $false -EnableSecuritySignature $false -EncryptData $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{};try{Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{}}`,
+    `if(Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue){try{Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{}}`,
     `$psi=New-Object System.Diagnostics.ProcessStartInfo`,
     `$psi.FileName='net.exe'`,
     `$psi.Arguments=('user '+[char]34+$gName+[char]34+' '+[char]34+[char]34+' /active:yes /passwordreq:no')`,
     `$psi.UseShellExecute=$false`,
+    `$psi.RedirectStandardInput=$true`,
+    `$psi.RedirectStandardOutput=$true`,
+    `$psi.RedirectStandardError=$true`,
     `$psi.CreateNoWindow=$true`,
     `$p=[System.Diagnostics.Process]::Start($psi)`,
-    `if($p){[void]$p.WaitForExit(5000)}`,
-    `& net.exe user $gName /active:yes 2>$null|Out-Null`,
+    `if($p){try{$p.StandardInput.Close()}catch{};if($p.WaitForExit(5000)){$nuCode=$p.ExitCode}else{try{$p.Kill()}catch{};$nuCode=1460}}else{$nuCode=-1}`,
+    `if($nuCode -ne 0){$warns+=('Guest password clear / activation returned code '+$nuCode+' (check password complexity policy)')}else{Write-Host ('  [OK] Activated Guest account: '+$gName)}`,
     `if(Get-Command Enable-NetFirewallRule -ErrorAction SilentlyContinue){Enable-NetFirewallRule -Name 'FPS-SMB-In-TCP' -ErrorAction SilentlyContinue|Out-Null;Enable-NetFirewallRule -DisplayGroup '@FirewallAPI.dll,-28502' -ErrorAction SilentlyContinue|Out-Null}`,
     `& secedit.exe /export /cfg $inf /areas USER_RIGHTS 2>$null|Out-Null`,
     `if(Test-Path -LiteralPath $inf){`,
@@ -2094,7 +2156,7 @@ export function buildHostGuestUnlockBatchScript(shareName = 'AhBiShared'): strin
     `foreach($ln in ([System.IO.File]::ReadAllLines($inf,[System.Text.Encoding]::Unicode))){`,
     `if($ln -match '^(\\s*SeDenyNetworkLogonRight\\s*=\\s*)(.*)$'){`,
     `$items=@()`,
-    `foreach($tk in ($matches[2] -split ',')){$rawTk=$tk.Trim();$t=$rawTk.Trim([char]34);if(-not $t){continue};$isG=($t -eq '*S-1-5-32-546')-or($t -eq '*S-1-5-7')-or($t -match '-501$')-or($t -match '(?:^|\\\\)Guests?$')-or($gSid -and ($t -ieq $gSid))-or($gName -and ($t -ieq $gName));if(-not $isG){$items+=$rawTk}}`,
+    `foreach($tk in ($matches[2] -split ',')){$rawTk=$tk.Trim();$t=$rawTk.Trim([char]34);if(-not $t){continue};$isG=($t -eq '*S-1-5-32-546')-or($t -eq '*S-1-5-7')-or($t -match '-501$')-or($t -match '(?:^|\\\\)Guests?$')-or($t -match '(?:^|\\\\)게스트$')-or($gSid -and ($t -ieq $gSid))-or($gName -and ($t -ieq $gName));if(-not $isG){$items+=$rawTk}}`,
     `$out+=($matches[1]+($items -join ','))`,
     `}elseif($ln -match '^(\\s*SeNetworkLogonRight\\s*=\\s*)(.*)$'){`,
     `$items=@()`,
@@ -2106,8 +2168,11 @@ export function buildHostGuestUnlockBatchScript(shareName = 'AhBiShared'): strin
     `}`,
     `$out|Out-File -FilePath $inf -Encoding Unicode -Force`,
     `& secedit.exe /configure /db $sdb /cfg $inf /areas USER_RIGHTS /log $log /quiet 2>$null|Out-Null`,
-    `}`,
-    `}catch{}finally{foreach($f in @($inf,$sdb,($sdb+'.jfm'),$log)){if($f -and (Test-Path -LiteralPath $f)){Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue}}}`,
+    `if($LASTEXITCODE -ne 0){$warns+=('secedit USER_RIGHTS returned code '+$LASTEXITCODE)}else{Write-Host '  [OK] Cleared SeDenyNetworkLogonRight for Guest'}`,
+    `}else{$warns+='secedit export failed (USER_RIGHTS not verified)'}`,
+    `}catch{$warns+=('Unexpected exception: '+$_.Exception.Message)}finally{foreach($f in @($inf,$sdb,($sdb+'.jfm'),$log)){if($f -and (Test-Path -LiteralPath $f)){Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue}}}`,
+    `if($warns.Count -gt 0){foreach($w in $warns){Write-Host ('  [WARN] '+$w) -ForegroundColor Yellow};exit 2}`,
+    `exit 0`,
   ].join(';');
 
   const lines = [
@@ -2119,6 +2184,7 @@ export function buildHostGuestUnlockBatchScript(shareName = 'AhBiShared'): strin
     'echo   Resolves Error 86 / Error 1223 / Error 1385 / 0x80070035',
     'echo ========================================================================',
     'echo.',
+    'set "AHBI_HAS_WARN=0"',
     'echo [*] Checking administrator privileges...',
     'net session >nul 2>&1',
     'if %errorlevel% neq 0 (',
@@ -2130,40 +2196,57 @@ export function buildHostGuestUnlockBatchScript(shareName = 'AhBiShared'): strin
     ')',
     '',
     'echo [1/6] Unlocking LSA anonymous and blank password logon policies...',
-    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f >nul',
-    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f >nul',
-    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f >nul',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f >nul || (echo [WARN] Failed to set everyoneincludesanonymous & set "AHBI_HAS_WARN=1")',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f >nul || (echo [WARN] Failed to set restrictanonymous & set "AHBI_HAS_WARN=1")',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f >nul || (echo [WARN] Failed to set LimitBlankPasswordUse & set "AHBI_HAS_WARN=1")',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 1 /f >nul 2>&1',
     '',
-    'echo [2/6] Relaxing SMB server null-session and signing/encryption policies...',
-    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f >nul',
+    'echo [2/6] Relaxing SMB server and workstation guest/signing policies...',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f >nul || set "AHBI_HAS_WARN=1"',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f >nul 2>&1',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EnableSecuritySignature /t REG_DWORD /d 0 /f >nul 2>&1',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EncryptData /t REG_DWORD /d 0 /f >nul 2>&1',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RejectUnencryptedAccess /t REG_DWORD /d 0 /f >nul 2>&1',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f >nul 2>&1',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f >nul 2>&1',
+    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f >nul 2>&1',
     '',
-    'echo [3/6] Activating Guest account (SID *-501), clearing blank password, and NullSessionShares...',
-    'echo [4/6] Cleaning SeDenyNetworkLogonRight guest restrictions...',
+    `echo [3/6] Creating share folder (${safeFolder}), NTFS/Share ACLs, Guest account & User Rights...`,
     'if exist "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" (',
-    `  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "${psBlock}" >nul 2>&1`,
+    `  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "${psBlock}"`,
+    '  if errorlevel 1 set "AHBI_HAS_WARN=1"',
     ') else (',
-    '  net user Guest "" /active:yes /passwordreq:no >nul 2>&1',
+    `  if not exist "${safeFolder}" mkdir "${safeFolder}"`,
+    `  icacls "${safeFolder}" /grant "*S-1-1-0:(OI)(CI)F" /T /C /Q || set "AHBI_HAS_WARN=1"`,
+    `  net share "${safeShare}=${safeFolder}" "/GRANT:Everyone,FULL" || set "AHBI_HAS_WARN=1"`,
+    '  net user Guest "" /active:yes /passwordreq:no || (echo [WARN] Guest activation/password reset returned an error. & set "AHBI_HAS_WARN=1")',
     ')',
     '',
-    'echo [5/6] Opening Windows Firewall for File Sharing / TCP 445...',
+    'echo [4/6] Opening Windows Firewall for File Sharing / TCP 445 (Private/Domain profiles)...',
+    'netsh advfirewall firewall set rule group="File and Printer Sharing" profile=private,domain new enable=Yes >nul 2>&1',
     'netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes >nul 2>&1',
     'netsh advfirewall firewall delete rule name="AhBiShare-SMB-445" >nul 2>&1',
-    'netsh advfirewall firewall add rule name="AhBiShare-SMB-445" dir=in action=allow protocol=TCP localport=445 profile=any >nul 2>&1',
+    'netsh advfirewall firewall add rule name="AhBiShare-SMB-445" dir=in action=allow protocol=TCP localport=445 profile=private,domain >nul || (echo [WARN] Failed to add Private/Domain TCP 445 rule & set "AHBI_HAS_WARN=1")',
     '',
-    'echo [6/6] Restarting LanmanServer service (no reboot required)...',
+    'echo [5/6] Restarting SMB services (LanmanServer / LanmanWorkstation)...',
     'net stop LanmanServer /y >nul 2>&1',
-    'net start LanmanServer >nul 2>&1',
+    'net start LanmanServer >nul || (echo [ERROR] LanmanServer failed to start & set "AHBI_HAS_WARN=1")',
+    'net stop LanmanWorkstation /y >nul 2>&1',
+    'net start LanmanWorkstation >nul 2>&1',
     '',
-    'echo.',
+    'echo [6/6] Verifying live share and guest policy state...',
+    `net share "${safeShare}" >nul 2>&1 && (echo   [OK] SMB Share \\\\%COMPUTERNAME%\\${safeShare} is active) || (echo   [WARN] SMB Share '${safeShare}' could not be verified & set "AHBI_HAS_WARN=1")`,
+    '',
     'echo ========================================================================',
-    'echo  [DONE] Passwordless guest sharing policy is now unlocked on this host.',
-    `echo  Target UNC Share: \\\\%COMPUTERNAME%\\${safeShare}`,
-    'echo  Client PCs can now connect without password prompts or Error 86/1223.',
+    'if "%AHBI_HAS_WARN%"=="1" (',
+    '  echo  [DONE WITH WARNINGS] Review [WARN]/[ERROR] lines above.',
+    '  echo  If Guest failed due to local password complexity policy, set secpol.msc',
+    '  echo  MinimumPasswordLength=0 or use AhBiShare Dedicated Account mode instead.',
+    ') else (',
+    '  echo  [DONE] Folder, ACLs, share, and guest policy are verified on this host.',
+    `  echo  Target UNC Share: \\\\%COMPUTERNAME%\\${safeShare} (${safeFolder})`,
+    '  echo  Tip: Run AhBiShare 1-Click Security Rollback when file sharing finishes.',
+    ')',
     'echo ========================================================================',
     'echo.',
     'pause',

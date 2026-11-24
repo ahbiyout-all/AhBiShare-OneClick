@@ -1378,6 +1378,161 @@ function createPortableStore(options = {}) {
     });
   };
 
+  const LOG_DIR_NAME = 'log';
+
+  function formatLocalLogDate(date = new Date()) {
+    const d = date instanceof Date ? date : new Date(date);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function formatLocalLogTimestamp(date = new Date()) {
+    const d = date instanceof Date ? date : new Date(date);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${formatLocalLogDate(d)} ${hh}:${mm}:${ss}`;
+  }
+
+  function getAppLogFileName(date = new Date()) {
+    return `AhBiShare_${formatLocalLogDate(date)}.log`;
+  }
+
+  function resolveSafeLogFilePath(baseDir, date = new Date()) {
+    const logDir = path.resolve(baseDir, LOG_DIR_NAME);
+    const fileName = getAppLogFileName(date);
+    const filePath = path.resolve(logDir, fileName);
+    if (!filePath.startsWith(logDir + path.sep)) {
+      throw new Error('허용되지 않은 로그 파일 경로입니다.');
+    }
+    return { logDir, fileName, filePath };
+  }
+
+  function sanitizeSingleLineLogText(text, maxLen = 900) {
+    const scrubbed = stripSensitiveCredentialText(String(text || ''));
+    return scrubbed.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLen);
+  }
+
+  const appendAppLog = (entry = {}) => {
+    const loc = getLocation();
+    const now = new Date();
+    const { logDir, fileName, filePath } = resolveSafeLogFilePath(loc.directory, now);
+
+    const rawStatus = String(entry.status || 'info').toLowerCase().trim();
+    const levelTag =
+      rawStatus === 'error'
+        ? 'ERROR'
+        : rawStatus === 'warn' || rawStatus === 'warning'
+          ? 'WARN'
+          : rawStatus === 'success'
+            ? 'SUCCESS'
+            : 'INFO';
+    const roleText = sanitizeSingleLineLogText(entry.role || '시스템', 80) || '시스템';
+    const hostText = sanitizeSingleLineLogText(entry.hostName || '', 64);
+    const summaryText = sanitizeSingleLineLogText(entry.summary || '', 600);
+    const detailText = entry.detail ? sanitizeSingleLineLogText(entry.detail, 700) : '';
+
+    if (!summaryText && !detailText) {
+      return { success: false, directory: logDir, filePath, error: '기록할 로그 내용이 비어 있습니다.' };
+    }
+
+    const lineParts = [`[${formatLocalLogTimestamp(now)}]`];
+    if (hostText) lineParts.push(`[${hostText}]`);
+    lineParts.push(`[${levelTag}]`);
+    lineParts.push(`[${roleText}]`);
+    lineParts.push(summaryText || detailText);
+    if (detailText && detailText !== summaryText) {
+      lineParts.push(`| detail: ${detailText}`);
+    }
+    const lineContent = `${lineParts.join(' ')}\r\n`;
+
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+    } catch (err) {
+      const classified = classifyUsbWriteError(err, '로그 폴더 생성');
+      return {
+        success: false,
+        directory: logDir,
+        filePath,
+        writeProtected: classified.writeProtected,
+        error: classified.message,
+      };
+    }
+
+    try {
+      const isNewFile = !fs.existsSync(filePath);
+      const payload = isNewFile ? `\uFEFF${lineContent}` : lineContent;
+      fs.appendFileSync(filePath, payload, 'utf8');
+      return {
+        success: true,
+        directory: logDir,
+        fileName,
+        filePath,
+      };
+    } catch (err) {
+      const classified = classifyUsbWriteError(err, '로그 파일 기록');
+      return {
+        success: false,
+        directory: logDir,
+        fileName,
+        filePath,
+        writeProtected: classified.writeProtected,
+        error: classified.message,
+      };
+    }
+  };
+
+  const getAppLogInfo = (opts = {}) => {
+    const loc = getLocation();
+    const { logDir, fileName, filePath } = resolveSafeLogFilePath(loc.directory, new Date());
+    const limit = Math.max(10, Math.min(300, Number(opts?.limit) || 100));
+    const files = [];
+    let recentLines = [];
+
+    try {
+      if (fs.existsSync(logDir)) {
+        for (const entry of fs.readdirSync(logDir)) {
+          if (!entry.toLowerCase().endsWith('.log')) continue;
+          const full = path.resolve(logDir, entry);
+          if (!full.startsWith(logDir + path.sep)) continue;
+          try {
+            const st = fs.statSync(full);
+            if (st.isFile()) {
+              files.push({
+                fileName: entry,
+                filePath: full,
+                sizeBytes: st.size,
+                updatedAt: st.mtime.toISOString(),
+              });
+            }
+          } catch {}
+        }
+        files.sort((a, b) => b.fileName.localeCompare(a.fileName));
+      }
+
+      const targetReadPath = fs.existsSync(filePath) ? filePath : files[0]?.filePath;
+      if (targetReadPath && fs.existsSync(targetReadPath)) {
+        const raw = fs.readFileSync(targetReadPath, 'utf8').replace(/^\uFEFF/, '');
+        const lines = raw.split(/\r?\n/).filter((ln) => ln.trim().length > 0);
+        recentLines = lines.slice(-limit).reverse();
+      }
+    } catch {}
+
+    return {
+      success: true,
+      supported: true,
+      directory: logDir,
+      currentFileName: fileName,
+      currentFilePath: filePath,
+      writable: Boolean(loc.writable),
+      writeProtected: Boolean(loc.writeProtected),
+      files,
+      recentLines,
+    };
+  };
+
   return {
     getStatus: () => {
       const loc = getLocation();
@@ -1401,6 +1556,8 @@ function createPortableStore(options = {}) {
     saveLocationProfile,
     loadLocationProfile,
     deleteLocationProfile,
+    appendAppLog,
+    getAppLogInfo,
   };
 }
 
@@ -1408,6 +1565,7 @@ module.exports = {
   PORTABLE_FILE_NAME,
   LOCATIONS_DIR_NAME,
   LOCATION_FILE_EXT,
+  LOG_DIR_NAME: 'log',
   sanitizeLocationId,
   encryptCredentials,
   decryptCredentials,

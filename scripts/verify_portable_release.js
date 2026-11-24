@@ -35,6 +35,18 @@ for (const reqFile of ['dist/**/*', 'main.js', 'preload.js', 'portableStore.js',
   );
 }
 assert.strictEqual(rootPkg.name, 'ahbishare-oneclick');
+const rootLock = readJson(path.join(rootDir, 'package-lock.json'));
+assert.strictEqual(rootLock.name, rootPkg.name, `package-lock.json name (${rootLock.name}) !== package.json (${rootPkg.name})`);
+assert.deepStrictEqual(
+  Object.keys(rootLock.packages?.['']?.dependencies || {}).sort(),
+  Object.keys(rootPkg.dependencies || {}).sort(),
+  'package-lock.json root dependencies must match package.json'
+);
+assert.deepStrictEqual(
+  Object.keys(rootLock.packages?.['']?.devDependencies || {}).sort(),
+  Object.keys(rootPkg.devDependencies || {}).sort(),
+  'package-lock.json root devDependencies must match package.json'
+);
 assert(/^\d+\.\d+\.\d+$/.test(rootPkg.version), `package.json version must strictly follow SemVer MAJOR.MINOR.PATCH (got "${rootPkg.version}")`);
 assert.strictEqual(rootPkg.version, '1.2.1');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
@@ -1692,9 +1704,101 @@ try {
     'LegacySharingPanel.tsx missing host/client wizard trigger buttons'
   );
 
-  pass('USB bidirectional troubleshootTickets persistence, credential stripping, cross-PC matcher & 3-step wizard verified');
+  // Verify real-world trace fixes: RawUI BufferSize widening, partial timeout stderr preservation, timed out regex,
+  // ProcessStartInfo non-blocking net.exe wrapper, batch folder/NTFS/SMB ACL/Guest/warning/private-domain firewall/verification,
+  // Error 86 account-mode branching, guest unlock lock-in on retry_host_share, cached credential recovery, and ticket reclassification
+  assert(
+    mainJsSrc.includes('RawUI.BufferSize') &&
+      mainJsSrc.includes('$bs.Width -lt 512') &&
+      mainJsSrc.includes('partialErr ? `${timeoutMsg}'),
+    'main.js must widen RawUI.BufferSize to avoid 80-col error wrapping and preserve partialErr on timeout'
+  );
+  assert(
+    netEvoSrc.includes('timed\\s*out') && netEvoSrc.includes('시간\\s*초과'),
+    'networkEvolution.ts classifyFailureDiagnostics must classify PowerShell "timed out" messages'
+  );
+  assert(
+    psEngineSrc.includes('$psi.RedirectStandardInput = $true') &&
+      psEngineSrc.includes('$proc.WaitForExit(8000)') &&
+      psEngineSrc.includes('buildHostGuestUnlockBatchScript(\n  shareName = \'AhBiShared\',\n  folderPath = \'C:\\\\AhBiShared\'\n)') &&
+      psEngineSrc.includes('profile=private,domain') &&
+      psEngineSrc.includes('AHBI_HAS_WARN') &&
+      psEngineSrc.includes('*S-1-1-0:(OI)(CI)F') &&
+      hostPanelSrc.includes('buildHostGuestUnlockBatchScript(config.shareName, config.folderPath)'),
+    'powershellEngine.ts / HostPanel.tsx missing non-blocking ProcessStartInfo net.exe wrapper or upgraded host guest unblock batch script'
+  );
+  assert(
+    playbookSrc.includes('reclassifyTroubleshootTicketOnRetryFailure') &&
+      playbookSrc.includes("if (input.authMode === 'account')") &&
+      bridgeSrc.includes('getCachedSharePassword(') &&
+      appSrc.includes('reclassifyTroubleshootTicketOnRetryFailure') &&
+      appSrc.includes('hostUnlockedByWizard') &&
+      appSrc.includes('shouldReclassifyOnRetryFailure'),
+    'troubleshootPlaybook.ts / shareBridge.ts / App.tsx missing account-mode branching, hostUnlockedByWizard guard, cached password fallback, or retry reclassification'
+  );
+
+  pass('USB bidirectional troubleshootTickets persistence, credential stripping, cross-PC matcher, 3-step wizard & real-world trace fixes verified');
 } finally {
   fs.rmSync(tmpTroubleshootDir, { recursive: true, force: true });
+}
+
+// 12. Verify app-directory <appDir>/log/ file logging, credential scrubbing, IPC & UI wiring
+const tmpAppLogDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-applog-'));
+try {
+  const logStore = portableStore.createPortableStore({
+    env: { PORTABLE_EXECUTABLE_DIR: tmpAppLogDir },
+    app: { isPackaged: true, getPath: () => tmpAppLogDir },
+  });
+
+  const expectedLogDir = path.join(tmpAppLogDir, 'log');
+  const writeOk = logStore.appendAppLog({
+    role: '메인 PC',
+    hostName: 'HOST-LOG-PC',
+    status: 'success',
+    summary: '공유폴더(WorkDocs) 개설 완료 password=LeakSecret!2026 ABSHARE://secretTokenPayload123',
+  });
+  assert.strictEqual(writeOk.success, true, 'appendAppLog must create <appDir>/log and write log file');
+  assert.strictEqual(path.resolve(writeOk.directory), path.resolve(expectedLogDir));
+  assert(writeOk.filePath.startsWith(expectedLogDir + path.sep) && writeOk.fileName.endsWith('.log'));
+
+  const writeErr = logStore.appendAppLog({
+    role: '클라이언트 PC',
+    hostName: 'CLIENT-LOG-PC',
+    status: 'error',
+    summary: '연결 실패 cmdkey /add:192.168.0.10 /user:Admin /pass:HiddenPass99',
+  });
+  assert.strictEqual(writeErr.success, true);
+
+  const rawLogFile = fs.readFileSync(writeOk.filePath, 'utf8');
+  assert(rawLogFile.startsWith('\uFEFF'), 'App log file must start with UTF-8 BOM for clean Windows Notepad Korean display');
+  assert(rawLogFile.includes('[HOST-LOG-PC] [SUCCESS] [메인 PC]'));
+  assert(rawLogFile.includes('[CLIENT-LOG-PC] [ERROR] [클라이언트 PC]'));
+  assert(!rawLogFile.includes('LeakSecret!2026'), 'App log file must strip plaintext password=');
+  assert(!rawLogFile.includes('secretTokenPayload123'), 'App log file must strip ABSHARE:// token payload');
+  assert(!rawLogFile.includes('HiddenPass99'), 'App log file must strip cmdkey /pass');
+
+  const logInfo = logStore.getAppLogInfo({ limit: 20 });
+  assert.strictEqual(logInfo.success, true);
+  assert.strictEqual(path.resolve(logInfo.directory), path.resolve(expectedLogDir));
+  assert.strictEqual(logInfo.files.length, 1);
+  assert.strictEqual(logInfo.recentLines.length, 2);
+
+  assert(
+    modMain.includes("'append-app-log'") &&
+      modMain.includes("'get-app-log-info'") &&
+      modPreload.includes('appendAppLog:') &&
+      modPreload.includes('getAppLogInfo:') &&
+      bridgeSrc.includes('async appendAppLog(') &&
+      bridgeSrc.includes('async getAppLogInfo(') &&
+      appTsxSrc.includes('btn-open-log-folder') &&
+      appTsxSrc.includes('shareBridge') &&
+      appTsxSrc.includes('.appendAppLog('),
+    'main.js / preload.js / shareBridge.ts / App.tsx missing <appDir>/log IPC or UI log persistence wiring'
+  );
+
+  pass('App-directory <appDir>/log daily UTF-8 BOM logging, credential redaction & open-folder UI wiring verified');
+} finally {
+  fs.rmSync(tmpAppLogDir, { recursive: true, force: true });
 }
 
 console.log('=======================================================');

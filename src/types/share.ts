@@ -411,6 +411,25 @@ export interface PortableSaveResult {
   status: PortableStorageStatus;
 }
 
+export interface AppLogFileSummary {
+  fileName: string;
+  filePath: string;
+  sizeBytes: number;
+  updatedAt: string;
+}
+
+export interface AppLogStatusInfo {
+  success: boolean;
+  supported: boolean;
+  directory: string;
+  currentFileName: string;
+  currentFilePath: string;
+  writable: boolean;
+  writeProtected?: boolean;
+  files: AppLogFileSummary[];
+  recentLines: string[];
+}
+
 export interface LocationClientTargetEntry {
   targetHost: string;
   shareName: string;

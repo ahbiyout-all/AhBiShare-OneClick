@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('ahbiShareElectron', {
   getPortableStatus: () => ipcRenderer.invoke('get-portable-status'),
   loadPortableData: () => ipcRenderer.invoke('load-portable-data'),
   savePortableData: (document) => ipcRenderer.invoke('save-portable-data', { document }),
+  appendAppLog: (entry) => ipcRenderer.invoke('append-app-log', entry),
+  getAppLogInfo: (options) => ipcRenderer.invoke('get-app-log-info', options),
   triggerSystemReboot: () => ipcRenderer.invoke('trigger-system-reboot'),
   saveLegacyScripts: (payload) => ipcRenderer.invoke('save-legacy-scripts', payload),
   listLocationProfiles: () => ipcRenderer.invoke('list-location-profiles'),
