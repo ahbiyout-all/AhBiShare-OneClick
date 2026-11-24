@@ -584,7 +584,7 @@ try {
 }
 
 // 4. Verify PowerShell network drive mount & host guest / OS feature safeguards
-const psEngineSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'powershellEngine.ts'), 'utf8');
+const psEngineSrc = fs.readFileSync(path.join(rootDir, 'src', 'services', 'powershellEngine.ts'), 'utf8').replace(/\r\n/g, '\n');
 for (const marker of [
   'EnableLinkedConnections',
   'RestrictNullSessAccess',
@@ -1720,7 +1720,7 @@ try {
   assert(
     psEngineSrc.includes('$psi.RedirectStandardInput = $true') &&
       psEngineSrc.includes('$proc.WaitForExit(8000)') &&
-      psEngineSrc.includes('buildHostGuestUnlockBatchScript(\n  shareName = \'AhBiShared\',\n  folderPath = \'C:\\\\AhBiShared\'\n)') &&
+      /buildHostGuestUnlockBatchScript\(\r?\n\s*shareName = 'AhBiShared',\r?\n\s*folderPath = 'C:\\\\AhBiShared'\r?\n\)/.test(psEngineSrc) &&
       psEngineSrc.includes('profile=private,domain') &&
       psEngineSrc.includes('AHBI_HAS_WARN') &&
       psEngineSrc.includes('*S-1-1-0:(OI)(CI)F') &&
