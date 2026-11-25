@@ -30,12 +30,18 @@ import {
   SmartAuthDetectionResult,
   TroubleshootTicket,
   TroubleshootWizardStep,
+  TroubleshootStepResolvedSource,
   AppLogStatusInfo,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
 import { generateSecureSharePassword, isValidIpv4Address } from '@/utils/connectionCode';
-import { formatEraShortLabel, formatSnapshotTimestamp, getPolicyPatchLabel } from '@/services/networkEvolution';
+import {
+  evaluateRebootJudgment,
+  formatEraShortLabel,
+  formatSnapshotTimestamp,
+  getPolicyPatchLabel,
+} from '@/services/networkEvolution';
 import {
   evaluateTroubleshootTicketsForPc,
   reclassifyTroubleshootTicketOnRetryFailure,
@@ -566,6 +572,59 @@ export const App: React.FC = () => {
     } catch {}
   }, []);
 
+  const syncAllMatrixAndWizardState = useCallback(
+    async (params: {
+      netInfoSnap: LocalNetworkInfo;
+      policy: OsNetworkPolicyStatus | null;
+      localShares?: ActiveShare[];
+      localMounts?: MountedDrive[];
+      source: TroubleshootStepResolvedSource;
+      justCreatedShareNames?: string[];
+      justMountedTargets?: Array<{ targetHost: string; shareName: string }>;
+      silent?: boolean;
+    }) => {
+      try {
+        const ticketSyncRes = await shareBridge.syncTroubleshootTicketsWithLocalState({
+          netInfo: params.netInfoSnap,
+          policyStatus: params.policy,
+          localShares: params.localShares ?? shareBridge.getSavedShares(),
+          localMounts: params.localMounts ?? shareBridge.getSavedMounts(),
+          source: params.source,
+          justCreatedShareNames: params.justCreatedShareNames,
+          justMountedTargets: params.justMountedTargets,
+        });
+        const pendingSyncRes = await shareBridge.reconcilePendingHostActionsWithLocalPolicy(
+          params.netInfoSnap,
+          params.policy
+        );
+
+        if (ticketSyncRes.summary.changed) {
+          setTroubleshootTickets(ticketSyncRes.tickets);
+        }
+        setPendingHostActions(pendingSyncRes.pendingHostActions);
+        setHostPolicySnapshots(shareBridge.getHostPolicySnapshots());
+        refreshPortableSnapshot(params.netInfoSnap.hostname);
+
+        if (!params.silent) {
+          const parts: string[] = [];
+          if (ticketSyncRes.summary.autoCompletedSteps > 0) {
+            parts.push(`마법사 정책 단계 ${ticketSyncRes.summary.autoCompletedSteps}건 자동 완료`);
+          }
+          if (ticketSyncRes.summary.reopenedSteps > 0) {
+            parts.push(`정책 변경으로 ${ticketSyncRes.summary.reopenedSteps}단계 재적용 대기 전환`);
+          }
+          if (pendingSyncRes.resolvedTaskHosts.length > 0) {
+            parts.push(`호스트 대기 작업(${pendingSyncRes.resolvedTaskHosts.join(', ')}) 충족 정리`);
+          }
+          if (parts.length > 0) {
+            appendLog('양방향 동기화', parts.join(' · '), 'success');
+          }
+        }
+      } catch {}
+    },
+    [appendLog, refreshPortableSnapshot]
+  );
+
   const handleRefreshTab = useCallback(
     async (options?: { scanLan?: boolean; inspectPolicy?: boolean; tabLabel?: string }) => {
       if (refreshTabInFlightRef.current) return;
@@ -594,6 +653,14 @@ export const App: React.FC = () => {
           try {
             const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
             setPolicyStatus(pol);
+            await syncAllMatrixAndWizardState({
+              netInfoSnap: freshNet,
+              policy: pol,
+              localShares: synced.shares,
+              localMounts: synced.mounts,
+              source: 'live_inspect',
+              silent: true,
+            });
           } catch {}
         }
         const listRes = await shareBridge.listLocationProfiles();
@@ -624,7 +691,7 @@ export const App: React.FC = () => {
         setIsRefreshingTab(false);
       }
     },
-    [appendLog, refreshAppLogInfo, showToast]
+    [appendLog, refreshAppLogInfo, showToast, syncAllMatrixAndWizardState]
   );
 
   useEffect(() => {
@@ -652,7 +719,14 @@ export const App: React.FC = () => {
         setPeers(found);
         const pol = await shareBridge.inspectOsNetworkPolicy(info);
         setPolicyStatus(pol);
-        refreshPortableSnapshot(info.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: info,
+          policy: pol,
+          localShares: synced.shares,
+          localMounts: synced.mounts,
+          source: 'live_inspect',
+          silent: true,
+        });
       } catch {
         setShares(shareBridge.getSavedShares());
         setMounts(shareBridge.getSavedMounts());
@@ -661,7 +735,7 @@ export const App: React.FC = () => {
       await refreshAppLogInfo();
     };
     void bootstrap();
-  }, [appendLog, refreshPortableSnapshot, refreshLocationProfiles, refreshAppLogInfo]);
+  }, [appendLog, refreshLocationProfiles, refreshAppLogInfo, syncAllMatrixAndWizardState]);
 
   // 1-second timer tick for active timed shares
   useEffect(() => {
@@ -730,7 +804,11 @@ export const App: React.FC = () => {
     try {
       const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
       setPolicyStatus(pol);
-      refreshPortableSnapshot(netInfo.hostname);
+      await syncAllMatrixAndWizardState({
+        netInfoSnap: netInfo,
+        policy: pol,
+        source: 'live_inspect',
+      });
       appendLog(
         'OS 정책 검사',
         `${formatEraShortLabel(pol.osEra, pol.osBuild, pol.osDisplayVersion)} 진단 완료 (호환 ${pol.compatibilityScore}점 · 감지 ${pol.detectedIssues.length}건)`,
@@ -741,7 +819,7 @@ export const App: React.FC = () => {
     } finally {
       setIsPolicyInspecting(false);
     }
-  }, [netInfo, appendLog, showToast, refreshPortableSnapshot]);
+  }, [netInfo, appendLog, showToast, syncAllMatrixAndWizardState]);
 
   const handleToggleBlockEmptyPasswordAccounts = useCallback(
     async (block: boolean) => {
@@ -753,16 +831,33 @@ export const App: React.FC = () => {
           hostDraft.shareName,
           netInfo
         );
-        if (res.updatedPolicy) {
-          setPolicyStatus(res.updatedPolicy);
-        } else {
+        let resolvedPol: OsNetworkPolicyStatus | null = res.updatedPolicy || null;
+        if (!resolvedPol) {
           try {
-            const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
-            setPolicyStatus(pol);
+            resolvedPol = await shareBridge.inspectOsNetworkPolicy(netInfo);
           } catch {}
         }
+        if (resolvedPol) {
+          setPolicyStatus(resolvedPol);
+          setLastPatchResult({
+            success: res.success,
+            mode: 'safe_compat',
+            summary: res.message,
+            appliedActions: [res.message],
+            rebootJudgment: evaluateRebootJudgment({
+              mode: 'safe_compat',
+              restartedServices: res.success && !block ? ['LanmanServer'] : [],
+              priorPendingReboot: resolvedPol.pendingRebootFlag,
+            }),
+            updatedPolicy: resolvedPol,
+          });
+        }
         setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-        refreshPortableSnapshot(netInfo.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: resolvedPol,
+          source: block ? 'rollback' : 'host_panel',
+        });
         appendLog('빈 암호 계정 정책', res.message, res.success ? 'success' : 'error');
         showToast(res.message);
       } catch (err) {
@@ -777,7 +872,7 @@ export const App: React.FC = () => {
       isTogglingEmptyPasswordPolicy,
       hostDraft.shareName,
       netInfo,
-      refreshPortableSnapshot,
+      syncAllMatrixAndWizardState,
       appendLog,
       showToast,
     ]
@@ -824,7 +919,16 @@ export const App: React.FC = () => {
         setLastPatchResult(res);
         setPolicyStatus(res.updatedPolicy);
         setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-        refreshPortableSnapshot(netInfo.hostname);
+        const isRollbackMode =
+          mode === 'strict_26h2_default' ||
+          mode === 'legacy_bridge_rollback' ||
+          mode === 'disable_uac_token_filter' ||
+          mode === 'rpc_printer_default';
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: res.updatedPolicy,
+          source: isRollbackMode ? 'rollback' : 'matrix',
+        });
         appendLog(
           'OS 정책 적용',
           `${res.summary} · ${res.rebootJudgment.title}`,
@@ -873,7 +977,7 @@ export const App: React.FC = () => {
         setApplyingPatchMode(null);
       }
     },
-    [netInfo, appendLog, showToast, refreshPortableSnapshot, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
+    [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
   );
 
   const handleSyncMatchedPolicies = useCallback(
@@ -910,7 +1014,11 @@ export const App: React.FC = () => {
         });
         setPolicyStatus(batch.updatedPolicy);
         setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-        refreshPortableSnapshot(netInfo.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: batch.updatedPolicy,
+          source: 'matrix',
+        });
         appendLog(
           '자동 정렬',
           `${batch.summary} · ${batch.rebootJudgment.title}`,
@@ -935,7 +1043,7 @@ export const App: React.FC = () => {
         setIsAutoAligning(false);
       }
     },
-    [netInfo, appendLog, showToast, refreshPortableSnapshot, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
+    [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
   );
 
   const handleDeleteHostPolicySnapshot = useCallback(
@@ -1068,7 +1176,11 @@ export const App: React.FC = () => {
         setPolicyStatus(batch.updatedPolicy);
         setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
         setConfirmingDismissPendingTask(false);
-        refreshPortableSnapshot(netInfo.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: batch.updatedPolicy,
+          source: 'matrix',
+        });
         appendLog(
           '호스트 대기 작업',
           `${batch.summary} · ${batch.rebootJudgment.title}`,
@@ -1091,7 +1203,7 @@ export const App: React.FC = () => {
     },
     [
       netInfo,
-      refreshPortableSnapshot,
+      syncAllMatrixAndWizardState,
       appendLog,
       showToast,
       startProgressJob,
@@ -1232,6 +1344,8 @@ export const App: React.FC = () => {
       let nextDriveLetter = ticket.driveLetter;
       let nextAuthModeOverride: 'guest' | 'account' | undefined;
       let shouldReclassifyOnRetryFailure = false;
+      let stepRequiresReboot = Boolean(step.requiresReboot);
+      let latestPolicyForSync: OsNetworkPolicyStatus | null = null;
 
       try {
         if (
@@ -1250,12 +1364,30 @@ export const App: React.FC = () => {
           setLastPatchResult(res);
           setPolicyStatus(res.updatedPolicy);
           setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+          latestPolicyForSync = res.updatedPolicy;
+          stepRequiresReboot = stepRequiresReboot || res.rebootJudgment.rebootRecommended;
           ok = res.success;
           message = `${res.summary} (${res.rebootJudgment.title})`;
         } else if (step.executor === 'host_guest_unlock_and_reopen') {
           const res = await shareBridge.runHostGuestUnlockDirect(ticket.shareName, netInfo);
           if (res.updatedPolicy) {
+            latestPolicyForSync = res.updatedPolicy;
             setPolicyStatus(res.updatedPolicy);
+            setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+            if (res.success) {
+              setLastPatchResult({
+                success: true,
+                mode: 'safe_compat',
+                summary: res.message,
+                appliedActions: [res.message],
+                rebootJudgment: evaluateRebootJudgment({
+                  mode: 'safe_compat',
+                  restartedServices: ['LanmanServer'],
+                  priorPendingReboot: res.updatedPolicy.pendingRebootFlag,
+                }),
+                updatedPolicy: res.updatedPolicy,
+              });
+            }
           }
           ok = res.success;
           message = res.message;
@@ -1383,6 +1515,10 @@ export const App: React.FC = () => {
             );
             if (mountRes.success && mountRes.mount) {
               setMounts(shareBridge.getSavedMounts());
+              try {
+                latestPolicyForSync = await shareBridge.inspectOsNetworkPolicy(netInfo);
+                setPolicyStatus(latestPolicyForSync);
+              } catch {}
               ok = true;
               resolvedImmediately = true;
               message = `${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 재연결 성공`;
@@ -1440,6 +1576,10 @@ export const App: React.FC = () => {
           );
           if (shareRes.success && shareRes.share) {
             setShares(shareBridge.getSavedShares());
+            try {
+              latestPolicyForSync = await shareBridge.inspectOsNetworkPolicy(netInfo);
+              setPolicyStatus(latestPolicyForSync);
+            } catch {}
             ok = true;
             if (ticket.originRole === 'host') resolvedImmediately = true;
             message =
@@ -1467,6 +1607,8 @@ export const App: React.FC = () => {
             return {
               ...item,
               status: ok ? ('completed' as const) : ('failed' as const),
+              ...(ok ? { resolvedSource: 'wizard' as const } : { resolvedSource: undefined }),
+              ...(stepRequiresReboot ? { requiresReboot: true } : {}),
               lastAttemptAt: nowIso,
               lastMessage: message,
             };
@@ -1513,6 +1655,16 @@ export const App: React.FC = () => {
 
       const saved = await shareBridge.updateTroubleshootTicket(recomputed);
       setTroubleshootTickets(saved.tickets);
+      if (latestPolicyForSync) {
+        try {
+          const pendingSync = await shareBridge.reconcilePendingHostActionsWithLocalPolicy(
+            netInfo,
+            latestPolicyForSync
+          );
+          setPendingHostActions(pendingSync.pendingHostActions);
+        } catch {}
+      }
+      setHostPolicySnapshots(shareBridge.getHostPolicySnapshots());
       refreshPortableSnapshot(netInfo.hostname);
       appendLog('USB 오류 마법사', `[${step.title}] ${message}`, ok ? 'success' : 'error');
       showToast(message);
@@ -1702,12 +1854,20 @@ export const App: React.FC = () => {
       if (res.success && res.share) {
         const createdLower = res.share.shareName.toLowerCase();
         setExpiryAlerts((prev) => prev.filter((a) => a.shareName.toLowerCase() !== createdLower));
-        setShares(shareBridge.getSavedShares());
+        const savedSharesNow = shareBridge.getSavedShares();
+        setShares(savedSharesNow);
+        let latestPol: OsNetworkPolicyStatus | null = policyStatus;
         try {
-          const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
-          setPolicyStatus(pol);
+          latestPol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+          setPolicyStatus(latestPol);
         } catch {}
-        refreshPortableSnapshot(freshNet.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: freshNet,
+          policy: latestPol,
+          localShares: savedSharesNow,
+          source: 'share_retry',
+          justCreatedShareNames: [res.share.shareName],
+        });
         try {
           const updatedPeers = await shareBridge.scanLanPeers(freshNet);
           setPeers(updatedPeers);
@@ -1879,12 +2039,20 @@ export const App: React.FC = () => {
         netInfo.osEra
       );
       if (res.success && res.mount) {
-        setMounts(shareBridge.getSavedMounts());
+        const savedMountsNow = shareBridge.getSavedMounts();
+        setMounts(savedMountsNow);
+        let latestPol: OsNetworkPolicyStatus | null = policyStatus;
         try {
-          const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
-          setPolicyStatus(pol);
+          latestPol = await shareBridge.inspectOsNetworkPolicy(netInfo);
+          setPolicyStatus(latestPol);
         } catch {}
-        refreshPortableSnapshot(netInfo.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: latestPol,
+          localMounts: savedMountsNow,
+          source: 'mount_retry',
+          justMountedTargets: [{ targetHost: config.targetHost, shareName: config.shareName }],
+        });
         appendLog('클라이언트 PC', `${res.mount.uncPath} → ${res.mount.driveLetter} 연결 완료`, 'success');
         showToast(`${res.mount.driveLetter} 드라이브가 성공적으로 연결되었습니다.`);
         completeProgressJob(
@@ -1994,12 +2162,20 @@ export const App: React.FC = () => {
       if (shareRes.success && shareRes.share) {
         const createdLower = shareRes.share.shareName.toLowerCase();
         setExpiryAlerts((prev) => prev.filter((a) => a.shareName.toLowerCase() !== createdLower));
-        setShares(shareBridge.getSavedShares());
+        const savedSharesNow = shareBridge.getSavedShares();
+        setShares(savedSharesNow);
+        let latestPol: OsNetworkPolicyStatus | null = bridgeRes.updatedPolicy;
         try {
-          const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
-          setPolicyStatus(pol);
+          latestPol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+          setPolicyStatus(latestPol);
         } catch {}
-        refreshPortableSnapshot(freshNet.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: freshNet,
+          policy: latestPol,
+          localShares: savedSharesNow,
+          source: 'share_retry',
+          justCreatedShareNames: [shareRes.share.shareName],
+        });
         try {
           const updatedPeers = await shareBridge.scanLanPeers(freshNet);
           setPeers(updatedPeers);
@@ -2153,12 +2329,20 @@ export const App: React.FC = () => {
       );
 
       if (mountRes.success && mountRes.mount) {
-        setMounts(shareBridge.getSavedMounts());
+        const savedMountsNow = shareBridge.getSavedMounts();
+        setMounts(savedMountsNow);
+        let latestPol: OsNetworkPolicyStatus | null = policyStatus;
         try {
-          const pol = await shareBridge.inspectOsNetworkPolicy(freshNet);
-          setPolicyStatus(pol);
+          latestPol = await shareBridge.inspectOsNetworkPolicy(freshNet);
+          setPolicyStatus(latestPol);
         } catch {}
-        refreshPortableSnapshot(freshNet.hostname);
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: freshNet,
+          policy: latestPol,
+          localMounts: savedMountsNow,
+          source: 'mount_retry',
+          justMountedTargets: [{ targetHost: config.targetHost, shareName: config.shareName }],
+        });
         appendLog(
           '구형 OS 클라이언트',
           `${osTag} 브릿지 + ${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 통합 연결 완료`,
@@ -2301,12 +2485,19 @@ export const App: React.FC = () => {
           setPeers(updatedPeers);
         } catch {}
       }
+      let latestPol: OsNetworkPolicyStatus | null = policyStatus;
       try {
-        const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
-        setPolicyStatus(pol);
+        latestPol = await shareBridge.inspectOsNetworkPolicy(netInfo);
+        setPolicyStatus(latestPol);
       } catch {}
       setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-      refreshPortableSnapshot(netInfo.hostname);
+      await syncAllMatrixAndWizardState({
+        netInfoSnap: netInfo,
+        policy: latestPol,
+        localShares: shareBridge.getSavedShares(),
+        localMounts: shareBridge.getSavedMounts(),
+        source: 'rollback',
+      });
       appendLog(isHost ? '메인 PC' : '클라이언트 PC', res.message, res.success ? 'success' : 'error');
 
       const syncDuration = Math.round(performance.now() - t1);
@@ -2400,7 +2591,13 @@ export const App: React.FC = () => {
         updatedPolicy: hardenBatch.updatedPolicy,
       });
       setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-      refreshPortableSnapshot(netInfo.hostname);
+      await syncAllMatrixAndWizardState({
+        netInfoSnap: netInfo,
+        policy: hardenBatch.updatedPolicy,
+        localShares: shareBridge.getSavedShares(),
+        localMounts: shareBridge.getSavedMounts(),
+        source: 'rollback',
+      });
       try {
         const updatedPeers = await shareBridge.scanLanPeers(netInfo);
         setPeers(updatedPeers);
@@ -2507,7 +2704,12 @@ export const App: React.FC = () => {
       setShares(shareBridge.getSavedShares());
       setPolicyStatus(strictRes.updatedPolicy);
       setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
-      refreshPortableSnapshot(netInfo.hostname);
+      await syncAllMatrixAndWizardState({
+        netInfoSnap: netInfo,
+        policy: strictRes.updatedPolicy,
+        localShares: shareBridge.getSavedShares(),
+        source: 'rollback',
+      });
       try {
         const updatedPeers = await shareBridge.scanLanPeers(netInfo);
         setPeers(updatedPeers);
@@ -3382,7 +3584,11 @@ export const App: React.FC = () => {
           matchResult={troubleshootMatch}
           currentHostname={netInfo.hostname}
           writeProtected={portableStatus.writeProtected}
+          policyStatus={policyStatus}
+          lastPatchResult={lastPatchResult}
+          pendingHostTask={myPendingHostTask}
           onOpenWizard={handleOpenTroubleshootWizard}
+          onOpenMatrix={() => setActiveSection('matrix')}
           onDeleteTicket={handleDeleteTroubleshootTicket}
           onClearResolved={handleClearResolvedTroubleshootTickets}
         />
@@ -3537,6 +3743,9 @@ export const App: React.FC = () => {
             onNotify={showToast}
             onDeleteHostPolicySnapshot={handleDeleteHostPolicySnapshot}
             onClearAllHostPolicySnapshots={handleClearAllHostPolicySnapshots}
+            troubleshootTickets={troubleshootTickets}
+            troubleshootMatch={troubleshootMatch}
+            onOpenTroubleshootWizard={handleOpenTroubleshootWizard}
           />
         )}
 
@@ -3863,6 +4072,14 @@ export const App: React.FC = () => {
         matchResult={troubleshootMatch}
         netInfo={netInfo}
         writeProtected={portableStatus.writeProtected}
+        policyStatus={policyStatus}
+        lastPatchResult={lastPatchResult}
+        pendingHostTask={myPendingHostTask}
+        onOpenMatrix={() => {
+          setTroubleshootWizardOpen(false);
+          setActiveSection('matrix');
+        }}
+        onTriggerReboot={handleTriggerReboot}
         onSelectTicket={setSelectedTroubleshootTicketId}
         onClose={() => setTroubleshootWizardOpen(false)}
         onExecuteStep={handleExecuteTroubleshootStep}

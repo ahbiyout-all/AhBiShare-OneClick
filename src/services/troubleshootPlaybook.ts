@@ -5,10 +5,14 @@ import {
   HostPolicySnapshot,
   LocalNetworkInfo,
   MountedDrive,
+  OsNetworkPolicyStatus,
+  PolicyPatchMode,
   PortableHostShareEntry,
   RoleMode,
   TroubleshootMatchResult,
+  TroubleshootStepResolvedSource,
   TroubleshootStepStatus,
+  TroubleshootSyncSummary,
   TroubleshootTicket,
   TroubleshootTicketStatus,
   TroubleshootWizardStep,
@@ -182,16 +186,34 @@ function resolveTargetIdentity(input: BuildTroubleshootTicketInput): {
   };
 }
 
+function stepRequiresRebootByDefinition(
+  executor: TroubleshootWizardStep['executor'],
+  patchMode?: PolicyPatchMode
+): boolean {
+  return (
+    executor === 'enable_smbv1_client' ||
+    patchMode === 'kir_duplicate_sid_compat' ||
+    patchMode === 'enable_smbv1_client' ||
+    patchMode === 'legacy_smb1_enable' ||
+    patchMode === 'deep_stack_reset'
+  );
+}
+
 function makeStep(
   side: 'host' | 'client',
   order: number,
   partial: Omit<TroubleshootWizardStep, 'stepId' | 'side' | 'order' | 'status'>
 ): TroubleshootWizardStep {
+  const requiresReboot =
+    typeof partial.requiresReboot === 'boolean'
+      ? partial.requiresReboot
+      : stepRequiresRebootByDefinition(partial.executor, partial.patchMode);
   return {
     stepId: `${side}-${order}-${partial.executor}`,
     side,
     order,
     status: 'pending',
+    ...(requiresReboot ? { requiresReboot: true } : {}),
     ...partial,
   };
 }
@@ -835,6 +857,8 @@ export function reclassifyTroubleshootTicketOnRetryFailure(
         return {
           ...s,
           status: prev.status,
+          ...(prev.resolvedSource ? { resolvedSource: prev.resolvedSource } : {}),
+          ...(prev.requiresReboot ? { requiresReboot: prev.requiresReboot } : {}),
           lastAttemptAt: prev.lastAttemptAt,
           lastMessage: prev.lastMessage,
         };
@@ -962,3 +986,447 @@ export function evaluateTroubleshootTicketsForPc(
     matchedSideMap,
   };
 }
+
+export function formatStepResolvedSourceLabel(source?: TroubleshootStepResolvedSource): string {
+  switch (source) {
+    case 'matrix':
+      return 'OS 호환성 매트릭스 적용됨';
+    case 'host_panel':
+      return 'HostPanel 빈 암호 토글 반영';
+    case 'live_inspect':
+      return '실시간 OS 정책 이미 충족';
+    case 'share_retry':
+      return '공유폴더 개설 확인됨';
+    case 'mount_retry':
+      return '드라이브 연결 성공 확인됨';
+    case 'rollback':
+      return '보안 원복 확인됨';
+    case 'wizard':
+      return '마법사 직접 실행 완료';
+    default:
+      return '';
+  }
+}
+
+export function isPolicyStepSatisfiedOnLocalPc(
+  step: TroubleshootWizardStep,
+  ticket: TroubleshootTicket,
+  policy: OsNetworkPolicyStatus | null
+): boolean | null {
+  if (!policy) return null;
+
+  if (step.executor === 'host_guest_unlock_and_reopen') {
+    return (
+      policy.limitBlankPasswordUse === false &&
+      policy.guestAccountEnabled !== false &&
+      policy.guestNetworkLogonDenied !== true &&
+      policy.firewall445Allowed !== false &&
+      (policy.minimumPasswordLength == null || policy.minimumPasswordLength === 0) &&
+      policy.forceGuest !== true &&
+      policy.allowInsecureGuestAuth !== false
+    );
+  }
+
+  if (step.executor === 'apply_safe_compat') {
+    if (step.patchMode === 'kir_duplicate_sid_compat') {
+      return policy.kirOverride1517186191 === 0;
+    }
+    if (step.patchMode === 'enable_uac_token_filter') {
+      return policy.localAccountTokenFilterEnabled === true;
+    }
+    if (step.side === 'host') {
+      const baseHostOk =
+        policy.networkProfile !== 'Public' &&
+        policy.firewall445Allowed !== false &&
+        policy.lanmanServerRunning !== false &&
+        policy.smbServerSigningRequired !== true &&
+        policy.smbBlockNtlm !== true &&
+        policy.forceGuest !== true;
+      if (!baseHostOk) return false;
+      if (ticket.authMode === 'guest') {
+        return policy.guestNetworkLogonDenied !== true && policy.limitBlankPasswordUse !== true;
+      }
+      return true;
+    }
+    return (
+      policy.smbClientSigningRequired !== true &&
+      policy.allowInsecureGuestAuth === true &&
+      policy.enableInsecureGuestLogons !== false &&
+      policy.smbBlockNtlm !== true &&
+      policy.smbRequireEncryption !== true
+    );
+  }
+
+  if (step.executor === 'apply_legacy_bridge') {
+    return (
+      policy.smbEncryptData !== true &&
+      policy.smbRejectUnencryptedAccess !== true &&
+      policy.smbServerSigningRequired !== true &&
+      policy.smbClientSigningRequired !== true &&
+      (policy.lmCompatibilityLevel == null || policy.lmCompatibilityLevel <= 3)
+    );
+  }
+
+  if (step.executor === 'enable_smbv1_client') {
+    return policy.smb1ClientFeatureState === 'Enabled';
+  }
+
+  // Action / retry steps (retry_host_share, retry_mount, clear_conflicting_sessions, verify_port_445, switch_to_account_mode, reassign_free_drive)
+  // must stay pending so the user can explicitly retry or verify after policy alignment.
+  return null;
+}
+
+export function getPolicyStepMatchedExplanation(
+  step: TroubleshootWizardStep,
+  ticket: TroubleshootTicket,
+  policy: OsNetworkPolicyStatus | null
+): string {
+  if (!policy) return '';
+
+  if (step.executor === 'host_guest_unlock_and_reopen') {
+    return '현재 OS 정책(LimitBlankPasswordUse=0 · Guest 활성 · SeDenyNetworkLogonRight 해제 · TCP 445 허용 · forceguest=0)이 이미 충족되어 다시 실행할 필요가 없습니다.';
+  }
+
+  if (step.executor === 'apply_safe_compat') {
+    if (step.patchMode === 'kir_duplicate_sid_compat') {
+      return policy.pendingRebootFlag
+        ? '중복 SID 우회 레지스트리(1517186191=0)가 이미 반영되어 있습니다. 커널 적용을 위해 재부팅 후 연결하세요.'
+        : '중복 SID 우회 정책(1517186191=0) 조건이 현재 OS 정책에서 이미 충족되었습니다.';
+    }
+    if (step.patchMode === 'enable_uac_token_filter') {
+      return 'UAC 원격 토큰 필터 해제(LocalAccountTokenFilterPolicy=1) 조건이 이미 충족되었습니다.';
+    }
+    if (step.side === 'host') {
+      return ticket.authMode === 'guest'
+        ? '호스트 프로필 · TCP 445 · LanmanServer · SMB 서명/NTLM 및 Guest 허용 조건이 이미 충족되어 실행할 필요가 없습니다.'
+        : '호스트 프로필 · TCP 445 · LanmanServer · SMB 서명/NTLM 호환 조건이 이미 충족되어 실행할 필요가 없습니다.';
+    }
+    return '클라이언트 SMB 서명 완화 · AllowInsecureGuestAuth=1 · 암호화 강제 해제 조건이 이미 충족되어 실행할 필요가 없습니다.';
+  }
+
+  if (step.executor === 'apply_legacy_bridge') {
+    return '구형 OS 브릿지 조건(비암호화 SMB 허용 · 서명 완화 · NTLMv2 고정)이 현재 OS 정책에 이미 충족되어 있습니다.';
+  }
+
+  if (step.executor === 'enable_smbv1_client') {
+    return 'SMB 1.0/CIFS 클라이언트 기능(SMB1Protocol)이 이미 활성화(Enabled) 상태이므로 다시 설치할 필요가 없습니다.';
+  }
+
+  return '현재 OS 정책 상태가 이 단계의 요구 조건을 이미 충족했습니다.';
+}
+
+export function getSatisfiedPolicyModesFromStatus(policy: OsNetworkPolicyStatus | null): {
+  satisfiedModes: PolicyPatchMode[];
+  guestUnlockSatisfied: boolean;
+} {
+  if (!policy) {
+    return { satisfiedModes: [], guestUnlockSatisfied: false };
+  }
+
+  const guestUnlockSatisfied =
+    policy.limitBlankPasswordUse === false &&
+    policy.guestAccountEnabled !== false &&
+    policy.guestNetworkLogonDenied !== true &&
+    policy.firewall445Allowed !== false &&
+    (policy.minimumPasswordLength == null || policy.minimumPasswordLength === 0) &&
+    policy.forceGuest !== true &&
+    policy.allowInsecureGuestAuth !== false;
+
+  const satisfiedModes: PolicyPatchMode[] = [];
+
+  if (
+    policy.networkProfile !== 'Public' &&
+    policy.firewall445Allowed !== false &&
+    policy.lanmanServerRunning !== false &&
+    policy.smbServerSigningRequired !== true &&
+    policy.smbClientSigningRequired !== true &&
+    policy.allowInsecureGuestAuth === true &&
+    policy.enableInsecureGuestLogons !== false &&
+    policy.guestNetworkLogonDenied !== true &&
+    policy.limitBlankPasswordUse !== true &&
+    policy.smbBlockNtlm !== true &&
+    policy.smbRequireEncryption !== true &&
+    policy.forceGuest !== true
+  ) {
+    satisfiedModes.push('safe_compat');
+  }
+
+  if (
+    policy.smbEncryptData !== true &&
+    policy.smbRejectUnencryptedAccess !== true &&
+    policy.smbServerSigningRequired !== true &&
+    policy.smbClientSigningRequired !== true &&
+    (policy.lmCompatibilityLevel == null || policy.lmCompatibilityLevel <= 3) &&
+    policy.allowInsecureGuestAuth === true
+  ) {
+    satisfiedModes.push('legacy_bridge_compat');
+  }
+
+  if (
+    policy.rpcAuthnLevelPrivacyDisabled === true &&
+    policy.rpcUseNamedPipeProtocol === true &&
+    policy.pointAndPrintRelaxed === true
+  ) {
+    satisfiedModes.push('rpc_printer_compat');
+  }
+
+  if (policy.localAccountTokenFilterEnabled === true) {
+    satisfiedModes.push('enable_uac_token_filter');
+  }
+
+  if (policy.kirOverride1517186191 === 0) {
+    satisfiedModes.push('kir_duplicate_sid_compat');
+  }
+
+  if (policy.smb1ClientFeatureState === 'Enabled') {
+    satisfiedModes.push('enable_smbv1_client');
+  }
+
+  return { satisfiedModes, guestUnlockSatisfied };
+}
+
+function buildAutoSyncCompletionMessage(
+  step: TroubleshootWizardStep,
+  source: TroubleshootStepResolvedSource,
+  policy: OsNetworkPolicyStatus | null
+): string {
+  const sourceLabel = formatStepResolvedSourceLabel(source) || 'OS 정책 동기화';
+  const needsRebootNote =
+    step.requiresReboot ||
+    stepRequiresRebootByDefinition(step.executor, step.patchMode) ||
+    Boolean(policy?.pendingRebootFlag && (step.patchMode === 'kir_duplicate_sid_compat' || step.executor === 'enable_smbv1_client'));
+  if (needsRebootNote) {
+    return `${sourceLabel} 확인 — 정책 값은 반영되었으나 커널 적용을 위해 재부팅이 필요합니다.`;
+  }
+  return `${sourceLabel}로 정책 요건이 이미 충족되어 자동 완료 처리되었습니다.`;
+}
+
+export function reconcileTroubleshootTicketsWithLocalState(input: {
+  tickets: TroubleshootTicket[];
+  netInfo: LocalNetworkInfo;
+  policyStatus: OsNetworkPolicyStatus | null;
+  localShares?: ActiveShare[];
+  localMounts?: MountedDrive[];
+  portableShares?: PortableHostShareEntry[];
+  source: TroubleshootStepResolvedSource;
+  justCreatedShareNames?: string[];
+  justMountedTargets?: Array<{ targetHost: string; shareName: string }>;
+}): { tickets: TroubleshootTicket[]; summary: TroubleshootSyncSummary } {
+  const tickets = input.tickets || [];
+  if (tickets.length === 0) {
+    return {
+      tickets: [],
+      summary: {
+        changed: false,
+        updatedTicketIds: [],
+        autoCompletedSteps: 0,
+        reopenedSteps: 0,
+        resolvedTicketIds: [],
+      },
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const createdShareSet = new Set((input.justCreatedShareNames || []).map((s) => s.trim().toLowerCase()).filter(Boolean));
+  const mountedTargets = input.justMountedTargets || [];
+  const updatedTicketIds: string[] = [];
+  const resolvedTicketIds: string[] = [];
+  let autoCompletedSteps = 0;
+  let reopenedSteps = 0;
+  let anyChanged = false;
+
+  const nextTickets = tickets.map((ticket) => {
+    if (ticket.status === 'resolved') return ticket;
+
+    const matchedSide = detectTicketMatchSideForPc(
+      ticket,
+      input.netInfo,
+      input.localShares || [],
+      input.localMounts || [],
+      input.portableShares || []
+    );
+    if (matchedSide === 'none') return ticket;
+
+    const ticketShareLower = (ticket.shareName || '').trim().toLowerCase();
+    const ticketHostTokens = new Set(
+      [ticket.targetIp, ticket.targetHostName].map((v) => (v || '').trim().toLowerCase()).filter(Boolean)
+    );
+
+    const shareJustCreated =
+      (matchedSide === 'host' || matchedSide === 'both') &&
+      Boolean(ticketShareLower) &&
+      createdShareSet.has(ticketShareLower);
+
+    const mountJustSucceeded =
+      (matchedSide === 'client' || matchedSide === 'both') &&
+      mountedTargets.some((mt) => {
+        const sMatch = mt.shareName.trim().toLowerCase() === ticketShareLower;
+        const hLower = mt.targetHost.trim().toLowerCase();
+        const hMatch = ticketHostTokens.size === 0 || ticketHostTokens.has(hLower);
+        return sMatch && hMatch;
+      });
+
+    let ticketChanged = false;
+
+    const syncSteps = (steps: TroubleshootWizardStep[]): TroubleshootWizardStep[] =>
+      steps.map((step) => {
+        const sideApplies = matchedSide === 'both' || matchedSide === step.side;
+        if (!sideApplies) return step;
+
+        const requiresReboot =
+          typeof step.requiresReboot === 'boolean'
+            ? step.requiresReboot
+            : stepRequiresRebootByDefinition(step.executor, step.patchMode);
+
+        // 1. Fresh host share creation retry success
+        if (step.executor === 'retry_host_share' && shareJustCreated) {
+          if (step.status !== 'completed') {
+            ticketChanged = true;
+            autoCompletedSteps += 1;
+            return {
+              ...step,
+              status: 'completed' as const,
+              resolvedSource: 'share_retry' as const,
+              ...(requiresReboot ? { requiresReboot: true } : {}),
+              lastAttemptAt: nowIso,
+              lastMessage: `'${ticket.shareName}' 공유폴더 개설 성공으로 자동 완료 처리되었습니다.`,
+            };
+          }
+          return step;
+        }
+
+        // 2. Fresh client drive mount success
+        if (step.executor === 'retry_mount' && mountJustSucceeded) {
+          if (step.status !== 'completed') {
+            ticketChanged = true;
+            autoCompletedSteps += 1;
+            return {
+              ...step,
+              status: 'completed' as const,
+              resolvedSource: 'mount_retry' as const,
+              ...(requiresReboot ? { requiresReboot: true } : {}),
+              lastAttemptAt: nowIso,
+              lastMessage: `'${ticket.shareName}' 네트워크 드라이브 연결 성공으로 완료되었습니다.`,
+            };
+          }
+          return step;
+        }
+
+        // 3. Policy step bidirectional sync
+        const satisfied = isPolicyStepSatisfiedOnLocalPc(step, ticket, input.policyStatus);
+        if (satisfied === true) {
+          if (step.status === 'pending' || step.status === 'failed') {
+            ticketChanged = true;
+            autoCompletedSteps += 1;
+            return {
+              ...step,
+              status: 'completed' as const,
+              resolvedSource: input.source,
+              ...(requiresReboot ? { requiresReboot: true } : {}),
+              lastAttemptAt: nowIso,
+              lastMessage: buildAutoSyncCompletionMessage(step, input.source, input.policyStatus),
+            };
+          }
+          return step;
+        }
+
+        if (satisfied === false && step.status === 'completed') {
+          ticketChanged = true;
+          reopenedSteps += 1;
+          return {
+            ...step,
+            status: 'pending' as const,
+            resolvedSource: undefined,
+            ...(requiresReboot ? { requiresReboot: true } : {}),
+            lastAttemptAt: nowIso,
+            lastMessage: 'OS 호환성 매트릭스 또는 보안 원복으로 정책이 해제되어 다시 적용이 필요합니다.',
+          };
+        }
+
+        return step;
+      });
+
+    let nextHostSteps = syncSteps(ticket.hostSteps);
+    let nextClientSteps = syncSteps(ticket.clientSteps);
+
+    if (mountJustSucceeded) {
+      const skipPending = (steps: TroubleshootWizardStep[]) =>
+        steps.map((s) =>
+          s.status === 'pending'
+            ? {
+                ...s,
+                status: 'skipped' as const,
+                lastAttemptAt: nowIso,
+                lastMessage: '클라이언트 연결 성공으로 남은 단계 건너뜀',
+              }
+            : s
+        );
+      nextHostSteps = skipPending(nextHostSteps);
+      nextClientSteps = skipPending(nextClientSteps);
+      ticketChanged = true;
+    } else if (shareJustCreated && ticket.originRole === 'host') {
+      nextHostSteps = nextHostSteps.map((s) =>
+        s.status === 'pending'
+          ? {
+              ...s,
+              status: 'skipped' as const,
+              lastAttemptAt: nowIso,
+              lastMessage: '호스트 공유폴더 개설 성공으로 남은 단계 건너뜀',
+            }
+          : s
+      );
+      nextClientSteps = nextClientSteps.map((s) =>
+        s.status === 'pending'
+          ? {
+              ...s,
+              status: 'skipped' as const,
+              lastAttemptAt: nowIso,
+              lastMessage: '호스트 공유폴더 정상 개설 확인됨',
+            }
+          : s
+      );
+      ticketChanged = true;
+    }
+
+    if (!ticketChanged) return ticket;
+
+    anyChanged = true;
+    updatedTicketIds.push(ticket.ticketId);
+    let recomputed = recomputeTroubleshootTicketStatus(
+      {
+        ...ticket,
+        hostSteps: nextHostSteps,
+        clientSteps: nextClientSteps,
+      },
+      input.netInfo.hostname
+    );
+
+    if (mountJustSucceeded || (shareJustCreated && ticket.originRole === 'host')) {
+      recomputed = {
+        ...recomputed,
+        status: 'resolved',
+        resolvedAt: recomputed.resolvedAt || nowIso,
+        resolvedByHostName: recomputed.resolvedByHostName || input.netInfo.hostname,
+        updatedAt: nowIso,
+      };
+    }
+
+    if (recomputed.status === 'resolved') {
+      resolvedTicketIds.push(recomputed.ticketId);
+    }
+
+    return recomputed;
+  });
+
+  return {
+    tickets: nextTickets,
+    summary: {
+      changed: anyChanged,
+      updatedTicketIds,
+      autoCompletedSteps,
+      reopenedSteps,
+      resolvedTicketIds,
+    },
+  };
+}
+

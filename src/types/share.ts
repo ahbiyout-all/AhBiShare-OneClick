@@ -717,6 +717,14 @@ export interface SmartAuthDetectionResult {
 
 export type TroubleshootTicketStatus = 'open' | 'host_fixed' | 'client_fixed' | 'resolved';
 export type TroubleshootStepStatus = 'pending' | 'completed' | 'skipped' | 'failed';
+export type TroubleshootStepResolvedSource =
+  | 'wizard'
+  | 'matrix'
+  | 'host_panel'
+  | 'live_inspect'
+  | 'share_retry'
+  | 'mount_retry'
+  | 'rollback';
 export type TroubleshootExecutorId =
   | 'host_guest_unlock_and_reopen'
   | 'apply_safe_compat'
@@ -740,6 +748,8 @@ export interface TroubleshootWizardStep {
   executor: TroubleshootExecutorId;
   patchMode?: PolicyPatchMode;
   status: TroubleshootStepStatus;
+  resolvedSource?: TroubleshootStepResolvedSource;
+  requiresReboot?: boolean;
   lastAttemptAt?: string;
   lastMessage?: string;
 }
@@ -776,6 +786,14 @@ export interface TroubleshootMatchResult {
   resolvedTickets: TroubleshootTicket[];
   primaryTicket: TroubleshootTicket | null;
   matchedSideMap: Record<string, 'host' | 'client' | 'both' | 'none'>;
+}
+
+export interface TroubleshootSyncSummary {
+  changed: boolean;
+  updatedTicketIds: string[];
+  autoCompletedSteps: number;
+  reopenedSteps: number;
+  resolvedTicketIds: string[];
 }
 
 

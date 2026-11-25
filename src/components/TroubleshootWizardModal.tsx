@@ -1,18 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
   HardDrive,
   Laptop,
   Loader2,
   Play,
+  Power,
   RotateCcw,
   Server,
+  ShieldAlert,
   SkipForward,
+  SlidersHorizontal,
   Trash2,
   Usb,
   Wrench,
@@ -21,12 +26,19 @@ import {
 } from 'lucide-react';
 import {
   LocalNetworkInfo,
+  OsNetworkPolicyStatus,
+  PendingHostPolicyTask,
+  PolicyApplyResult,
   TroubleshootMatchResult,
   TroubleshootStepStatus,
   TroubleshootTicket,
   TroubleshootWizardStep,
 } from '@/types/share';
 import { formatSnapshotTimestamp } from '@/services/networkEvolution';
+import {
+  SyncAwarePolicyBadge,
+  evaluateStepPolicyMatch,
+} from '@/components/SyncAwarePolicyBadge';
 
 interface TroubleshootWizardModalProps {
   isOpen: boolean;
@@ -35,6 +47,11 @@ interface TroubleshootWizardModalProps {
   matchResult: TroubleshootMatchResult;
   netInfo: LocalNetworkInfo;
   writeProtected?: boolean;
+  policyStatus?: OsNetworkPolicyStatus | null;
+  lastPatchResult?: PolicyApplyResult | null;
+  pendingHostTask?: PendingHostPolicyTask | null;
+  onOpenMatrix?: () => void;
+  onTriggerReboot?: () => Promise<{ success: boolean; message: string }>;
   onSelectTicket: (ticketId: string) => void;
   onClose: () => void;
   onExecuteStep: (
@@ -72,7 +89,7 @@ function StepStatusIcon({ status }: { status: TroubleshootStepStatus }) {
   if (status === 'skipped') {
     return <SkipForward className="w-4 h-4 text-slate-400 shrink-0" />;
   }
-  return <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" aria-hidden="true" />;
+  return <Clock className="w-4 h-4 text-amber-500 shrink-0" />;
 }
 
 export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = ({
@@ -82,6 +99,11 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
   matchResult,
   netInfo,
   writeProtected,
+  policyStatus,
+  lastPatchResult,
+  pendingHostTask,
+  onOpenMatrix,
+  onTriggerReboot,
   onSelectTicket,
   onClose,
   onExecuteStep,
@@ -98,6 +120,8 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
   const [verifyFeedback, setVerifyFeedback] = useState<{ ok: boolean; detail: string } | null>(null);
   const [copiedStepId, setCopiedStepId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmReboot, setConfirmReboot] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
 
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -113,7 +137,54 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
   }, [tickets, selectedTicketId, matchResult.primaryTicket]);
 
   const matchedSide = activeTicket ? matchResult.matchedSideMap[activeTicket.ticketId] || 'none' : 'none';
-  const isBusy = executingStepId !== null || verifyingNet;
+  const isBusy = executingStepId !== null || verifyingNet || rebooting;
+
+  const { effectiveHostSteps, effectiveClientSteps, effectiveTicketStatus } = useMemo(() => {
+    if (!activeTicket) {
+      return {
+        effectiveHostSteps: [],
+        effectiveClientSteps: [],
+        effectiveTicketStatus: 'open' as TroubleshootTicket['status'],
+      };
+    }
+
+    const hostMatchesPc = matchedSide === 'host' || matchedSide === 'both';
+    const clientMatchesPc = matchedSide === 'client' || matchedSide === 'both';
+
+    const nextHost = activeTicket.hostSteps.map((step) => ({
+      step,
+      ...evaluateStepPolicyMatch(step, activeTicket, policyStatus, hostMatchesPc),
+    }));
+    const nextClient = activeTicket.clientSteps.map((step) => ({
+      step,
+      ...evaluateStepPolicyMatch(step, activeTicket, policyStatus, clientMatchesPc),
+    }));
+
+    let nextTicketStatus: TroubleshootTicket['status'] = activeTicket.status;
+    if (activeTicket.status !== 'resolved') {
+      const isDone = (s: TroubleshootStepStatus) => s === 'completed' || s === 'skipped';
+      const hostHas = nextHost.length > 0;
+      const clientHas = nextClient.length > 0;
+      const hostAllDone = !hostHas || nextHost.every((e) => isDone(e.effectiveStatus));
+      const clientAllDone = !clientHas || nextClient.every((e) => isDone(e.effectiveStatus));
+      const hostAnyCompleted = nextHost.some((e) => e.effectiveStatus === 'completed');
+      const clientAnyCompleted = nextClient.some((e) => e.effectiveStatus === 'completed');
+
+      if (hostAllDone && clientAllDone && (hostAnyCompleted || clientAnyCompleted)) {
+        nextTicketStatus = 'resolved';
+      } else if (hostHas && hostAllDone && hostAnyCompleted) {
+        nextTicketStatus = 'host_fixed';
+      } else if (clientHas && clientAllDone && clientAnyCompleted) {
+        nextTicketStatus = 'client_fixed';
+      }
+    }
+
+    return {
+      effectiveHostSteps: nextHost,
+      effectiveClientSteps: nextClient,
+      effectiveTicketStatus: nextTicketStatus,
+    };
+  }, [activeTicket, matchedSide, policyStatus]);
 
   // Reset stage & default side only when modal opens or ticket switches
   useEffect(() => {
@@ -133,6 +204,7 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
     );
     setVerifyFeedback(null);
     setConfirmDelete(false);
+    setConfirmReboot(false);
   }, [isOpen, activeTicket?.ticketId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -191,13 +263,65 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
 
   const hostSteps = activeTicket?.hostSteps || [];
   const clientSteps = activeTicket?.clientSteps || [];
-  const hostDoneCount = hostSteps.filter((s) => s.status === 'completed' || s.status === 'skipped').length;
-  const clientDoneCount = clientSteps.filter((s) => s.status === 'completed' || s.status === 'skipped').length;
-  const visibleSteps = activeSide === 'host' ? hostSteps : clientSteps;
+  const hostDoneCount = effectiveHostSteps.filter(
+    (e) => e.effectiveStatus === 'completed' || e.effectiveStatus === 'skipped'
+  ).length;
+  const clientDoneCount = effectiveClientSteps.filter(
+    (e) => e.effectiveStatus === 'completed' || e.effectiveStatus === 'skipped'
+  ).length;
+  const visibleEffectiveSteps = activeSide === 'host' ? effectiveHostSteps : effectiveClientSteps;
   const resolvedCount = matchResult.resolvedTickets.length;
 
   const pcMatchesSelectedSide =
     matchedSide === 'both' || matchedSide === activeSide;
+
+  const matchedApplicableEffectiveSteps = activeTicket
+    ? [
+        ...(matchedSide === 'host' || matchedSide === 'both' ? effectiveHostSteps : []),
+        ...(matchedSide === 'client' || matchedSide === 'both' ? effectiveClientSteps : []),
+      ]
+    : [];
+  const matrixSyncedStepsCount = matchedApplicableEffectiveSteps.filter(
+    (e) =>
+      e.effectiveStatus === 'completed' &&
+      (e.autoCompletedByPolicy || (e.step.resolvedSource && e.step.resolvedSource !== 'wizard'))
+  ).length;
+  const remainingActionStepsCount = matchedApplicableEffectiveSteps.filter(
+    (e) => e.effectiveStatus === 'pending' || e.effectiveStatus === 'failed'
+  ).length;
+  const completedStepNeedsReboot = activeTicket
+    ? [...effectiveHostSteps, ...effectiveClientSteps].some(
+        (e) => e.effectiveStatus === 'completed' && e.step.requiresReboot
+      )
+    : false;
+  const showRebootBanner = Boolean(
+    activeTicket &&
+      (lastPatchResult?.rebootJudgment.rebootRecommended ||
+        policyStatus?.pendingRebootFlag ||
+        completedStepNeedsReboot)
+  );
+  const rebootStrong = Boolean(
+    lastPatchResult?.rebootJudgment.level === 'reboot_required' || completedStepNeedsReboot
+  );
+  const rebootBannerTitle =
+    lastPatchResult?.rebootJudgment.title ||
+    (completedStepNeedsReboot
+      ? '컴퓨터 재부팅 필수 (KIR 중복 SID · SMB 1.0 · 네트워크 스택 변경 반영)'
+      : 'Windows 보류 중인 재부팅 플래그 감지됨');
+  const rebootBannerReason =
+    lastPatchResult?.rebootJudgment.reason ||
+    '커널·네트워크 정책 변경 또는 Windows 업데이트 보류 상태가 감지되었습니다. 호스트·클라이언트 모두 재부팅 후 재연결해야 정상 반영됩니다.';
+
+  const handleConfirmRebootClick = async () => {
+    if (!onTriggerReboot || isBusy) return;
+    setRebooting(true);
+    try {
+      await onTriggerReboot();
+      setConfirmReboot(false);
+    } finally {
+      setRebooting(false);
+    }
+  };
 
   return (
     <div
@@ -315,6 +439,101 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          {activeTicket && (policyStatus || matrixSyncedStepsCount > 0 || pendingHostTask) && (
+            <div
+              id="wizard-matrix-sync-summary"
+              className="px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+            >
+              <div className="space-y-0.5 min-w-0">
+                <div className="text-xs font-bold text-slate-900 dark:text-white">
+                  OS 호환성 매트릭스 · 호스트 대기 작업 양방향 동기화됨
+                </div>
+                <p className="tabular-data text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {policyStatus
+                    ? `현재 OS 호환 지수 ${policyStatus.compatibilityScore}점/100 · 감지 이슈 ${policyStatus.detectedIssues.length}건 · `
+                    : ''}
+                  정책 자동 반영 {matrixSyncedStepsCount}단계 · 남은 실행/재시도 {remainingActionStepsCount}단계
+                  {pendingHostTask
+                    ? ` · 호스트 대기 작업(${pendingHostTask.targetHostName}) 연계됨`
+                    : ''}
+                </p>
+              </div>
+              {onOpenMatrix && (
+                <button
+                  id="btn-wizard-open-matrix"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={onOpenMatrix}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 self-end sm:self-center"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  OS 호환성 매트릭스 열기
+                </button>
+              )}
+            </div>
+          )}
+
+          {showRebootBanner && (
+            <div
+              id="wizard-reboot-judgment-banner"
+              className={`px-4 py-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                rebootStrong
+                  ? 'border-red-500/45 bg-red-500/8 dark:bg-red-500/12'
+                  : 'border-amber-500/45 bg-amber-500/8 dark:bg-amber-500/12'
+              }`}
+            >
+              <div className="flex items-start gap-2.5 min-w-0">
+                {rebootStrong ? (
+                  <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                )}
+                <div className="space-y-0.5 min-w-0 text-xs">
+                  <div className="font-bold text-slate-900 dark:text-white">{rebootBannerTitle}</div>
+                  <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{rebootBannerReason}</p>
+                </div>
+              </div>
+
+              {onTriggerReboot && (
+                <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                  {confirmReboot ? (
+                    <>
+                      <button
+                        id="btn-wizard-confirm-reboot"
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void handleConfirmRebootClick()}
+                        className="px-3 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                      >
+                        <Power className="w-3.5 h-3.5" />
+                        {rebooting ? '재부팅 예약 중...' : '재부팅 실행 확정'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => setConfirmReboot(false)}
+                        className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
+                      >
+                        취소
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      id="btn-wizard-confirm-reboot"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => setConfirmReboot(true)}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                    >
+                      <Power className="w-3.5 h-3.5" />
+                      지금 컴퓨터 재부팅
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {!activeTicket ? (
             <div className="py-12 text-center text-sm text-slate-500 dark:text-slate-400">
               모든 USB 오류 티켓이 정리되었습니다.
@@ -327,11 +546,11 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
                     {activeTicket.errorCode} · {activeTicket.errorTitle}
                   </div>
                   <span className="tabular-data text-xs font-semibold text-amber-700 dark:text-amber-300">
-                    {activeTicket.status === 'resolved'
+                    {effectiveTicketStatus === 'resolved'
                       ? '해결 완료됨'
-                      : activeTicket.status === 'host_fixed'
+                      : effectiveTicketStatus === 'host_fixed'
                         ? '메인 PC 조치 완료 → 클라이언트 확인 단계'
-                        : activeTicket.status === 'client_fixed'
+                        : effectiveTicketStatus === 'client_fixed'
                           ? '클라이언트 조치 완료 → 호스트 확인 단계'
                           : '미해결 (조치 대기)'}
                   </span>
@@ -440,7 +659,7 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
                 </button>
               </div>
 
-              {!pcMatchesSelectedSide && visibleSteps.length > 0 && (
+              {!pcMatchesSelectedSide && visibleEffectiveSteps.length > 0 && (
                 <div className="px-4 py-2.5 rounded-lg border border-amber-500/35 bg-amber-500/8 text-xs text-amber-800 dark:text-amber-300">
                   현재 실행 중인 PC({netInfo.hostname})는{' '}
                   {activeSide === 'host' ? '호스트 대상 PC' : '원본 클라이언트 PC'}와 직접 일치하지 않습니다.{' '}
@@ -450,39 +669,95 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
                 </div>
               )}
 
-              {visibleSteps.length === 0 ? (
+              {visibleEffectiveSteps.length === 0 ? (
                 <div className="p-6 rounded-xl border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500 dark:text-slate-400">
                   이 오류 코드({activeTicket.errorCode})는{' '}
                   {activeSide === 'host' ? '호스트 PC 측 추가 조치가 필요하지 않습니다.' : '클라이언트 PC 측 추가 조치가 필요하지 않습니다.'}
                 </div>
               ) : (
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800">
-                  {visibleSteps.map((step, idx) => {
-                    const meta = STEP_STATUS_META[step.status];
+                  {visibleEffectiveSteps.map((item, idx) => {
+                    const {
+                      step,
+                      isPolicyMatched,
+                      autoCompletedByPolicy,
+                      autoSkippedByPolicy,
+                      effectiveStatus,
+                      explanation: policyMatchedExplanation,
+                      effectiveSourceLabel,
+                    } = item;
+                    const meta = STEP_STATUS_META[effectiveStatus];
                     const isRunningThis = executingStepId === step.stepId;
-                    const stepDone = step.status === 'completed';
+                    const stepDone = effectiveStatus === 'completed';
+                    const isExecuteDisabled = isBusy || isPolicyMatched;
+                    const isMarkedSkipped = autoSkippedByPolicy || effectiveStatus === 'skipped';
                     return (
-                      <div key={step.stepId} className="p-4 space-y-2.5">
+                      <div
+                        key={step.stepId}
+                        data-step-status={effectiveStatus}
+                        data-step-skipped={isMarkedSkipped ? 'true' : 'false'}
+                        className="p-4 space-y-2.5"
+                      >
                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                           <div className="flex items-start gap-3 min-w-0">
                             <div className="mt-0.5 flex items-center gap-2 shrink-0">
                               <span className="tabular-data text-xs font-bold text-slate-400 dark:text-slate-500 w-5">
                                 {String(idx + 1).padStart(2, '0')}
                               </span>
-                              <StepStatusIcon status={step.status} />
+                              <StepStatusIcon status={effectiveStatus} />
+                              {autoSkippedByPolicy && (
+                                <SkipForward
+                                  className="w-3.5 h-3.5 text-slate-400 shrink-0"
+                                  aria-label="정책 충족으로 실행 건너뜀"
+                                />
+                              )}
                             </div>
                             <div className="space-y-1 min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                 <span className="text-sm font-semibold text-slate-900 dark:text-white">
                                   {step.title}
                                 </span>
+                                <SyncAwarePolicyBadge
+                                  step={step}
+                                  ticket={activeTicket}
+                                  policyStatus={policyStatus}
+                                  pcMatchesSide={pcMatchesSelectedSide}
+                                  mode="badge"
+                                />
                                 <span className={`text-[11px] font-semibold ${meta.textClass}`}>
                                   · {meta.label}
                                 </span>
+                                {autoSkippedByPolicy && (
+                                  <span className={`text-[11px] font-semibold ${STEP_STATUS_META.skipped.textClass}`}>
+                                    · {STEP_STATUS_META.skipped.label} (자동 건너뜀)
+                                  </span>
+                                )}
+                                {effectiveSourceLabel && (
+                                  <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+                                    · {effectiveSourceLabel}
+                                  </span>
+                                )}
+                                {autoCompletedByPolicy && (
+                                  <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                                    · OS 정책 자동 완료
+                                  </span>
+                                )}
+                                {step.requiresReboot && (
+                                  <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                                    · {stepDone && policyStatus?.pendingRebootFlag ? '재부팅 대기 중' : '재부팅 필요'}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
                                 {step.description}
                               </p>
+                              <SyncAwarePolicyBadge
+                                step={step}
+                                ticket={activeTicket}
+                                policyStatus={policyStatus}
+                                pcMatchesSide={pcMatchesSelectedSide}
+                                mode="explanation"
+                              />
                               {step.lastMessage && (
                                 <p className="tabular-data text-xs text-slate-700 dark:text-slate-300 pt-0.5">
                                   최근 결과: {step.lastMessage}
@@ -496,25 +771,38 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
                             <button
                               id={`btn-exec-step-${step.stepId}`}
                               type="button"
-                              disabled={isBusy}
+                              disabled={isExecuteDisabled}
+                              title={isPolicyMatched ? policyMatchedExplanation : undefined}
                               onClick={() => void handleRunStep(step)}
-                              className={`px-3 py-1.5 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50 ${
-                                stepDone
-                                  ? 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
-                                  : 'text-white bg-indigo-600 hover:bg-indigo-500'
+                              className={`px-3 py-1.5 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap ${
+                                isPolicyMatched
+                                  ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 cursor-not-allowed opacity-85'
+                                  : isBusy
+                                    ? 'cursor-not-allowed opacity-50 text-white bg-indigo-600'
+                                    : stepDone
+                                      ? 'cursor-pointer text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
+                                      : 'cursor-pointer text-white bg-indigo-600 hover:bg-indigo-500'
                               }`}
                             >
                               {isRunningThis ? (
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : isPolicyMatched ? (
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                               ) : stepDone ? (
                                 <RotateCcw className="w-3.5 h-3.5" />
                               ) : (
                                 <Play className="w-3.5 h-3.5" />
                               )}
-                              {isRunningThis ? '실행 중...' : stepDone ? '다시 실행' : '지금 적용'}
+                              {isRunningThis
+                                ? '실행 중...'
+                                : isPolicyMatched
+                                  ? '조건 이미 충족됨 (건너뜀)'
+                                  : stepDone
+                                    ? '다시 실행'
+                                    : '지금 적용'}
                             </button>
 
-                            {step.status !== 'completed' && step.status !== 'skipped' && (
+                            {!isPolicyMatched && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
                               <button
                                 type="button"
                                 disabled={isBusy}
@@ -597,11 +885,11 @@ export const TroubleshootWizardModal: React.FC<TroubleshootWizardModalProps> = (
 
               <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 space-y-3">
                 <div className="text-sm font-bold text-slate-900 dark:text-white">
-                  현재 해결 상태: {activeTicket.status === 'resolved'
+                  현재 해결 상태: {effectiveTicketStatus === 'resolved'
                     ? '양단 해결 완료됨'
-                    : activeTicket.status === 'host_fixed'
+                    : effectiveTicketStatus === 'host_fixed'
                       ? '메인 PC 조치 완료 → USB를 클라이언트 PC로 이동해 재연결하세요'
-                      : activeTicket.status === 'client_fixed'
+                      : effectiveTicketStatus === 'client_fixed'
                         ? '클라이언트 조치 완료 → 필요 시 메인 PC에서 확인하세요'
                         : '진행 중 (양단 단계 실행 후 상태가 자동 갱신됩니다)'}
                 </div>

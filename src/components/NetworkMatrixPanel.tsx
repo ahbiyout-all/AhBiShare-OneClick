@@ -25,6 +25,7 @@ import {
   Clock,
   Activity,
   Usb,
+  ListChecks,
 } from 'lucide-react';
 import {
   AutoAlignBatchResult,
@@ -39,6 +40,8 @@ import {
   PolicyPatchMode,
   PortableHostShareEntry,
   RebootRequirementLevel,
+  TroubleshootMatchResult,
+  TroubleshootTicket,
   WindowsNetworkChangeItem,
   WindowsNetworkEra,
 } from '@/types/share';
@@ -87,6 +90,9 @@ interface NetworkMatrixPanelProps {
   onNotify?: (message: string) => void;
   onDeleteHostPolicySnapshot?: (hostName: string) => Promise<void>;
   onClearAllHostPolicySnapshots?: () => Promise<void>;
+  troubleshootTickets?: TroubleshootTicket[];
+  troubleshootMatch?: TroubleshootMatchResult;
+  onOpenTroubleshootWizard?: (ticketId?: string) => void;
 }
 
 const CATEGORY_OPTIONS: Array<{ id: 'all' | WindowsNetworkChangeItem['category']; label: string }> = [
@@ -159,6 +165,9 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   onNotify,
   onDeleteHostPolicySnapshot,
   onClearAllHostPolicySnapshots,
+  troubleshootTickets = [],
+  troubleshootMatch,
+  onOpenTroubleshootWizard,
 }) => {
   const [selectedEra, setSelectedEra] = useState<'all' | WindowsNetworkEra>('all');
   const [selectedCategory, setSelectedCategory] = useState<'all' | WindowsNetworkChangeItem['category']>('all');
@@ -537,6 +546,24 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
 
   const judgment = lastPatchResult?.rebootJudgment;
 
+  const activeMatrixTicket =
+    troubleshootMatch?.primaryTicket ||
+    troubleshootMatch?.waitingOtherPcTickets[0] ||
+    troubleshootTickets.find((t) => t.status !== 'resolved') ||
+    null;
+  const activeTicketMatchedSide = activeMatrixTicket
+    ? troubleshootMatch?.matchedSideMap[activeMatrixTicket.ticketId] || 'none'
+    : 'none';
+  const activeTicketAllSteps = activeMatrixTicket
+    ? [...activeMatrixTicket.hostSteps, ...activeMatrixTicket.clientSteps]
+    : [];
+  const activeTicketMatrixSyncedCount = activeTicketAllSteps.filter(
+    (s) => s.status === 'completed' && s.resolvedSource && s.resolvedSource !== 'wizard'
+  ).length;
+  const activeTicketRemainingRetryCount = activeTicketAllSteps.filter(
+    (s) => s.status === 'pending' || s.status === 'failed'
+  ).length;
+
   return (
     <div className="space-y-8">
       {/* Header & Live OS Detection Banner */}
@@ -857,6 +884,50 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             >
               양단 비교표 확인
             </button>
+          </div>
+        )}
+
+        {activeMatrixTicket && (
+          <div
+            id="matrix-wizard-sync-banner"
+            className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/8 dark:bg-amber-500/10 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+          >
+            <div className="flex items-start gap-3 min-w-0">
+              <Wrench className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-1 min-w-0">
+                <div className="text-xs font-bold text-slate-900 dark:text-white">
+                  USB 오류 티켓과 실시간 양방향 동기화 중 ({activeMatrixTicket.errorCode} · \\
+                  {activeMatrixTicket.targetIp || activeMatrixTicket.targetHostName || 'HOST'}\
+                  {activeMatrixTicket.shareName})
+                </div>
+                <p className="tabular-data text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                  매칭 역할:{' '}
+                  {activeTicketMatchedSide === 'both'
+                    ? '호스트 · 클라이언트 모두'
+                    : activeTicketMatchedSide === 'host'
+                      ? '메인 호스트 PC'
+                      : activeTicketMatchedSide === 'client'
+                        ? '클라이언트 PC'
+                        : '반대편 PC 대기'}{' '}
+                  · 정책 자동 반영 {activeTicketMatrixSyncedCount}단계 · 남은 실행/재시도 {activeTicketRemainingRetryCount}단계
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-400">
+                  이 화면에서 정책 패치를 적용하거나 보안 원복을 실행하면 USB 오류 마법사 단계와 호스트 대기 작업이 자동으로 함께 갱신됩니다.
+                </p>
+              </div>
+            </div>
+            {onOpenTroubleshootWizard && (
+              <button
+                id="btn-matrix-open-wizard"
+                type="button"
+                disabled={isBusy}
+                onClick={() => onOpenTroubleshootWizard(activeMatrixTicket.ticketId)}
+                className="px-3.5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 self-end lg:self-center"
+              >
+                <ListChecks className="w-3.5 h-3.5" />
+                단계별 해결 마법사 열기
+              </button>
+            )}
           </div>
         )}
 

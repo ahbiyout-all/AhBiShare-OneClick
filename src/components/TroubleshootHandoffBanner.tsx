@@ -2,11 +2,19 @@ import React, { useState } from 'react';
 import {
   CheckCircle2,
   ListChecks,
+  ShieldAlert,
+  SlidersHorizontal,
   Trash2,
   Usb,
   Wrench,
 } from 'lucide-react';
-import { TroubleshootMatchResult, TroubleshootTicket } from '@/types/share';
+import {
+  OsNetworkPolicyStatus,
+  PendingHostPolicyTask,
+  PolicyApplyResult,
+  TroubleshootMatchResult,
+  TroubleshootTicket,
+} from '@/types/share';
 import { formatSnapshotTimestamp } from '@/services/networkEvolution';
 
 interface TroubleshootHandoffBannerProps {
@@ -14,7 +22,11 @@ interface TroubleshootHandoffBannerProps {
   matchResult: TroubleshootMatchResult;
   currentHostname: string;
   writeProtected?: boolean;
+  policyStatus?: OsNetworkPolicyStatus | null;
+  lastPatchResult?: PolicyApplyResult | null;
+  pendingHostTask?: PendingHostPolicyTask | null;
   onOpenWizard: (ticketId?: string) => void;
+  onOpenMatrix?: () => void;
   onDeleteTicket: (ticketId: string) => void | Promise<void>;
   onClearResolved: () => void | Promise<void>;
 }
@@ -37,7 +49,11 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
   matchResult,
   currentHostname,
   writeProtected,
+  policyStatus,
+  lastPatchResult,
+  pendingHostTask,
   onOpenWizard,
+  onOpenMatrix,
   onDeleteTicket,
   onClearResolved,
 }) => {
@@ -47,6 +63,11 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
 
   const { currentPcActionTickets, waitingOtherPcTickets, resolvedTickets, primaryTicket, matchedSideMap } =
     matchResult;
+
+  const rebootAlertActive = Boolean(
+    lastPatchResult?.rebootJudgment.rebootRecommended || policyStatus?.pendingRebootFlag
+  );
+  const rebootRequiredStrong = lastPatchResult?.rebootJudgment.level === 'reboot_required';
 
   if (primaryTicket) {
     const side = matchedSideMap[primaryTicket.ticketId] || 'none';
@@ -63,22 +84,36 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
           }를 진행하세요`
         : `이 PC(${currentHostname})에서 해결이 필요한 연결·공유 오류 (${primaryTicket.errorCode})`;
 
-    const pendingCount =
-      (side === 'host' || side === 'both'
-        ? primaryTicket.hostSteps.filter((s) => s.status === 'pending' || s.status === 'failed').length
-        : 0) +
-      (side === 'client' || side === 'both'
-        ? primaryTicket.clientSteps.filter((s) => s.status === 'pending' || s.status === 'failed').length
-        : 0);
+    const applicableSteps = [
+      ...(side === 'host' || side === 'both' ? primaryTicket.hostSteps : []),
+      ...(side === 'client' || side === 'both' ? primaryTicket.clientSteps : []),
+    ];
+    const pendingCount = applicableSteps.filter((s) => s.status === 'pending' || s.status === 'failed').length;
+    const syncedPolicyCount = applicableSteps.filter(
+      (s) =>
+        s.status === 'completed' &&
+        (s.resolvedSource === 'matrix' ||
+          s.resolvedSource === 'host_panel' ||
+          s.resolvedSource === 'live_inspect' ||
+          s.resolvedSource === 'share_retry')
+    ).length;
 
     return (
       <div
         id="troubleshoot-handoff-banner"
         role="status"
-        className="px-5 py-4 rounded-xl border border-amber-500/45 bg-amber-500/8 dark:bg-amber-500/12 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+        className={`px-5 py-4 rounded-xl border flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+          rebootRequiredStrong
+            ? 'border-red-500/45 bg-red-500/8 dark:bg-red-500/12'
+            : 'border-amber-500/45 bg-amber-500/8 dark:bg-amber-500/12'
+        }`}
       >
         <div className="flex items-start gap-3 min-w-0">
-          <Wrench className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          {rebootRequiredStrong ? (
+            <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+          ) : (
+            <Wrench className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          )}
           <div className="space-y-1 min-w-0">
             <div className="text-xs font-bold text-slate-900 dark:text-white">
               {headline}
@@ -90,10 +125,24 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
               <span className="font-semibold">
                 \\{primaryTicket.targetIp || primaryTicket.targetHostName || 'HOST'}\{primaryTicket.shareName}
               </span>{' '}
-              · 남은 단계 {pendingCount}개 · 상태: {getTicketStatusText(primaryTicket.status)} ·{' '}
+              · 남은 단계 {pendingCount}개
+              {syncedPolicyCount > 0 ? ` · 매트릭스 자동 반영 ${syncedPolicyCount}개` : ''} · 상태:{' '}
+              {getTicketStatusText(primaryTicket.status)} ·{' '}
               {formatSnapshotTimestamp(primaryTicket.updatedAt || primaryTicket.createdAt)}
+              {pendingHostTask ? ' · 호스트 대기 작업과 동기화됨' : ''}
               {writeProtected ? ' · USB 읽기 전용(세션 임시 보관)' : ''}
             </p>
+            {rebootAlertActive && (
+              <p
+                className={`text-xs font-semibold ${
+                  rebootRequiredStrong ? 'text-red-700 dark:text-red-300' : 'text-amber-800 dark:text-amber-300'
+                }`}
+              >
+                재부팅 판정 동기화:{' '}
+                {lastPatchResult?.rebootJudgment.title ||
+                  '커널·네트워크 정책 변경으로 시스템 재부팅 후 재연결해야 정상 적용됩니다.'}
+              </p>
+            )}
           </div>
         </div>
 
@@ -107,6 +156,18 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
             <ListChecks className="w-3.5 h-3.5" />
             단계별 해결 마법사 열기
           </button>
+
+          {onOpenMatrix && (
+            <button
+              id="btn-banner-open-matrix"
+              type="button"
+              onClick={onOpenMatrix}
+              className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              {rebootAlertActive ? 'OS 매트릭스 · 재부팅' : 'OS 매트릭스 보기'}
+            </button>
+          )}
 
           {resolvedTickets.length > 0 && (
             <button
@@ -177,6 +238,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
             <p className="tabular-data text-xs text-slate-600 dark:text-slate-300">
               {topWaiting.errorCode} · {topWaiting.errorTitle} · \\{topWaiting.targetIp || topWaiting.targetHostName || 'HOST'}\
               {topWaiting.shareName} · USB를 {awaitingSideLabel}로 이동하면 마법사가 자동 실행됩니다
+              {rebootAlertActive ? ' · (현재 PC 재부팅 대기 상태 감지됨)' : ''}
             </p>
           </div>
         </div>
@@ -256,3 +318,4 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
     </div>
   );
 };
+

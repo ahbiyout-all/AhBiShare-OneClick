@@ -1877,6 +1877,87 @@ try {
   pass('Mixed guest/account coexistence (forceguest=0), minpwlen=0, BlockNTLM/NullString & KB5065426 duplicate SID KIR (1517186191=0) verified');
 }
 
+// 14. Verify bidirectional sync between OS Compatibility Matrix / HostPanel / pendingHostActions & USB Troubleshoot Wizard
+{
+  const playbookSrcSync = fs.readFileSync(path.join(rootDir, 'src', 'services', 'troubleshootPlaybook.ts'), 'utf8');
+  const wizardSrcSync = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TroubleshootWizardModal.tsx'), 'utf8');
+  const syncBadgeSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'SyncAwarePolicyBadge.tsx'), 'utf8');
+  const bannerSrcSync = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TroubleshootHandoffBanner.tsx'), 'utf8');
+  const matrixSrcSync = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
+  const typesSrcSync = fs.readFileSync(path.join(rootDir, 'src', 'types', 'share.ts'), 'utf8');
+
+  for (const sym of ['TroubleshootStepResolvedSource', 'TroubleshootSyncSummary', 'resolvedSource', 'requiresReboot']) {
+    assert(typesSrcSync.includes(sym), `types/share.ts missing bidirectional sync type ${sym}`);
+  }
+  for (const sym of [
+    'reconcileTroubleshootTicketsWithLocalState',
+    'getSatisfiedPolicyModesFromStatus',
+    'isPolicyStepSatisfiedOnLocalPc',
+    'getPolicyStepMatchedExplanation',
+    'formatStepResolvedSourceLabel',
+  ]) {
+    assert(playbookSrcSync.includes(sym), `troubleshootPlaybook.ts missing ${sym}`);
+  }
+  assert(
+    syncBadgeSrc.includes('export function evaluateStepPolicyMatch') &&
+      syncBadgeSrc.includes('export const SyncAwarePolicyBadge') &&
+      syncBadgeSrc.includes('Policy Matched') &&
+      syncBadgeSrc.includes('data-sync-aware="policy-matched"') &&
+      syncBadgeSrc.includes('autoCompletedByPolicy') &&
+      syncBadgeSrc.includes('autoSkippedByPolicy') &&
+      syncBadgeSrc.includes('effectiveStatus') &&
+      syncBadgeSrc.includes('effectiveSourceLabel') &&
+      syncBadgeSrc.includes('getPolicyStepMatchedExplanation') &&
+      syncBadgeSrc.includes('formatStepResolvedSourceLabel'),
+    'SyncAwarePolicyBadge.tsx missing evaluateStepPolicyMatch, Policy Matched badge, effectiveStatus, autoSkippedByPolicy, or explanation helper'
+  );
+  assert(
+    bridgeSrc.includes('async syncTroubleshootTicketsWithLocalState(') &&
+      bridgeSrc.includes('async reconcilePendingHostActionsWithLocalPolicy('),
+    'shareBridge.ts missing syncTroubleshootTicketsWithLocalState or reconcilePendingHostActionsWithLocalPolicy'
+  );
+  assert(
+    appTsxSrc.includes('syncAllMatrixAndWizardState') &&
+      appTsxSrc.includes("'host_panel'") &&
+      appTsxSrc.includes("source: 'matrix'") &&
+      appTsxSrc.includes("source: 'rollback'") &&
+      appTsxSrc.includes("source: 'share_retry'") &&
+      appTsxSrc.includes("source: 'mount_retry'") &&
+      appTsxSrc.includes("resolvedSource: 'wizard'"),
+    'App.tsx missing bidirectional syncAllMatrixAndWizardState wiring across HostPanel/Matrix/Rollback/Wizard'
+  );
+  assert(
+    wizardSrcSync.includes('wizard-matrix-sync-summary') &&
+      wizardSrcSync.includes('wizard-reboot-judgment-banner') &&
+      wizardSrcSync.includes('btn-wizard-open-matrix') &&
+      wizardSrcSync.includes('btn-wizard-confirm-reboot') &&
+      wizardSrcSync.includes('SyncAwarePolicyBadge') &&
+      wizardSrcSync.includes('evaluateStepPolicyMatch') &&
+      wizardSrcSync.includes('effectiveHostSteps') &&
+      wizardSrcSync.includes('effectiveClientSteps') &&
+      wizardSrcSync.includes('effectiveTicketStatus') &&
+      wizardSrcSync.includes('autoSkippedByPolicy') &&
+      wizardSrcSync.includes('data-step-status={effectiveStatus}') &&
+      wizardSrcSync.includes("data-step-skipped={isMarkedSkipped ? 'true' : 'false'}") &&
+      wizardSrcSync.includes('<StepStatusIcon status={effectiveStatus} />') &&
+      wizardSrcSync.includes('const isExecuteDisabled = isBusy || isPolicyMatched;') &&
+      wizardSrcSync.includes('disabled={isExecuteDisabled}'),
+    'TroubleshootWizardModal.tsx missing Matrix sync banner, reboot judgment alert, SyncAwarePolicyBadge, or render-time policyStatus auto-completion/skipping'
+  );
+  assert(
+    bannerSrcSync.includes('btn-banner-open-matrix') &&
+      bannerSrcSync.includes('lastPatchResult?.rebootJudgment'),
+    'TroubleshootHandoffBanner.tsx missing unified Matrix open button or reboot judgment notice'
+  );
+  assert(
+    matrixSrcSync.includes('matrix-wizard-sync-banner') &&
+      matrixSrcSync.includes('btn-matrix-open-wizard'),
+    'NetworkMatrixPanel.tsx missing Troubleshoot Wizard bidirectional sync banner or trigger button'
+  );
+
+  pass('Bidirectional sync & SyncAwarePolicyBadge (Policy Matched + Execute lock) between OS Compatibility Matrix, HostPanel, pendingHostActions & USB Troubleshoot Wizard verified');
+}
+
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);
 console.log('=======================================================');

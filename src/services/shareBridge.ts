@@ -44,6 +44,8 @@ import {
   SmartAuthDetectionResult,
   SmartAuthTargetInput,
   TroubleshootTicket,
+  TroubleshootStepResolvedSource,
+  TroubleshootSyncSummary,
   AppLogStatusInfo,
 } from '@/types/share';
 import {
@@ -72,6 +74,8 @@ import {
 import {
   BuildTroubleshootTicketInput,
   buildTroubleshootTicketDraft,
+  getSatisfiedPolicyModesFromStatus,
+  reconcileTroubleshootTicketsWithLocalState,
   upsertTroubleshootTicketList,
 } from '@/services/troubleshootPlaybook';
 import {
@@ -1165,6 +1169,97 @@ export const shareBridge = {
     return res.document.pendingHostActions || {};
   },
 
+  async reconcilePendingHostActionsWithLocalPolicy(
+    netInfo: LocalNetworkInfo,
+    policy: OsNetworkPolicyStatus | null
+  ): Promise<{
+    pendingHostActions: Record<string, PendingHostPolicyTask>;
+    resolvedTaskHosts: string[];
+    updatedTaskHosts: string[];
+  }> {
+    const existingMap = latestPortableDoc.pendingHostActions || {};
+    const keys = Object.keys(existingMap);
+    if (keys.length === 0 || !policy) {
+      return {
+        pendingHostActions: { ...existingMap },
+        resolvedTaskHosts: [],
+        updatedTaskHosts: [],
+      };
+    }
+
+    const hostLower = (netInfo.hostname || '').trim().toLowerCase();
+    const { satisfiedModes, guestUnlockSatisfied } = getSatisfiedPolicyModesFromStatus(policy);
+    const satisfiedSet = new Set<PolicyPatchMode>(satisfiedModes);
+
+    const nextMap: Record<string, PendingHostPolicyTask> = {};
+    const resolvedTaskHosts: string[] = [];
+    const updatedTaskHosts: string[] = [];
+    let changed = false;
+
+    for (const [k, task] of Object.entries(existingMap)) {
+      const isCurrentHost =
+        k.trim().toLowerCase() === hostLower ||
+        (task.targetHostName || '').trim().toLowerCase() === hostLower;
+
+      if (!isCurrentHost) {
+        nextMap[k] = task;
+        continue;
+      }
+
+      const remainingModes = (task.modes || []).filter((m) => !satisfiedSet.has(m));
+      const remainingGuestUnlock = Boolean(task.includeGuestUnlock) && !guestUnlockSatisfied;
+      const modesChanged = remainingModes.length !== (task.modes || []).length;
+      const guestChanged = remainingGuestUnlock !== Boolean(task.includeGuestUnlock);
+
+      if (!modesChanged && !guestChanged) {
+        nextMap[k] = task;
+        continue;
+      }
+
+      changed = true;
+      if (remainingModes.length === 0 && !remainingGuestUnlock) {
+        resolvedTaskHosts.push(task.targetHostName || k);
+      } else {
+        updatedTaskHosts.push(task.targetHostName || k);
+        nextMap[k] = {
+          ...task,
+          modes: remainingModes,
+          includeGuestUnlock: remainingGuestUnlock,
+        };
+      }
+    }
+
+    if (!changed) {
+      return {
+        pendingHostActions: { ...existingMap },
+        resolvedTaskHosts: [],
+        updatedTaskHosts: [],
+      };
+    }
+
+    const nextDoc: PortableShareDocument = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      shares: latestPortableDoc.shares,
+      ...(latestPortableDoc.hostPolicies ? { hostPolicies: latestPortableDoc.hostPolicies } : {}),
+      ...(Object.keys(nextMap).length > 0 ? { pendingHostActions: nextMap } : {}),
+      ...(latestPortableDoc.troubleshootTickets?.length
+        ? { troubleshootTickets: latestPortableDoc.troubleshootTickets }
+        : {}),
+      ...(latestPortableDoc.lastClientTarget ? { lastClientTarget: latestPortableDoc.lastClientTarget } : {}),
+    };
+    const res = window.ahbiShareElectron?.savePortableData
+      ? await window.ahbiShareElectron.savePortableData(nextDoc)
+      : await saveWebPreviewPortable(nextDoc);
+    latestPortableDoc = res.document;
+    latestPortableStatus = res.status;
+    return {
+      pendingHostActions: res.document.pendingHostActions || nextMap,
+      resolvedTaskHosts,
+      updatedTaskHosts,
+    };
+  },
+
   async persistHostPolicySnapshot(
     hostName: string,
     policy: OsNetworkPolicyStatus,
@@ -1419,6 +1514,48 @@ export const shareBridge = {
     return {
       ...saved,
       removedCount,
+    };
+  },
+
+  async syncTroubleshootTicketsWithLocalState(input: {
+    netInfo: LocalNetworkInfo;
+    policyStatus: OsNetworkPolicyStatus | null;
+    localShares?: ActiveShare[];
+    localMounts?: MountedDrive[];
+    source: TroubleshootStepResolvedSource;
+    justCreatedShareNames?: string[];
+    justMountedTargets?: Array<{ targetHost: string; shareName: string }>;
+  }): Promise<{
+    tickets: TroubleshootTicket[];
+    summary: TroubleshootSyncSummary;
+    portableStatus: PortableStorageStatus;
+  }> {
+    const current = this.getTroubleshootTickets();
+    const { tickets, summary } = reconcileTroubleshootTicketsWithLocalState({
+      tickets: current,
+      netInfo: input.netInfo,
+      policyStatus: input.policyStatus,
+      localShares: input.localShares ?? this.getSavedShares(),
+      localMounts: input.localMounts ?? this.getSavedMounts(),
+      portableShares: latestPortableDoc.shares || [],
+      source: input.source,
+      justCreatedShareNames: input.justCreatedShareNames,
+      justMountedTargets: input.justMountedTargets,
+    });
+
+    if (!summary.changed) {
+      return {
+        tickets: current,
+        summary,
+        portableStatus: latestPortableStatus,
+      };
+    }
+
+    const saved = await this.persistTroubleshootTicketList(tickets);
+    return {
+      tickets: saved.tickets,
+      summary,
+      portableStatus: saved.portableStatus,
     };
   },
 
