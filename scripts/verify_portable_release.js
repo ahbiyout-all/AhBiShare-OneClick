@@ -764,7 +764,8 @@ const licenseTxt = fs.readFileSync(path.join(rootDir, 'LICENSE'), 'utf8');
 assert(licenseTxt.includes('MIT License') && licenseTxt.includes('1998-2026 AhBiYout'), 'LICENSE missing MIT 1998-2026 AhBiYout');
 
 assert(fs.existsSync(path.join(rootDir, 'build.bat')), 'Missing root build.bat');
-for (const batFile of ['build.bat', 'build_release.bat', 'push_github.bat']) {
+assert(fs.existsSync(path.join(rootDir, 'scripts', 'upgradedHostGuestUnblock.bat')), 'Missing scripts/upgradedHostGuestUnblock.bat');
+for (const batFile of ['build.bat', 'build_release.bat', 'push_github.bat', path.join('scripts', 'upgradedHostGuestUnblock.bat')]) {
   const batPath = path.join(rootDir, batFile);
   if (!fs.existsSync(batPath)) {
     continue; // .gitignore intentionally excludes build_release.bat and push_github.bat in CI checkouts
@@ -776,6 +777,24 @@ for (const batFile of ['build.bat', 'build_release.bat', 'push_github.bat']) {
   );
   assert(!/[^\x00-\x7F]/.test(batContent), `${batFile} must be pure English ASCII`);
 }
+const upgradedGuestBat = fs.readFileSync(path.join(rootDir, 'scripts', 'upgradedHostGuestUnblock.bat'), 'utf8');
+for (const batMarker of [
+  '/v LimitBlankPasswordUse /t REG_DWORD /d 0 /f',
+  '/active:yes /passwordreq:no',
+  'SeDenyNetworkLogonRight',
+  'netsh advfirewall firewall add rule name="AhBiShare-SMB-445"',
+  'localport=445',
+  'profile=private,domain',
+  '*S-1-1-0:(OI)(CI)F',
+  'AHBI_HAS_WARN',
+  'AHBI_NO_PAUSE',
+]) {
+  assert(upgradedGuestBat.includes(batMarker), `scripts/upgradedHostGuestUnblock.bat missing required marker: ${batMarker}`);
+}
+assert(
+  !/StorageDevicePolicies|diskpart|attrib\s+\+r\b/i.test(upgradedGuestBat),
+  'scripts/upgradedHostGuestUnblock.bat must never contain USB write-protection patterns'
+);
 const rootBuildBat = fs.readFileSync(path.join(rootDir, 'build.bat'), 'utf8');
 assert(
   rootBuildBat.includes("require('./package.json').version") &&
@@ -1724,8 +1743,32 @@ try {
       psEngineSrc.includes('profile=private,domain') &&
       psEngineSrc.includes('AHBI_HAS_WARN') &&
       psEngineSrc.includes('*S-1-1-0:(OI)(CI)F') &&
+      psEngineSrc.includes('upgradedHostGuestUnblock.bat') &&
+      psEngineSrc.includes("$psiBat.RedirectStandardInput = $true") &&
+      psEngineSrc.includes('$procBat.StandardInput.Close()') &&
+      psEngineSrc.includes("$psiBat.EnvironmentVariables['AHBI_NO_PAUSE'] = '1'") &&
+      psEngineSrc.includes('$procBat.WaitForExit(15000)') &&
+      psEngineSrc.includes('export function buildHostEmptyPasswordBlockPsScript') &&
+      psEngineSrc.includes('/v LimitBlankPasswordUse /t REG_DWORD /d 1 /f') &&
       hostPanelSrc.includes('buildHostGuestUnlockBatchScript(config.shareName, config.folderPath)'),
-    'powershellEngine.ts / HostPanel.tsx missing non-blocking ProcessStartInfo net.exe wrapper or upgraded host guest unblock batch script'
+    'powershellEngine.ts / HostPanel.tsx missing non-blocking ProcessStartInfo wrapper, upgradedHostGuestUnblock.bat invocation, buildHostEmptyPasswordBlockPsScript, or upgraded host guest unblock batch script'
+  );
+  const emptyPwdToggleSrc = fs.readFileSync(
+    path.join(rootDir, 'src', 'components', 'EmptyPasswordPolicyToggle.tsx'),
+    'utf8'
+  );
+  assert(
+    emptyPwdToggleSrc.includes('role="switch"') &&
+      emptyPwdToggleSrc.includes('btn-toggle-block-empty-password') &&
+      emptyPwdToggleSrc.includes('Block Empty-Password Accounts') &&
+      emptyPwdToggleSrc.includes('upgradedHostGuestUnblock.bat') &&
+      emptyPwdToggleSrc.includes('LimitBlankPasswordUse=') &&
+      hostPanelSrc.includes('EmptyPasswordPolicyToggle') &&
+      hostPanelSrc.includes('onToggleBlockEmptyPasswordAccounts') &&
+      bridgeSrc.includes('async toggleBlockEmptyPasswordAccounts(') &&
+      appSrc.includes('handleToggleBlockEmptyPasswordAccounts') &&
+      appSrc.includes('isTogglingEmptyPasswordPolicy'),
+    'EmptyPasswordPolicyToggle / HostPanel / shareBridge / App missing Block Empty-Password Accounts toggle wiring'
   );
   assert(
     playbookSrc.includes('reclassifyTroubleshootTicketOnRetryFailure') &&
@@ -1801,6 +1844,40 @@ try {
   fs.rmSync(tmpAppLogDir, { recursive: true, force: true });
 }
 
+// 13. Verify Win 11 24H2-26H2 mixed guest/account coexistence, BlockNTLM/RequireEncryption, minpwlen=0, NullString & KB5065426 KIR 1517186191
+{
+  const batPath = path.join(rootDir, 'scripts', 'upgradedHostGuestUnblock.bat');
+  const batRaw = fs.readFileSync(batPath, 'utf8');
+  assert(batRaw.includes('\r\n'), 'upgradedHostGuestUnblock.bat must use Windows CRLF line endings');
+  assert(!/[^\x00-\x7F]/.test(batRaw), 'upgradedHostGuestUnblock.bat must remain pure ASCII for Windows cmd.exe ANSI safety');
+  assert(batRaw.includes('/v forceguest /t REG_DWORD /d 0 /f'), 'upgradedHostGuestUnblock.bat must enforce Classic forceguest=0');
+  assert(batRaw.includes('accounts /minpwlen:0'), 'upgradedHostGuestUnblock.bat must clear minpwlen=0 before blank-password Guest reset');
+  assert(batRaw.includes('BlockNTLM') && batRaw.includes('RequireEncryption'), 'upgradedHostGuestUnblock.bat must clear Win11 24H2+ BlockNTLM and RequireEncryption');
+
+  assert(!/\/v\s+forceguest\s+\/t\s+REG_DWORD\s+\/d\s+1/i.test(psEngineSrc), 'powershellEngine.ts must NOT set forceguest=1 (clobbers named-account shares with Error 86)');
+  assert(
+    psEngineSrc.includes('$hasOtherGuestShare') &&
+      psEngineSrc.includes('accounts /minpwlen:0') &&
+      psEngineSrc.includes('[NullString]::Value') &&
+      psEngineSrc.includes('-BlockNTLM') &&
+      psEngineSrc.includes('1517186191') &&
+      psEngineSrc.includes("mode === 'kir_duplicate_sid_compat'"),
+    'powershellEngine.ts missing mixed-share coexistence guard, minpwlen=0, NullString, BlockNTLM, or KIR 1517186191 support'
+  );
+  const playbookSrcCheck = fs.readFileSync(path.join(rootDir, 'src', 'services', 'troubleshootPlaybook.ts'), 'utf8');
+  const matrixPanelSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'NetworkMatrixPanel.tsx'), 'utf8');
+  assert(
+    netEvoSrc.includes('duplicate_machine_sid_24h2') &&
+      netEvoSrc.includes('kir_duplicate_sid_compat') &&
+      playbookSrcCheck.includes('kir_duplicate_sid_compat') &&
+      matrixPanelSrc.includes('btn-apply-kir-dup-sid') &&
+      bridgeSrc.includes('targetHostName'),
+    'Missing duplicate Machine SID (KB5065426 / KIR 1517186191) diagnostics or targetHostName fallback wiring'
+  );
+  pass('Mixed guest/account coexistence (forceguest=0), minpwlen=0, BlockNTLM/NullString & KB5065426 duplicate SID KIR (1517186191=0) verified');
+}
+
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);
 console.log('=======================================================');
+

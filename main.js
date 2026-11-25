@@ -173,6 +173,11 @@ function executePowerShellScript(script, timeoutMs = 45000) {
     const ps = spawn(getPowerShellExe(), ['-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', tmpFile], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        AHBI_APP_SCRIPTS_DIR: path.join(__dirname, 'scripts'),
+        AHBI_RESOURCES_DIR: process.resourcesPath || '',
+      },
     });
 
     const outChunks = [];

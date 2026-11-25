@@ -1137,7 +1137,16 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             policyStatus.osUbr > 0 &&
             policyStatus.osUbr < 2314;
           const hotfixList = policyStatus?.recentHotfixIds || [];
-          const hasSpecialRisk = Boolean(isEarly24h2 || policyStatus?.msaPinOnlyRisk);
+          const kirApplied = policyStatus?.kirOverride1517186191 === 0;
+          const dupSidEvent = Boolean(policyStatus?.duplicateSidEvent6167Detected);
+          const crossPcSameSid = Boolean(
+            policyStatus?.machineSidPrefix &&
+              selectedHostSnap?.machineSidPrefix &&
+              selectedHostSnap.hostName.trim().toLowerCase() !== netInfo.hostname.trim().toLowerCase() &&
+              policyStatus.machineSidPrefix === selectedHostSnap.machineSidPrefix
+          );
+          const dupSidRisk = (dupSidEvent || crossPcSameSid) && !kirApplied;
+          const hasSpecialRisk = Boolean(isEarly24h2 || policyStatus?.msaPinOnlyRisk || dupSidRisk);
           const smb1State = policyStatus?.smb1ClientFeatureState || 'Disabled';
           const uacFilterEnabled = Boolean(policyStatus?.localAccountTokenFilterEnabled);
 
@@ -1154,9 +1163,11 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                     <span>별도 Windows 패치 · 선택적 기능 필요 여부 진단</span>
                   </h3>
                   <p className="text-xs text-slate-600 dark:text-slate-400">
-                    {hasSpecialRisk
-                      ? '초기 24H2 빌드 리비전 또는 MS 계정·PIN 환경이 감지되었습니다. 아래 해당 항목의 조치를 확인하세요.'
-                      : '일반 Windows 10~11 PC 간 공유에는 별도 OS 업데이트·추가 기능 설치가 필요 없으며, 아래 특수 환경(구형 NAS·워크그룹 관리자 접속·PIN 로그인)에 해당하는 경우에만 적용합니다.'}
+                    {dupSidRisk
+                      ? '복제 OS 동일 Machine SID 차단(KB5065426 · Event 6167)이 감지되었습니다. 아래 KIR(1517186191=0) 적용 후 재부팅하세요.'
+                      : hasSpecialRisk
+                        ? '초기 24H2 빌드 리비전 또는 MS 계정·PIN 환경이 감지되었습니다. 아래 해당 항목의 조치를 확인하세요.'
+                        : '일반 Windows 10~11 PC 간 공유에는 별도 OS 업데이트·추가 기능 설치가 필요 없으며, 아래 특수 환경(구형 NAS·워크그룹 관리자 접속·PIN·OS 복제 SID)에 해당하는 경우에만 적용합니다.'}
                   </p>
                 </div>
                 <div className="tabular-data text-xs text-slate-600 dark:text-slate-300 shrink-0">
@@ -1166,7 +1177,7 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 {/* 1. UAC LocalAccountTokenFilterPolicy */}
                 <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 flex flex-col justify-between gap-4">
                   <div className="space-y-1.5">
@@ -1313,6 +1324,63 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                     <ExternalLink className="w-3.5 h-3.5" />
                     Windows Update 설정 열기
                   </button>
+                </div>
+
+                {/* 4. Cloned OS Duplicate Machine SID Block (KB5065426 / Event 6167 / KIR 1517186191=0) */}
+                <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 flex flex-col justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-sm font-bold text-slate-900 dark:text-white">
+                        <ShieldAlert className="w-4 h-4 text-rose-500 shrink-0" />
+                        OS 복제 중복 SID 차단
+                      </span>
+                      <span
+                        className={`text-[11px] font-semibold shrink-0 ${
+                          kirApplied
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : dupSidRisk
+                              ? 'text-red-600 dark:text-red-400'
+                              : 'text-slate-600 dark:text-slate-400'
+                        }`}
+                      >
+                        {kirApplied ? 'KIR 해제 적용됨' : dupSidRisk ? '차단 감지 (6167)' : '미감지 (대기)'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                      OS 복제 PC 간 동일 Machine SID로 Win 11 24H2/25H2(KB5065426)가 Error 86을 유발할 때 <code className="tabular-data">1517186191=0</code>으로 우회합니다 (<strong>재부팅 필수</strong>).
+                      {policyStatus?.machineSidPrefix && (
+                        <>
+                          <br />
+                          <span className="tabular-data text-[11px] text-slate-500 dark:text-slate-400">
+                            SID: {policyStatus.machineSidPrefix}
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+
+                  {kirApplied ? (
+                    <div className="w-full py-2.5 px-3 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-center">
+                      KIR(1517186191=0) 중복 SID 우회 적용됨
+                    </div>
+                  ) : (
+                    <button
+                      id="btn-apply-kir-dup-sid"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => void onApplyPatch('kir_duplicate_sid_compat')}
+                      className={`w-full py-2.5 px-3 text-xs font-semibold rounded-lg inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                        dupSidRisk
+                          ? 'text-white bg-rose-600 hover:bg-rose-500'
+                          : 'text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                      {isApplyingMode === 'kir_duplicate_sid_compat'
+                        ? 'KIR 정책 적용 중...'
+                        : '중복 SID 차단 해제(KIR) 적용'}
+                    </button>
+                  )}
                 </div>
               </div>
             </>
@@ -1734,6 +1802,15 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                     className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                   />
                   <span>UAC 원격 토큰 필터 허용 (관리자 Error 5)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pendingModesDraft.includes('kir_duplicate_sid_compat')}
+                    onChange={() => handleTogglePendingMode('kir_duplicate_sid_compat')}
+                    className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>복제 OS 중복 Machine SID 차단 해제 KIR (1517186191=0)</span>
                 </label>
               </div>
             </div>

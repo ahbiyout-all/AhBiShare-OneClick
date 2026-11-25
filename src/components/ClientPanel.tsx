@@ -554,6 +554,9 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       setConfig((prev) => ({
         ...prev,
         targetHost,
+        ...(entry.sourceHostName || decoded?.hostName
+          ? { targetHostName: (entry.sourceHostName || decoded?.hostName || '').trim() }
+          : {}),
         shareName: entry.shareName,
         authMode: entry.authMode,
         username,
@@ -614,6 +617,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       setConfig((prev) => ({
         ...prev,
         targetHost: decoded.ip || decoded.hostName,
+        ...(decoded.hostName ? { targetHostName: decoded.hostName.trim() } : {}),
         shareName: decoded.shareName,
         authMode: decoded.authMode,
         username: decoded.username || resolved?.username || '',
@@ -651,6 +655,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
     const nextCfg: ClientTargetConfig = {
       ...configRef.current,
       targetHost,
+      ...(peer.hostName ? { targetHostName: peer.hostName.trim() } : {}),
       shareName,
       authMode,
       username: authMode === 'account' ? resolved?.username || 'AhBiShare' : '',

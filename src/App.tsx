@@ -154,6 +154,7 @@ export const App: React.FC = () => {
   const [isRefreshingTab, setIsRefreshingTab] = useState(false);
   const refreshTabInFlightRef = useRef(false);
   const [isAutoAligning, setIsAutoAligning] = useState(false);
+  const [isTogglingEmptyPasswordPolicy, setIsTogglingEmptyPasswordPolicy] = useState(false);
   const [applyingPatchMode, setApplyingPatchMode] = useState<PolicyPatchMode | null>(null);
   const [legacyHostSteps, setLegacyHostSteps] = useState<PipelineStep[]>([]);
   const [legacyClientSteps, setLegacyClientSteps] = useState<PipelineStep[]>([]);
@@ -742,6 +743,46 @@ export const App: React.FC = () => {
     }
   }, [netInfo, appendLog, showToast, refreshPortableSnapshot]);
 
+  const handleToggleBlockEmptyPasswordAccounts = useCallback(
+    async (block: boolean) => {
+      if (isTogglingEmptyPasswordPolicy) return;
+      setIsTogglingEmptyPasswordPolicy(true);
+      try {
+        const res = await shareBridge.toggleBlockEmptyPasswordAccounts(
+          block,
+          hostDraft.shareName,
+          netInfo
+        );
+        if (res.updatedPolicy) {
+          setPolicyStatus(res.updatedPolicy);
+        } else {
+          try {
+            const pol = await shareBridge.inspectOsNetworkPolicy(netInfo);
+            setPolicyStatus(pol);
+          } catch {}
+        }
+        setLegacyRollbackSnapshot(shareBridge.getLegacyRollbackSnapshot());
+        refreshPortableSnapshot(netInfo.hostname);
+        appendLog('빈 암호 계정 정책', res.message, res.success ? 'success' : 'error');
+        showToast(res.message);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+        appendLog('빈 암호 계정 정책', `정책 전환 예외: ${msg}`, 'error');
+        showToast(`빈 암호 계정 정책 전환 실패: ${msg}`);
+      } finally {
+        setIsTogglingEmptyPasswordPolicy(false);
+      }
+    },
+    [
+      isTogglingEmptyPasswordPolicy,
+      hostDraft.shareName,
+      netInfo,
+      refreshPortableSnapshot,
+      appendLog,
+      showToast,
+    ]
+  );
+
   const handleApplyOsPatch = useCallback(
     async (mode: PolicyPatchMode) => {
       const modeLabel = getPolicyPatchLabel(mode);
@@ -1142,6 +1183,8 @@ export const App: React.FC = () => {
           hostPolicySnapshots,
           peers: peersRef.current,
           activeShares: sharesRef.current,
+          localMachineSidPrefix: policyStatus?.machineSidPrefix,
+          duplicateSidEvent6167Detected: policyStatus?.duplicateSidEvent6167Detected,
         });
         createdInSessionTicketIdsRef.current.add(saved.ticket.ticketId);
         setTroubleshootTickets(saved.tickets);
@@ -1156,7 +1199,13 @@ export const App: React.FC = () => {
         );
       } catch {}
     },
-    [hostPolicySnapshots, refreshPortableSnapshot, appendLog]
+    [
+      hostPolicySnapshots,
+      policyStatus?.machineSidPrefix,
+      policyStatus?.duplicateSidEvent6167Detected,
+      refreshPortableSnapshot,
+      appendLog,
+    ]
   );
 
   const handleOpenTroubleshootWizard = useCallback(
@@ -1314,8 +1363,12 @@ export const App: React.FC = () => {
             ok = false;
             message = '보안 계정 모드에서는 비밀번호가 필수입니다. 암호를 입력하거나 Guest 모드로 전환하세요.';
           } else {
+            const resolvedWizardAlias = (ticket.targetHostName || matchedPortable?.sourceHostName || '').trim();
             const mountCfg: ClientTargetConfig = {
               targetHost,
+              ...(resolvedWizardAlias && resolvedWizardAlias.toLowerCase() !== targetHost.trim().toLowerCase()
+                ? { targetHostName: resolvedWizardAlias }
+                : {}),
               shareName: ticket.shareName,
               driveLetter: nextDriveLetter || (sameEndpoint ? latestDraft.driveLetter : 'Z:'),
               authMode: authModeToUse,
@@ -1444,6 +1497,8 @@ export const App: React.FC = () => {
           portableShares: portableSharesRef.current,
           hostPolicySnapshots,
           effectiveAuthMode: nextAuthModeOverride,
+          localMachineSidPrefix: policyStatus?.machineSidPrefix,
+          duplicateSidEvent6167Detected: policyStatus?.duplicateSidEvent6167Detected,
         });
       }
       if (resolvedImmediately) {
@@ -1463,7 +1518,17 @@ export const App: React.FC = () => {
       showToast(message);
       return { success: ok, message };
     },
-    [netInfo, mounts, hostDraft, hostPolicySnapshots, refreshPortableSnapshot, appendLog, showToast]
+    [
+      netInfo,
+      mounts,
+      hostDraft,
+      hostPolicySnapshots,
+      policyStatus?.machineSidPrefix,
+      policyStatus?.duplicateSidEvent6167Detected,
+      refreshPortableSnapshot,
+      appendLog,
+      showToast,
+    ]
   );
 
   const handleSkipTroubleshootStep = useCallback(
@@ -1778,8 +1843,34 @@ export const App: React.FC = () => {
     setIsClientConnecting(true);
     let latestSteps: PipelineStep[] = [];
     try {
+      const rawTgtLower = config.targetHost.trim().toLowerCase();
+      const matchedPeerHost = peersRef.current.find(
+        (p) => p.ipAddress.trim().toLowerCase() === rawTgtLower || p.hostName.trim().toLowerCase() === rawTgtLower
+      )?.hostName;
+      const matchedPortableHost = portableSharesRef.current.find(
+        (s) =>
+          (s.sourceIp || '').trim().toLowerCase() === rawTgtLower ||
+          (s.sourceHostName || '').trim().toLowerCase() === rawTgtLower
+      )?.sourceHostName;
+      const matchedSnapHost = Object.values(hostPolicySnapshots).find(
+        (h) =>
+          (h.sourceIp || '').trim().toLowerCase() === rawTgtLower ||
+          h.hostName.trim().toLowerCase() === rawTgtLower
+      )?.hostName;
+      const resolvedHostAlias = (
+        config.targetHostName ||
+        matchedPeerHost ||
+        matchedPortableHost ||
+        matchedSnapHost ||
+        ''
+      ).trim();
+      const enrichedConfig: ClientTargetConfig =
+        resolvedHostAlias && resolvedHostAlias.toLowerCase() !== rawTgtLower
+          ? { ...config, targetHostName: resolvedHostAlias }
+          : config;
+
       const res = await shareBridge.runClientOneClick(
-        config,
+        enrichedConfig,
         (steps) => {
           latestSteps = steps;
           setClientSteps(steps);
@@ -3353,6 +3444,8 @@ export const App: React.FC = () => {
             isExecuting={isHostExecuting || isLocationBatchApplying}
             isRefreshing={isRefreshingTab}
             nowMs={nowMs}
+            policyStatus={policyStatus}
+            isTogglingEmptyPasswordPolicy={isTogglingEmptyPasswordPolicy}
             initialConfig={hostDraft}
             pendingHostPreset={pendingHostPreset}
             onClearPendingHostPreset={() => setPendingHostPreset(null)}
@@ -3363,6 +3456,7 @@ export const App: React.FC = () => {
             onOpenFolder={handleOpenPath}
             onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: '공유 개설' })}
             onOpenTroubleshootWizard={() => handleOpenTroubleshootWizard()}
+            onToggleBlockEmptyPasswordAccounts={handleToggleBlockEmptyPasswordAccounts}
           />
         )}
 

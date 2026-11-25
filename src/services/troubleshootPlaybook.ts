@@ -32,6 +32,8 @@ export interface BuildTroubleshootTicketInput {
   hostPolicySnapshots?: Record<string, HostPolicySnapshot>;
   peers?: DiscoveredPeer[];
   activeShares?: ActiveShare[];
+  localMachineSidPrefix?: string;
+  duplicateSidEvent6167Detected?: boolean;
 }
 
 function isIpv4Like(val?: string): boolean {
@@ -354,22 +356,48 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
             (ps.sourceHostName || '').trim().toLowerCase() === targetMatchLower ||
             (ps.sourceIp || '').trim().toLowerCase() === targetMatchLower)
       );
+      const matchingHostSnap = Object.values(input.hostPolicySnapshots || {}).find(
+        (snap) =>
+          targetMatchLower &&
+          ((snap.sourceIp || '').trim().toLowerCase() === targetMatchLower ||
+            snap.hostName.trim().toLowerCase() === targetMatchLower)
+      );
+      const sameMachineSidPrefix =
+        Boolean(input.localMachineSidPrefix && matchingHostSnap?.machineSidPrefix) &&
+        input.localMachineSidPrefix === matchingHostSnap?.machineSidPrefix;
+      const duplicateSidRisk =
+        sameMachineSidPrefix || Boolean(input.duplicateSidEvent6167Detected);
+      if (duplicateSidRisk) {
+        errorTitle = '인증 실패 (86/1326) 또는 복제 OS 중복 Machine SID 차단 의심';
+      }
 
       if (input.authMode === 'account') {
         recommendedSide = 'both';
         hostSteps = [
           makeStep('host', 1, {
             executor: 'retry_host_share',
-            title: `호스트 공유 '${shareName}' 전용 계정·암호 및 권한 재동기화`,
-            description:
-              '호스트의 전용 공유 계정 암호, 폴더 NTFS 권한 및 USB 암호화 자격 증명을 최신 상태로 다시 동기화합니다.',
+            title: `호스트 공유 '${shareName}' 전용 계정·암호 및 Classic(forceguest=0) 재동기화`,
+            description: matchingHostSnap?.forceGuest
+              ? '호스트에 forceguest=1(Guest 강제)가 감지되었습니다! Classic(forceguest=0) 전환 및 전용 계정 암호·NTFS ACL을 재동기화합니다.'
+              : '호스트의 전용 공유 계정 암호, Classic(forceguest=0) 모델, 폴더 NTFS 권한 및 USB 암호화 자격 증명을 최신 상태로 다시 동기화합니다.',
           }),
           makeStep('host', 2, {
             executor: 'apply_safe_compat',
             patchMode: 'safe_compat',
-            title: '호스트 NTLMv2 · UAC 원격 토큰 및 방화벽 445 정렬',
-            description: '로컬 계정 원격 로그온 및 NTLMv2 인증 협상 정책을 정렬합니다.',
+            title: '호스트 NTLMv2 · BlockNTLM=0 · UAC 원격 토큰 및 방화벽 445 정렬',
+            description: '로컬 계정 원격 로그온, forceguest=0 및 NTLMv2 인증 협상 정책을 정렬합니다.',
           }),
+          ...(duplicateSidRisk
+            ? [
+                makeStep('host', 3, {
+                  executor: 'apply_safe_compat',
+                  patchMode: 'kir_duplicate_sid_compat',
+                  title: '호스트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                  description:
+                    'OS 복제 PC 간 동일 Machine SID로 인해 Win11 24H2/25H2(KB5065426)가 SMB 인증을 Error 86으로 거부합니다. 적용 후 재부팅하세요.',
+                }),
+              ]
+            : []),
         ];
         clientSteps = [
           makeStep('client', 1, {
@@ -377,7 +405,18 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
             title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
             description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
           }),
-          makeStep('client', 2, {
+          ...(duplicateSidRisk
+            ? [
+                makeStep('client', 2, {
+                  executor: 'apply_safe_compat',
+                  patchMode: 'kir_duplicate_sid_compat',
+                  title: '클라이언트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                  description:
+                    '복제 PC 간 중복 SID 차단(Event 6167)을 해제하기 위해 Overrides\\1517186191=0 을 적용합니다 (재부팅 필요).',
+                }),
+              ]
+            : []),
+          makeStep('client', duplicateSidRisk ? 3 : 2, {
             executor: 'retry_mount',
             title: `${normalizedTargetForDisplay}\\${shareName} 보안 계정 재연결 실행`,
             description: 'USB 동기화 암호 또는 입력한 계정 비밀번호로 네트워크 드라이브 연결을 다시 실행합니다.',
@@ -388,8 +427,11 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         hostSteps = [
           makeStep('host', 1, {
             executor: 'host_guest_unlock_and_reopen',
-            title: '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0) 및 ACL 정렬',
-            description: 'Guest 빈 암호 거부 또는 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
+            title: '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0 · minpwlen=0) 및 ACL 정렬',
+            description:
+              (matchingHostSnap?.minimumPasswordLength ?? 0) > 0
+                ? `호스트에 최소 암호 길이(${matchingHostSnap?.minimumPasswordLength})가 설정되어 Guest 빈 암호가 거부되었을 수 있습니다. net accounts /minpwlen:0 및 ACL을 일괄 복구합니다.`
+                : 'Guest 빈 암호 거부, Classic(forceguest=0) 및 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
             commandPreview: hostUnlockCmd,
           }),
           makeStep('host', 2, {
@@ -397,6 +439,17 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
             title: `호스트 공유 '${shareName}' 무비밀번호(Guest) 권한 재적용`,
             description: '공유 폴더의 Everyone/Guest 접근 권한과 로컬 Guest 계정 상태를 갱신합니다.',
           }),
+          ...(duplicateSidRisk
+            ? [
+                makeStep('host', 3, {
+                  executor: 'apply_safe_compat',
+                  patchMode: 'kir_duplicate_sid_compat',
+                  title: '호스트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                  description:
+                    'OS 복제 PC 간 동일 Machine SID로 인한 Win11 24H2/25H2 인증 거부(Event 6167)를 우회합니다 (재부팅 필요).',
+                }),
+              ]
+            : []),
         ];
         clientSteps = [
           makeStep('client', 1, {
@@ -413,7 +466,18 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
               ? 'USB 포터블 기록상 호스트 공유가 보안 계정 모드로 설정되어 있습니다. 계정 모드로 전환해 바로 연결하세요.'
               : '호스트에 설정된 전용 공유 계정(아이디/암호)으로 인증 모드를 맞춥니다.',
           }),
-          makeStep('client', 3, {
+          ...(duplicateSidRisk
+            ? [
+                makeStep('client', 3, {
+                  executor: 'apply_safe_compat',
+                  patchMode: 'kir_duplicate_sid_compat',
+                  title: '클라이언트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                  description:
+                    '복제 PC 간 중복 SID 차단(Event 6167)을 해제하기 위해 Overrides\\1517186191=0 을 적용합니다 (재부팅 필요).',
+                }),
+              ]
+            : []),
+          makeStep('client', duplicateSidRisk ? 4 : 3, {
             executor: 'retry_mount',
             title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
             description: '세션 정리 및 인증 확인 후 네트워크 드라이브 연결을 다시 실행합니다.',
@@ -709,6 +773,8 @@ export function reclassifyTroubleshootTicketOnRetryFailure(
     portableShares?: PortableHostShareEntry[];
     hostPolicySnapshots?: Record<string, HostPolicySnapshot>;
     effectiveAuthMode?: AuthMode;
+    localMachineSidPrefix?: string;
+    duplicateSidEvent6167Detected?: boolean;
   }
 ): TroubleshootTicket {
   const diag = classifyFailureDiagnostics(failureMessage);
@@ -736,6 +802,8 @@ export function reclassifyTroubleshootTicketOnRetryFailure(
     isLegacyOs: ticket.isLegacyOs,
     portableShares: input.portableShares,
     hostPolicySnapshots: input.hostPolicySnapshots,
+    localMachineSidPrefix: input.localMachineSidPrefix,
+    duplicateSidEvent6167Detected: input.duplicateSidEvent6167Detected,
   });
 
   const nowIso = new Date().toISOString();

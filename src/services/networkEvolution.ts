@@ -328,6 +328,21 @@ export const WINDOWS_NETWORK_MATRIX: WindowsNetworkChangeItem[] = [
     rebootLevel: 'reboot_recommended',
     rebootNote: 'Windows 누적 업데이트 설치 시에만 OS 업데이트 자체 재부팅 필요',
   },
+  {
+    id: 'duplicate_machine_sid_24h2',
+    era: 'win11_25_26h2',
+    versionLabel: 'Win 11 24H2 / 25H2 (KB5064081+)',
+    buildRange: 'Build 26100.4946+ · 26200+',
+    category: 'os_update_feature',
+    categoryLabel: '별도 패치 · 기능',
+    title: 'OS 복제(디스크 클론) PC 간 중복 Machine SID SMB 인증 차단 (Event 6167 / 오류 86)',
+    defaultBehavior: 'Sysprep 없이 동일 디스크 이미지로 복제된 두 PC는 로컬 Machine Domain SID(S-1-5-21-...) 접두사가 같으며, KB5064081/KB5065426 이후 LSA가 동일 SID Peer의 SMB 인증을 보안상 거부함.',
+    sharingImpact: '올바른 계정·암호나 Guest 설정을 맞추어도 연결 시 System Error 86 / 1326이 발생하고 System 이벤트 로그에 LsaSrv Event ID 6167이 기록됨.',
+    mitigationStrategy: 'OS 매트릭스 [중복 SID 차단 해제 KIR(1517186191=0)]을 양단 PC에 적용 후 재부팅하거나 Sysprep 일반화를 수행하면 즉시 해결됨.',
+    affectedRegistryOrCmdlet: 'HKLM\\SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides\\1517186191 = 0',
+    rebootLevel: 'reboot_required',
+    rebootNote: 'KIR 레지스트리(1517186191=0) 적용 후 커널 LSA 반영을 위해 재부팅 필수',
+  },
 ];
 
 export function computeCompatibilityScoreAndIssues(
@@ -384,6 +399,26 @@ export function computeCompatibilityScoreAndIssues(
     score -= 7;
     issues.push('프린터 RPC 개인정보 인증 강제(RpcAuthnLevelPrivacyEnabled)가 유지되어 혼합 OS 프린터 공유 시 0x0000011b 오류가 발생할 수 있습니다.');
   }
+  if (status.forceGuest) {
+    score -= 10;
+    issues.push('LSA forceguest=1(Guest 전용 강제)이 켜져 있어 일반 보안 계정 인증까지 Guest로 강제 매핑될 수 있습니다(오류 86 원인). Classic(forceguest=0) 전환이 권장됩니다.');
+  }
+  if (typeof status.minimumPasswordLength === 'number' && status.minimumPasswordLength > 0 && status.allowInsecureGuestAuth) {
+    score -= 5;
+    issues.push(`로컬 최소 암호 길이(MinimumPasswordLength=${status.minimumPasswordLength})로 인해 Guest 빈 암호 초기화(코드 2245)가 실패할 수 있습니다.`);
+  }
+  if (status.smbBlockNtlm) {
+    score -= 10;
+    issues.push('SMB 클라이언트 BlockNTLM 정책이 활성화되어 워크그룹 NTLMv2 공유 인증이 차단될 수 있습니다.');
+  }
+  if (status.smbRequireEncryption) {
+    score -= 5;
+    issues.push('SMB 클라이언트 RequireEncryption 정책이 활성화되어 비암호화 LAN 공유 연결이 실패할 수 있습니다.');
+  }
+  if (status.duplicateSidEvent6167Detected && status.kirOverride1517186191 !== 0) {
+    score -= 15;
+    issues.push('시스템 로그에서 OS 복제 중복 Machine SID 차단(LsaSrv Event 6167 · KB5065426)이 감지되었습니다. [중복 SID KIR 우회] 적용 후 재부팅이 필요합니다.');
+  }
   if (status.msaPinOnlyRisk) {
     score -= 5;
     issues.push('Microsoft 계정·Windows Hello PIN 전용 로그인 환경이 감지되었습니다. 호스트 공유 시 일반 계정 대신 [전용 보안 공유 계정] 모드를 사용하세요.');
@@ -411,6 +446,19 @@ export function evaluateRebootJudgment(params: {
   restartedServices: string[];
 }): RebootJudgment {
   const { mode, netbiosStateChanged, smb1Changed, priorPendingReboot, spoolerRestartFailed, restartedServices } = params;
+
+  if (mode === 'kir_duplicate_sid_compat') {
+    return {
+      level: 'reboot_required',
+      title: '컴퓨터 재부팅 필수 (Win 11 24H2~25H2 중복 SID KIR 우회 반영)',
+      reason:
+        'FeatureManagement\\Overrides\\1517186191=0(중복 Machine SID 차단 우회 KIR)을 적용했습니다. LSA 커널이 새 정책을 적재하려면 호스트·클라이언트 모두 Windows 재부팅이 반드시 필요합니다.',
+      serviceRestarted: restartedServices.length > 0,
+      restartedServices,
+      rebootRecommended: true,
+      canRebootNow: true,
+    };
+  }
 
   if (mode === 'deep_stack_reset' || mode === 'enable_smbv1_client' || mode === 'legacy_smb1_enable' || smb1Changed) {
     const isSmbv1Rollback = mode === 'legacy_bridge_rollback' && smb1Changed;
@@ -545,8 +593,8 @@ export function classifyFailureDiagnostics(errorText?: string): ClientFailureDia
   if (/(?<![.\d])1326(?![.\d])|(?<![.\d])86(?![.\d])|(?<![.\d])5(?![.\d])|액세스|거부|로그온|암호|password is not correct/i.test(sanitized)) {
     return {
       code: 'Error 5 / 86 / 1326',
-      title: '계정 인증 실패 · 빈 암호 제한 또는 암호 보호 공유',
-      detail: '호스트가 빈 암호 네트워크 로그온을 제한(LimitBlankPasswordUse=1)했거나 Guest 계정에 암호가 남아있는 경우, 또는 암호로 보호된 공유가 켜져 있는 상태입니다. 호스트 PC에서 [무비밀번호 정책 개방]을 실행하거나 [보안 계정 모드]로 연결하세요.',
+      title: '계정 인증 실패 · 빈 암호/forceguest 제한 또는 중복 SID 충돌',
+      detail: '호스트의 forceguest=1(Guest 전용 강제), LimitBlankPasswordUse=1(빈 암호 제한), 최소 암호 길이(MinimumPasswordLength>0) 또는 OS 복제 PC 간 중복 Machine SID(Win11 24H2~25H2 KB5065426 · Event 6167)가 원인일 수 있습니다. 호스트에서 [무비밀번호 정책 개방] · Classic(forceguest=0) 정렬 또는 [중복 SID KIR 우회] 후 재부팅하세요.',
       needsOsPatchHint: true,
       actionLabel: '통합 해결 가이드 & 도구 열기',
       isHostAuthOrGuestIssue: true,
@@ -608,6 +656,7 @@ export const POLICY_PATCH_LABELS: Record<PolicyPatchMode, string> = {
   enable_uac_token_filter: 'UAC 원격 토큰 필터 허용',
   disable_uac_token_filter: 'UAC 원격 토큰 기본 보안 복원',
   enable_smbv1_client: 'SMBv1 클라이언트 기능 설치',
+  kir_duplicate_sid_compat: 'Win11 중복 SID 차단 해제 (KIR 1517186191=0)',
   legacy_bridge_compat: 'Win 7·8.1 호환 SMB 2.1/3.0 브릿지 적용',
   legacy_smb1_enable: '레거시 SMB 1.0 프로토콜 활성화',
   legacy_bridge_rollback: '구형 OS 호환 설정 보안 원복',
@@ -735,6 +784,14 @@ export function toHostPolicySnapshot(
       : {}),
     ...(typeof status.firewall445Allowed === 'boolean'
       ? { firewall445Allowed: status.firewall445Allowed }
+      : {}),
+    ...(typeof status.forceGuest === 'boolean' ? { forceGuest: status.forceGuest } : {}),
+    ...(typeof status.minimumPasswordLength === 'number'
+      ? { minimumPasswordLength: status.minimumPasswordLength }
+      : {}),
+    ...(status.machineSidPrefix ? { machineSidPrefix: status.machineSidPrefix } : {}),
+    ...(typeof status.kirOverride1517186191 === 'number'
+      ? { kirOverride1517186191: status.kirOverride1517186191 }
       : {}),
     ...(status.rawRegistrySnapshot ? { rawRegistrySnapshot: status.rawRegistrySnapshot } : {}),
     capturedAt: new Date().toISOString(),
@@ -1008,6 +1065,72 @@ export function computeHostClientPolicyDiff(
     recommendedPatchLabel: clientNeedsUacToken ? getPolicyPatchLabel('enable_uac_token_filter') : undefined,
   });
 
+  if (hostSnap.forceGuest || clientPolicy.forceGuest) {
+    diffs.push({
+      id: 'diff_force_guest',
+      label: 'LSA forceguest (Classic vs Guest 전용 강제)',
+      hostValue: hostSnap.forceGuest ? 'forceguest=1 (Guest 강제 · 보안 계정 충돌)' : 'Classic (0)',
+      clientValue: clientPolicy.forceGuest ? 'forceguest=1 (Guest 강제)' : 'Classic (0)',
+      status: 'conflict',
+      actionTarget: hostSnap.forceGuest && clientPolicy.forceGuest ? 'both' : hostSnap.forceGuest ? 'host' : 'local',
+      impact:
+        'forceguest=1이 켜져 있으면 전용 보안 계정으로 로그인해도 Windows가 무조건 Guest로 처리해 Error 86이 발생합니다. Classic(forceguest=0)으로 교정하세요.',
+      recommendedPatch: 'safe_compat',
+      recommendedPatchLabel: getPolicyPatchLabel('safe_compat'),
+    });
+  }
+
+  if (clientPolicy.smbBlockNtlm || clientPolicy.smbRequireEncryption) {
+    diffs.push({
+      id: 'diff_cli_block_ntlm',
+      label: 'SMB 클라이언트 BlockNTLM · 강제 암호화',
+      hostValue: 'NTLMv2 허용 (호환)',
+      clientValue: [
+        clientPolicy.smbBlockNtlm ? 'BlockNTLM=1(차단)' : null,
+        clientPolicy.smbRequireEncryption ? 'RequireEncryption=1' : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      status: 'conflict',
+      actionTarget: 'local',
+      impact:
+        '클라이언트의 BlockNTLM 또는 전송 암호화 강제가 켜져 있어 워크그룹 SMB 인증이 차단됩니다. 안전 호환 패치로 즉시 완화할 수 있습니다.',
+      recommendedPatch: 'safe_compat',
+      recommendedPatchLabel: getPolicyPatchLabel('safe_compat'),
+    });
+  }
+
+  const sameMachineSidPrefix =
+    Boolean(hostSnap.machineSidPrefix && clientPolicy.machineSidPrefix) &&
+    hostSnap.machineSidPrefix === clientPolicy.machineSidPrefix;
+  const dupSidRisk = sameMachineSidPrefix || Boolean(clientPolicy.duplicateSidEvent6167Detected);
+  if (dupSidRisk) {
+    const bothKirApplied =
+      hostSnap.kirOverride1517186191 === 0 && clientPolicy.kirOverride1517186191 === 0;
+    diffs.push({
+      id: 'diff_duplicate_machine_sid',
+      label: '복제 OS 중복 Machine SID 충돌 (KB5065426 · Event 6167)',
+      hostValue: hostSnap.kirOverride1517186191 === 0 ? 'KIR 적용(1517186191=0)' : hostSnap.machineSidPrefix || '중복 의심',
+      clientValue:
+        clientPolicy.kirOverride1517186191 === 0
+          ? 'KIR 적용(1517186191=0)'
+          : clientPolicy.machineSidPrefix || 'Event 6167 감지',
+      status: bothKirApplied ? 'match' : 'conflict',
+      actionTarget: bothKirApplied
+        ? 'none'
+        : hostSnap.kirOverride1517186191 !== 0 && clientPolicy.kirOverride1517186191 !== 0
+          ? 'both'
+          : clientPolicy.kirOverride1517186191 !== 0
+            ? 'local'
+            : 'host',
+      impact: bothKirApplied
+        ? '중복 Machine SID가 감지되었으나 양단 모두 KIR 우회(1517186191=0)가 설정되어 있습니다(미반영 시 재부팅 확인).'
+        : 'Sysprep 없이 동일 OS 이미지를 복제한 PC 간에는 Win11 24H2/25H2 보안 패치 이후 SMB 인증이 Error 86으로 거부됩니다. 양단에 KIR 우회 패치 적용 후 재부팅이 필요합니다.',
+      recommendedPatch: !bothKirApplied ? 'kir_duplicate_sid_compat' : undefined,
+      recommendedPatchLabel: !bothKirApplied ? getPolicyPatchLabel('kir_duplicate_sid_compat') : undefined,
+    });
+  }
+
   return diffs;
 }
 
@@ -1016,6 +1139,7 @@ const PATCH_EXECUTION_ORDER: PolicyPatchMode[] = [
   'legacy_bridge_compat',
   'rpc_printer_compat',
   'enable_uac_token_filter',
+  'kir_duplicate_sid_compat',
   'strict_26h2_default',
   'legacy_bridge_rollback',
   'rpc_printer_default',
@@ -1795,11 +1919,14 @@ export interface RawRegistryMapInput {
   cliEnableSig?: number | null;
   cliGuestSvc?: number | null;
   cliGuestPol?: number | null;
+  cliBlockNtlm?: number | null;
+  cliReqEnc?: number | null;
   guest501Disabled?: number | null;
   seDenyNetworkLogon?: string | null;
   limitBlankPwd?: number | null;
   everyAnon?: number | null;
   restrictAnon?: number | null;
+  forceGuest?: number | null;
   restrictNullSess?: number | null;
   lmCompatLevel?: number | null;
   ntlmRestrictOutbound?: number | null;
@@ -1809,6 +1936,7 @@ export interface RawRegistryMapInput {
   rpcNamedPipe?: number | null;
   rpcProtocols?: number | null;
   srvSmb1?: number | null;
+  kirSidOverride?: number | null;
   ahbiFw445?: number | null;
 }
 
@@ -1901,6 +2029,22 @@ export function rawRegistryRecordToSnapshot(
         '0x00000001 (1)',
         '기본 1'
       ),
+      makeDwordEntry(
+        'audit_smb_client_signing',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters',
+        'BlockNTLM',
+        rawMap.cliBlockNtlm,
+        '0x00000000 (0) 또는 <미설정>',
+        '기본 0 (NTLM 허용)'
+      ),
+      makeDwordEntry(
+        'audit_smb_client_signing',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters',
+        'RequireEncryption',
+        rawMap.cliReqEnc,
+        '0x00000000 (0) 또는 <미설정>',
+        '기본 0'
+      ),
     ],
     audit_insecure_guest_auth: [
       makeDwordEntry(
@@ -1956,6 +2100,14 @@ export function rawRegistryRecordToSnapshot(
         '0x00000001 (1)',
         '기본 1 (제한)'
       ),
+      makeDwordEntry(
+        'audit_lsa_blank_password',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa',
+        'forceguest',
+        rawMap.forceGuest,
+        '0x00000000 (0 · Classic)',
+        '기본 0 (Classic)'
+      ),
     ],
     audit_lsa_anonymous_null: [
       makeDwordEntry(
@@ -1999,6 +2151,14 @@ export function rawRegistryRecordToSnapshot(
         rawMap.ntlmRestrictOutbound,
         '<미설정> 또는 0x00000000 (0)',
         '제한 없음'
+      ),
+      makeDwordEntry(
+        'audit_ntlm_level',
+        'HKLM\\SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides',
+        '1517186191',
+        rawMap.kirSidOverride,
+        '0x00000000 (중복 SID KIR 우회) 또는 <미설정>',
+        '기본 미설정'
       ),
     ],
     audit_uac_token_filter: [
@@ -2088,6 +2248,8 @@ export function deriveRawRegistrySnapshotFromStatus(
       cliEnableSig: 1,
       cliGuestSvc: status.allowInsecureGuestAuth ? 1 : 0,
       cliGuestPol: status.allowInsecureGuestAuth ? 1 : 0,
+      cliBlockNtlm: typeof status.smbBlockNtlm === 'boolean' ? (status.smbBlockNtlm ? 1 : 0) : null,
+      cliReqEnc: typeof status.smbRequireEncryption === 'boolean' ? (status.smbRequireEncryption ? 1 : 0) : null,
       guest501Disabled:
         typeof status.guestAccountEnabled === 'boolean' ? (status.guestAccountEnabled ? 0 : 1) : null,
       seDenyNetworkLogon:
@@ -2106,6 +2268,7 @@ export function deriveRawRegistrySnapshotFromStatus(
           : 0,
       restrictAnon:
         typeof status.restrictAnonymous === 'boolean' ? (status.restrictAnonymous ? 1 : 0) : null,
+      forceGuest: typeof status.forceGuest === 'boolean' ? (status.forceGuest ? 1 : 0) : null,
       restrictNullSess:
         typeof status.restrictNullSessAccess === 'boolean' ? (status.restrictNullSessAccess ? 1 : 0) : null,
       lmCompatLevel: status.lmCompatibilityLevel,
@@ -2121,6 +2284,7 @@ export function deriveRawRegistrySnapshotFromStatus(
       rpcNamedPipe: status.rpcUseNamedPipeProtocol ? 1 : 0,
       rpcProtocols: status.rpcProtocols,
       srvSmb1: status.smb1Enabled || status.smb1ServerEnabled ? 1 : 0,
+      kirSidOverride: status.kirOverride1517186191 ?? null,
       ahbiFw445:
         typeof status.ahbiFirewallRulePresent === 'boolean'
           ? status.ahbiFirewallRulePresent
@@ -2168,6 +2332,7 @@ export function deriveRawRegistrySnapshotFromHostSnap(
       everyAnon: isPreset ? (snap.allowInsecureGuestAuth ? 1 : 0) : null,
       restrictAnon:
         typeof snap.restrictAnonymous === 'boolean' ? (snap.restrictAnonymous ? 1 : 0) : null,
+      forceGuest: typeof snap.forceGuest === 'boolean' ? (snap.forceGuest ? 1 : 0) : null,
       restrictNullSess:
         typeof snap.restrictNullSessAccess === 'boolean' ? (snap.restrictNullSessAccess ? 1 : 0) : null,
       lmCompatLevel: snap.lmCompatibilityLevel ?? null,
@@ -2183,6 +2348,7 @@ export function deriveRawRegistrySnapshotFromHostSnap(
       rpcNamedPipe: snap.rpcUseNamedPipeProtocol ? 1 : 0,
       rpcProtocols: null,
       srvSmb1: snap.osBuild > 0 && snap.osBuild < 10240 ? 1 : 0,
+      kirSidOverride: snap.kirOverride1517186191 ?? null,
       ahbiFw445: typeof snap.firewall445Allowed === 'boolean' ? (snap.firewall445Allowed ? 1 : 0) : null,
     },
     isPreset ? 'preset_reference' : 'snapshot_derived',

@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Play, Copy, Check, QrCode, Trash2, RefreshCw, ExternalLink, Clock, KeyRound, Download, Wrench } from 'lucide-react';
+import { FolderOpen, Play, Copy, Check, QrCode, Trash2, RefreshCw, ExternalLink, Clock, Wrench } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { HostConfig, ActiveShare, PipelineStep, LocalNetworkInfo } from '@/types/share';
+import { HostConfig, ActiveShare, PipelineStep, LocalNetworkInfo, OsNetworkPolicyStatus } from '@/types/share';
 import { generateSecureSharePassword, resolveActiveShareUncPath, validateAccountUsername, validateShareName, validateFolderPath } from '@/utils/connectionCode';
 import { buildHostGuestUnlockBatchScript } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
+import { EmptyPasswordPolicyToggle } from './EmptyPasswordPolicyToggle';
 
 interface HostPanelProps {
   netInfo: LocalNetworkInfo;
@@ -14,6 +15,8 @@ interface HostPanelProps {
   isExecuting: boolean;
   isRefreshing?: boolean;
   nowMs?: number;
+  policyStatus?: OsNetworkPolicyStatus | null;
+  isTogglingEmptyPasswordPolicy?: boolean;
   initialConfig?: HostConfig;
   pendingHostPreset?: { key: string; config: Partial<HostConfig> } | null;
   onClearPendingHostPreset?: () => void;
@@ -24,6 +27,7 @@ interface HostPanelProps {
   onOpenFolder: (path: string) => Promise<void>;
   onRefresh?: () => Promise<void>;
   onOpenTroubleshootWizard?: () => void;
+  onToggleBlockEmptyPasswordAccounts?: (block: boolean) => Promise<void>;
 }
 
 const TTL_PRESETS: Array<{ label: string; minutes: number }> = [
@@ -64,6 +68,8 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   isExecuting,
   isRefreshing = false,
   nowMs = Date.now(),
+  policyStatus = null,
+  isTogglingEmptyPasswordPolicy = false,
   initialConfig,
   pendingHostPreset = null,
   onClearPendingHostPreset,
@@ -74,6 +80,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   onOpenFolder,
   onRefresh,
   onOpenTroubleshootWizard,
+  onToggleBlockEmptyPasswordAccounts,
 }) => {
   const [config, setConfig] = useState<HostConfig>(() =>
     initialConfig || {
@@ -358,39 +365,33 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   ? '가정·사설 LAN에서 암호 입력 없이 모든 PC가 즉시 접근할 수 있도록 익명/게스트 정책을 자동 개방합니다.'
                   : '호스트에 전용 로컬 계정을 구성하고, 클라이언트 연결 코드에 자격 증명을 포함해 팝업 없이 안전하게 연결합니다.'}
               </p>
-              {config.authMode === 'guest' && (
-                <div className="mt-2.5 p-3 rounded-lg border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
-                  <div className="space-y-0.5">
-                    <span className="font-semibold text-indigo-900 dark:text-indigo-200 flex items-center gap-1.5">
-                      <KeyRound className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                      무비밀번호 개방 정책 (오류 86·1223 사전 방지)
-                    </span>
-                    <p className="text-[11px] text-slate-600 dark:text-slate-400">
-                      개설 실행 시 LimitBlankPasswordUse=0, forceguest=1 및 Guest 계정이 자동 정렬됩니다.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const batContent = buildHostGuestUnlockBatchScript(config.shareName, config.folderPath).replace(/\r?\n/g, '\r\n');
-                      const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = 'AhBiShare_Host_Unblock.bat';
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-                    }}
-                    className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md inline-flex items-center gap-1 cursor-pointer shrink-0"
-                  >
-                    <Download className="w-3 h-3" />
-                    .bat 복구 파일 저장
-                  </button>
-                </div>
-              )}
             </div>
+
+            <EmptyPasswordPolicyToggle
+              isBlocked={typeof policyStatus?.limitBlankPasswordUse === 'boolean' ? policyStatus.limitBlankPasswordUse : true}
+              isKnown={typeof policyStatus?.limitBlankPasswordUse === 'boolean'}
+              guestAccountEnabled={policyStatus?.guestAccountEnabled}
+              guestNetworkLogonDenied={policyStatus?.guestNetworkLogonDenied}
+              isBusy={isTogglingEmptyPasswordPolicy}
+              isDisabled={isExecuting || isRefreshing || !onToggleBlockEmptyPasswordAccounts}
+              authMode={config.authMode}
+              onToggle={async (nextBlock) => {
+                if (!onToggleBlockEmptyPasswordAccounts) return;
+                await onToggleBlockEmptyPasswordAccounts(nextBlock);
+              }}
+              onDownloadBat={() => {
+                const batContent = buildHostGuestUnlockBatchScript(config.shareName, config.folderPath).replace(/\r?\n/g, '\r\n');
+                const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'AhBiShare_Host_Unblock.bat';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }}
+            />
 
             {config.authMode === 'account' && (
               <div className="space-y-3 pt-2">

@@ -63,6 +63,7 @@ const PATCH_MODE_OPTIONS: Array<{ value: '' | PolicyPatchMode; label: string }> 
   { value: 'legacy_bridge_compat', label: 'Win 7/8 레거시 브릿지 호환' },
   { value: 'legacy_smb1_enable', label: '레거시 SMB 1.0 호스트·클라이언트 활성화' },
   { value: 'legacy_bridge_rollback', label: '레거시 브릿지 보안 원복' },
+  { value: 'kir_duplicate_sid_compat', label: '복제 OS 중복 SID 호환 KIR 패치 (1517186191=0)' },
 ];
 
 function formatUpdatedDate(iso: string): string {

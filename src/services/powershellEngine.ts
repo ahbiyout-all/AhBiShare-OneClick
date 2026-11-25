@@ -225,7 +225,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
             if ($LASTEXITCODE -ne 0) { throw "Failed to update LSA everyoneincludesanonymous (Admin required)" }
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f | Out-Null
-            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 1 /f 2>$null | Out-Null
+            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EnableSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
@@ -247,6 +247,23 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               }
             } catch {}
             try { Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+            try {
+              $psiMin = New-Object System.Diagnostics.ProcessStartInfo
+              $psiMin.FileName = 'net.exe'
+              $psiMin.Arguments = 'accounts /minpwlen:0'
+              $psiMin.UseShellExecute = $false
+              $psiMin.RedirectStandardInput = $true
+              $psiMin.RedirectStandardOutput = $true
+              $psiMin.RedirectStandardError = $true
+              $psiMin.CreateNoWindow = $true
+              $pMin = [System.Diagnostics.Process]::Start($psiMin)
+              if ($pMin) {
+                try { $pMin.StandardInput.Close() } catch {}
+                if (-not $pMin.WaitForExit(5000)) { try { $pMin.Kill() } catch {} }
+              }
+            } catch {}
+            $nuCode = 0
+            $nuErrOut = ''
             if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
               $guest = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
               if ($guest) {
@@ -259,10 +276,22 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
                   $psiClr.FileName = 'net.exe'
                   $psiClr.Arguments = ('user "' + $guest.Name + '" "" /active:yes /passwordreq:no')
                   $psiClr.UseShellExecute = $false
+                  $psiClr.RedirectStandardInput = $true
+                  $psiClr.RedirectStandardOutput = $true
+                  $psiClr.RedirectStandardError = $true
                   $psiClr.CreateNoWindow = $true
                   $pClr = [System.Diagnostics.Process]::Start($psiClr)
-                  if ($pClr) { [void]$pClr.WaitForExit(5000) }
-                } catch {}
+                  if ($pClr) {
+                    try { $pClr.StandardInput.Close() } catch {}
+                    if ($pClr.WaitForExit(5000)) {
+                      $nuCode = $pClr.ExitCode
+                      if ($nuCode -ne 0) { $nuErrOut = ($pClr.StandardError.ReadToEnd() + ' ' + $pClr.StandardOutput.ReadToEnd()).Trim() }
+                    } else {
+                      try { $pClr.Kill() } catch {}
+                      $nuCode = 1460
+                    }
+                  }
+                } catch { $nuCode = -1; $nuErrOut = $_.Exception.Message }
                 Enable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue
               }
             } else {
@@ -273,20 +302,36 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
                 $psiClr.FileName = 'net.exe'
                 $psiClr.Arguments = ('user "' + $guestName + '" "" /active:yes /passwordreq:no')
                 $psiClr.UseShellExecute = $false
+                $psiClr.RedirectStandardInput = $true
+                $psiClr.RedirectStandardOutput = $true
+                $psiClr.RedirectStandardError = $true
                 $psiClr.CreateNoWindow = $true
                 $pClr = [System.Diagnostics.Process]::Start($psiClr)
-                if ($pClr) { [void]$pClr.WaitForExit(5000) }
-              } catch {}
+                if ($pClr) {
+                  try { $pClr.StandardInput.Close() } catch {}
+                  if ($pClr.WaitForExit(5000)) {
+                    $nuCode = $pClr.ExitCode
+                    if ($nuCode -ne 0) { $nuErrOut = ($pClr.StandardError.ReadToEnd() + ' ' + $pClr.StandardOutput.ReadToEnd()).Trim() }
+                  } else {
+                    try { $pClr.Kill() } catch {}
+                    $nuCode = 1460
+                  }
+                }
+              } catch { $nuCode = -1; $nuErrOut = $_.Exception.Message }
               & net.exe user $guestName /active:yes 2>$null | Out-Null
+            }
+            if ($nuCode -ne 0) {
+              throw ("Guest 빈 암호 활성화 실패 (코드 " + $nuCode + ", MinimumPasswordLength 정책 확인 필요): " + $nuErrOut)
             }
             Set-AhBiGuestNetworkLogonPolicy $true
             Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
-            Write-Output "Passwordless guest sharing & network logon rights enabled (SeDenyNetworkLogonRight cleared, no reboot)"
+            Write-Output "Passwordless guest sharing (Classic forceguest=0) & network logon rights enabled"
           `.trim()
           : `
             ${PS_GUEST_RIGHTS_HELPER}
             $p_user = '${username}'
             $p_pass = '${password}'
+            $p_share = '${shareName}'
             if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
               $secPass = ConvertTo-SecureString -String $p_pass -AsPlainText -Force
               $existing = Get-LocalUser -Name $p_user -ErrorAction SilentlyContinue
@@ -309,21 +354,54 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
               if ($nuCode -ne 0) { throw ("로컬 공유 계정 생성/갱신 실패 (" + $p_user + "): " + $script:__nuOut) }
             }
-            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Failed to harden LSA policy (Admin required)" }
-            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
-            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
+            $hasOtherGuestShare = $false
+            try {
+              if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+                $otherShares = Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
+                  $_.Special -eq $false -and $_.Name -notmatch '^.*\\$$' -and ($_.Name -ine $p_share) -and (@('IPC$','ADMIN$','C$','D$') -notcontains $_.Name)
+                }
+                foreach ($osh in @($otherShares)) {
+                  $acls = Get-SmbShareAccess -Name $osh.Name -ErrorAction SilentlyContinue
+                  foreach ($acl in @($acls)) {
+                    if ("$($acl.AccountName)" -match '(?:^|\\\\)(Everyone|Guest|Guests|ANONYMOUS LOGON|게스트)$|S-1-1-0|S-1-5-32-546|S-1-5-7') {
+                      $hasOtherGuestShare = $true
+                      break
+                    }
+                  }
+                  if ($hasOtherGuestShare) { break }
+                }
+              } else {
+                $nsOther = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' -Name NullSessionShares -ErrorAction SilentlyContinue).NullSessionShares
+                foreach ($nsName in @($nsOther)) {
+                  if ($nsName -and ($nsName -ine $p_share)) { $hasOtherGuestShare = $true; break }
+                }
+              }
+            } catch {}
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
-            if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
-              $guest = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
-              if ($guest) { Disable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue }
+            if ($hasOtherGuestShare) {
+              reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f | Out-Null
+              reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f | Out-Null
+              reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f | Out-Null
+              Set-AhBiGuestNetworkLogonPolicy $true
+              Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
+              Write-Output ("Dedicated secure account ready: " + $p_user + " (existing guest share compatibility preserved)")
             } else {
-              $guestWmi = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
-              $guestName = if ($guestWmi) { $guestWmi.Name } else { 'Guest' }
-              & net.exe user $guestName /active:no 2>$null | Out-Null
+              reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "Failed to harden LSA policy (Admin required)" }
+              reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
+              reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
+              if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+                $guest = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
+                if ($guest) { Disable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue }
+              } else {
+                $guestWmi = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+                $guestName = if ($guestWmi) { $guestWmi.Name } else { 'Guest' }
+                & net.exe user $guestName /active:no 2>$null | Out-Null
+              }
+              Set-AhBiGuestNetworkLogonPolicy $false
+              Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
+              Write-Output ("Dedicated secure account ready: " + $p_user)
             }
-            Set-AhBiGuestNetworkLogonPolicy $false
-            Write-Output ("Dedicated secure account ready: " + $p_user)
           `.trim(),
     },
     {
@@ -406,6 +484,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
               if ($netShareCode -ne 0) { throw ("net share 등록 실패 (" + $p_share + "): " + $script:__netShareOut) }
             }
+            Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Output ("SMB share registered: " + $p_share)
           `.trim()
           : `
@@ -429,6 +508,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
               if ($netShareCode -ne 0) { throw ("net share 보안 등록 실패 (" + $p_share + "): " + $script:__netShareOut) }
             }
+            Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Output ("Secure SMB share registered: " + $p_share)
           `.trim(),
     },
@@ -437,15 +517,22 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
 
 export function buildClientStepScripts(config: ClientTargetConfig, osEra?: WindowsNetworkEra): Array<{ id: string; title: string; detail: string; script: string }> {
   const hostRaw = config.targetHost.trim();
+  const hostAliasRaw = (config.targetHostName || '').trim();
   const shareRaw = config.shareName.trim();
   const drive = normalizeDriveLetter(config.driveLetter);
   const host = escapePsSingle(hostRaw);
+  const hostAlias = escapePsSingle(hostAliasRaw);
   const usernameRaw = config.username.trim();
   const credUsernameRaw = usernameRaw.includes('\\') || usernameRaw.includes('@') || !usernameRaw
     ? usernameRaw
     : `${hostRaw}\\${usernameRaw}`;
+  const aliasUsernameRaw =
+    hostAliasRaw && !usernameRaw.includes('\\') && !usernameRaw.includes('@') && usernameRaw
+      ? `${hostAliasRaw}\\${usernameRaw}`
+      : credUsernameRaw;
   const username = escapePsSingle(usernameRaw);
   const credUsername = escapePsSingle(credUsernameRaw);
+  const aliasUsername = escapePsSingle(aliasUsernameRaw);
   const password = escapePsSingle(config.password || '');
   const unc = escapePsSingle(`\\\\${hostRaw}\\${shareRaw}`);
   const ipcUnc = escapePsSingle(`\\\\${hostRaw}\\IPC$`);
@@ -490,12 +577,18 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
                 Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
               }
             } catch {}
+            try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
+            try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "AllowInsecureGuestAuth 레지스트리 설정 실패 (관리자 권한 필요)" }
+            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
+            reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
             Restart-Service -Name LanmanWorkstation -Force -ErrorAction SilentlyContinue | Out-Null
-            Write-Output "Win11 24H2~26H2 guest auth & SMB signature bypass applied (service refreshed, no reboot required)"
+            Write-Output "Win11 24H2~26H2 guest auth, BlockNTLM=0 & SMB signature bypass applied (service refreshed, no reboot required)"
           `.trim()
           : `
             try {
@@ -503,12 +596,19 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
                 Set-SmbClientConfiguration -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
               }
             } catch {}
+            try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
+            try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+            reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
             $lsa = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -ErrorAction SilentlyContinue
             if (-not $lsa -or $null -eq $lsa.LmCompatibilityLevel -or [int]$lsa.LmCompatibilityLevel -lt 3) {
               reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f 2>$null | Out-Null
             }
-            Write-Output "Client authenticated SMB policy aligned"
+            Restart-Service -Name LanmanWorkstation -Force -ErrorAction SilentlyContinue | Out-Null
+            Write-Output "Client authenticated SMB policy & BlockNTLM=0 aligned"
           `.trim(),
     },
     {
@@ -542,13 +642,17 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
         config.authMode === 'account'
           ? `
             $p_host = '${host}'
+            $p_hostAlias = '${hostAlias}'
             $p_unc = '${unc}'
             $p_ipc = '${ipcUnc}'
             $p_user = '${credUsername}'
+            $p_aliasUser = '${aliasUsername}'
             $p_dispUser = '${username}'
             $p_pass = '${password}'
             if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
-              Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { $_.RemotePath -like ("\\\\" + $p_host + "\\*") } | ForEach-Object {
+              Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
+                $_.RemotePath -like ("\\\\" + $p_host + "\\*") -or ($p_hostAlias -and $_.RemotePath -like ("\\\\" + $p_hostAlias + "\\*"))
+              } | ForEach-Object {
                 Remove-SmbMapping -LocalPath $_.LocalPath -RemotePath $_.RemotePath -Force -ErrorAction SilentlyContinue | Out-Null
               }
             }
@@ -556,19 +660,31 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             & net.exe use $p_ipc /delete /y 2>$null | Out-Null
             & cmdkey.exe "/delete:$p_host" 2>$null | Out-Null
             & cmdkey.exe "/delete:TERMSRV/$p_host" 2>$null | Out-Null
+            if ($p_hostAlias -and ($p_hostAlias -ine $p_host)) {
+              & cmdkey.exe "/delete:$p_hostAlias" 2>$null | Out-Null
+              & cmdkey.exe "/delete:TERMSRV/$p_hostAlias" 2>$null | Out-Null
+              & net.exe use ("\\\\" + $p_hostAlias + "\\IPC$") /delete /y 2>$null | Out-Null
+            }
+            $p_cmdTargetUser = if ($p_aliasUser -and ($p_host -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$')) { $p_aliasUser } else { $p_user }
             try { [Console]::OutputEncoding = [System.Text.Encoding]::Default } catch {}
-            $script:__cmdOut = (& cmdkey.exe "/add:$p_host" "/user:$p_user" "/pass:$p_pass" 2>&1) -join ' '
+            $script:__cmdOut = (& cmdkey.exe "/add:$p_host" "/user:$p_cmdTargetUser" "/pass:$p_pass" 2>&1) -join ' '
             $cmdExit = $LASTEXITCODE
+            if ($p_hostAlias -and ($p_hostAlias -ine $p_host)) {
+              & cmdkey.exe "/add:$p_hostAlias" "/user:$p_aliasUser" "/pass:$p_pass" 2>$null | Out-Null
+            }
             try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
             if ($cmdExit -ne 0) { throw ("cmdkey 자격 증명 등록 실패 (" + $p_host + "): " + $script:__cmdOut) }
             Write-Output ("Saved Windows credentials for " + $p_host + " (" + $p_dispUser + ")")
           `.trim()
           : `
             $p_host = '${host}'
+            $p_hostAlias = '${hostAlias}'
             $p_unc = '${unc}'
             $p_ipc = '${ipcUnc}'
             if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
-              Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { $_.RemotePath -like ("\\\\" + $p_host + "\\*") } | ForEach-Object {
+              Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
+                $_.RemotePath -like ("\\\\" + $p_host + "\\*") -or ($p_hostAlias -and $_.RemotePath -like ("\\\\" + $p_hostAlias + "\\*"))
+              } | ForEach-Object {
                 Remove-SmbMapping -LocalPath $_.LocalPath -RemotePath $_.RemotePath -Force -ErrorAction SilentlyContinue | Out-Null
               }
             }
@@ -576,6 +692,11 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             & net.exe use $p_ipc /delete /y 2>$null | Out-Null
             & cmdkey.exe "/delete:$p_host" 2>$null | Out-Null
             & cmdkey.exe "/delete:TERMSRV/$p_host" 2>$null | Out-Null
+            if ($p_hostAlias -and ($p_hostAlias -ine $p_host)) {
+              & cmdkey.exe "/delete:$p_hostAlias" 2>$null | Out-Null
+              & cmdkey.exe "/delete:TERMSRV/$p_hostAlias" 2>$null | Out-Null
+              & net.exe use ("\\\\" + $p_hostAlias + "\\IPC$") /delete /y 2>$null | Out-Null
+            }
             Write-Output ("Cleared stale SMB sessions & cached credentials for " + $p_host)
           `.trim(),
     },
@@ -586,9 +707,11 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
       script: `
         $p_drive = '${drive}'
         $p_host = '${host}'
+        $p_hostAlias = '${hostAlias}'
         $p_unc = '${unc}'
         $p_mode = '${config.authMode}'
         $p_user = '${credUsername}'
+        $p_aliasUser = '${aliasUsername}'
         $p_bareUser = '${username}'
         $p_pass = '${password}'
         $p_persist = ${config.persistent ? "'/persistent:yes'" : "'/persistent:no'"}
@@ -609,7 +732,9 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
           }
           & net.exe use $p_drive /delete /y 2>$null | Out-Null
           if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
-            Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { $_.RemotePath -like ("\\\\" + $p_host + "\\*") } | ForEach-Object {
+            Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
+              $_.RemotePath -like ("\\\\" + $p_host + "\\*") -or ($p_hostAlias -and $_.RemotePath -like ("\\\\" + $p_hostAlias + "\\*"))
+            } | ForEach-Object {
               Remove-SmbMapping -LocalPath $_.LocalPath -RemotePath $_.RemotePath -Force -ErrorAction SilentlyContinue | Out-Null
             }
           }
@@ -617,6 +742,9 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             $lines = & net.exe use 2>$null
             foreach ($line in $lines) {
               if ($line -match ('\\\\\\\\' + [regex]::Escape($p_host) + '\\\\[^\\s]+')) {
+                & net.exe use $matches[0] /delete /y 2>$null | Out-Null
+              }
+              if ($p_hostAlias -and ($line -match ('\\\\\\\\' + [regex]::Escape($p_hostAlias) + '\\\\[^\\s]+'))) {
                 & net.exe use $matches[0] /delete /y 2>$null | Out-Null
               }
             }
@@ -743,32 +871,48 @@ public class AhBiMprNet {
         $lastOut = ''
 
         if ($p_mode -eq 'account') {
+          $p_primaryUser = if ($p_aliasUser -and ($p_host -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$')) { $p_aliasUser } else { $p_user }
+          $p_secondaryUser = if ($p_primaryUser -ieq $p_aliasUser) { $p_user } else { $p_aliasUser }
           $canUseCliPass = ($p_pass -and $p_pass -ne '*' -and -not $p_pass.StartsWith('/'))
-          if ($canUseCliPass -and $p_user) {
-            $r1 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_pass, "/user:$p_user", $p_persist)
+          if ($canUseCliPass -and $p_primaryUser) {
+            $r1 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_pass, "/user:$p_primaryUser", $p_persist)
             $lastCode = $r1.Code; $lastOut = $r1.Output
             if ($lastCode -eq 0) { $mounted = $true }
           }
 
-          if (-not $mounted -and $canUseCliPass -and $p_bareUser -and $p_bareUser -ne $p_user) {
+          if (-not $mounted -and $canUseCliPass -and $p_bareUser -and ($p_bareUser -ine $p_primaryUser)) {
             Clear-HostAndDriveConflicts
             $r2 = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_pass, "/user:$p_bareUser", $p_persist)
             if ($r2.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $r2.Output }
             else { $lastCode = $r2.Code; $lastOut = ($lastOut + ' | ' + $r2.Output).Trim(' |') }
           }
 
-          if (-not $mounted -and $p_user -and $p_pass) {
+          if (-not $mounted -and $canUseCliPass -and $p_secondaryUser -and ($p_secondaryUser -ine $p_primaryUser) -and ($p_secondaryUser -ine $p_bareUser)) {
             Clear-HostAndDriveConflicts
-            $rw1 = Invoke-WNetMap $p_drive $p_unc $p_user $p_pass $p_persistBool
+            $rAlias = Invoke-NetUseSafe @('use', $p_drive, $p_unc, $p_pass, "/user:$p_secondaryUser", $p_persist)
+            if ($rAlias.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rAlias.Output }
+            else { $lastCode = $rAlias.Code; $lastOut = ($lastOut + ' | AltNet: ' + $rAlias.Output).Trim(' |') }
+          }
+
+          if (-not $mounted -and $p_primaryUser -and $p_pass) {
+            Clear-HostAndDriveConflicts
+            $rw1 = Invoke-WNetMap $p_drive $p_unc $p_primaryUser $p_pass $p_persistBool
             if ($rw1.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rw1.Output }
             elseif ($rw1.Code -ne -1) { $lastCode = $rw1.Code; $lastOut = ($lastOut + ' | WNet: ' + $rw1.Output).Trim(' |') }
           }
 
-          if (-not $mounted -and $p_bareUser -and $p_bareUser -ne $p_user -and $p_pass) {
+          if (-not $mounted -and $p_bareUser -and ($p_bareUser -ine $p_primaryUser) -and $p_pass) {
             Clear-HostAndDriveConflicts
             $rw2 = Invoke-WNetMap $p_drive $p_unc $p_bareUser $p_pass $p_persistBool
             if ($rw2.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rw2.Output }
             elseif ($rw2.Code -ne -1) { $lastCode = $rw2.Code; $lastOut = ($lastOut + ' | WNetBare: ' + $rw2.Output).Trim(' |') }
+          }
+
+          if (-not $mounted -and $p_secondaryUser -and ($p_secondaryUser -ine $p_primaryUser) -and ($p_secondaryUser -ine $p_bareUser) -and $p_pass) {
+            Clear-HostAndDriveConflicts
+            $rwAlias = Invoke-WNetMap $p_drive $p_unc $p_secondaryUser $p_pass $p_persistBool
+            if ($rwAlias.Code -eq 0) { $mounted = $true; $lastCode = 0; $lastOut = $rwAlias.Output }
+            elseif ($rwAlias.Code -ne -1) { $lastCode = $rwAlias.Code; $lastOut = ($lastOut + ' | WNetAlt: ' + $rwAlias.Output).Trim(' |') }
           }
 
           if (-not $mounted -and -not $p_pass) {
@@ -781,8 +925,8 @@ public class AhBiMprNet {
           if (-not $mounted -and (Get-Command New-SmbMapping -ErrorAction SilentlyContinue)) {
             try {
               Clear-HostAndDriveConflicts
-              if ($p_user -and $p_pass) {
-                New-SmbMapping -LocalPath $p_drive -RemotePath $p_unc -UserName $p_user -Password $p_pass -Persistent:$p_persistBool -ErrorAction Stop | Out-Null
+              if ($p_primaryUser -and $p_pass) {
+                New-SmbMapping -LocalPath $p_drive -RemotePath $p_unc -UserName $p_primaryUser -Password $p_pass -Persistent:$p_persistBool -ErrorAction Stop | Out-Null
               } else {
                 New-SmbMapping -LocalPath $p_drive -RemotePath $p_unc -Persistent:$p_persistBool -ErrorAction Stop | Out-Null
               }
@@ -806,6 +950,16 @@ public class AhBiMprNet {
               $mounted = $true; $lastCode = 0; $lastOut = $rwHostGuest.Output
             } elseif ($rwHostGuest.Code -ne -1) {
               $lastCode = $rwHostGuest.Code; $lastOut = ($lastOut + ' | HostGuest: ' + $rwHostGuest.Output).Trim(' |')
+            }
+          }
+
+          if (-not $mounted) {
+            Clear-HostAndDriveConflicts
+            $rwDefNull = Invoke-WNetMap $p_drive $p_unc ([NullString]::Value) ([NullString]::Value) $p_persistBool
+            if ($rwDefNull.Code -eq 0) {
+              $mounted = $true; $lastCode = 0; $lastOut = $rwDefNull.Output
+            } elseif ($rwDefNull.Code -ne -1) {
+              $lastCode = $rwDefNull.Code; $lastOut = ($lastOut + ' | WNet-DefaultNull: ' + $rwDefNull.Output).Trim(' |')
             }
           }
 
@@ -864,7 +1018,7 @@ public class AhBiMprNet {
         }
 
         if (-not $mounted) {
-          $diagOut = ($lastOut -replace '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', ' ') -replace '(?:^|\\|\\s*)(?:WNet-Guest|HostGuestNet|HostGuest|WNet-Null|WNetBare|WNet|Guest|Anonymous|Default|New-SmbMapping):', ' '
+          $diagOut = ($lastOut -replace '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', ' ') -replace '(?:^|\\|\\s*)(?:WNet-Guest|HostGuestNet|HostGuest|WNet-DefaultNull|WNet-Null|WNetAlias|AliasNet|WNetBare|WNet|Guest|Anonymous|Default|New-SmbMapping):', ' '
           $hint = ''
           if ($diagOut -match '(?<![.\\d])85(?![.\\d])|이미 사용|already in use|already assigned') {
             $hint = ' [원인: 선택한 드라이브 문자(' + $p_drive + ')가 다른 세션에서 사용 중입니다. Y:/X: 등 다른 드라이브 문자를 선택하세요.]'
@@ -877,7 +1031,7 @@ public class AhBiMprNet {
           } elseif ($diagOut -match '(?<![.\\d])1272(?![.\\d])|(?<![.\\d])384(?![.\\d])|0x80070035|게스트|guest') {
             $hint = ' [원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌 또는 호스트 Guest 빈 암호 제한. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]'
           } elseif ($diagOut -match '(?<![.\\d])1326(?![.\\d])|(?<![.\\d])86(?![.\\d])|(?<![.\\d])5(?![.\\d])|액세스|거부|로그온|암호|password is not correct') {
-            $hint = ' [원인: 호스트 계정 ID/암호 불일치, 빈 암호 제한(LimitBlankPasswordUse) 또는 익명 접근 제한. 호스트에서 무비밀번호 공유 재개설 또는 [보안 계정 모드]를 확인하세요.]'
+            $hint = ' [원인: 호스트 forceguest=1(Guest 전용 강제), 최소 암호 길이(MinimumPasswordLength>0), 계정 ID/암호 불일치 또는 OS 복제 PC의 중복 Machine SID(Win11 24H2~25H2 KB5065426 · Event 6167) 충돌 가능성이 있습니다. 호스트에서 무비밀번호 차단 해제/재개설 또는 중복 SID KIR 패치를 확인하세요.]'
           } elseif ($diagOut -match '(?<![.\\d])58(?![.\\d])|지정한 서버가 요청한 작업|cannot perform the requested operation') {
             $hint = ' [원인: 대상 서버의 SMB 전송 암호화·서명 강제 또는 SMB 프로토콜 버전 불일치(Error 58). 호스트/클라이언트에서 구형 OS 호환 브릿지 정렬을 실행하세요.]'
           } elseif ($diagOut -match '(?<![.\\d])53(?![.\\d])|(?<![.\\d])67(?![.\\d])|네트워크 경로') {
@@ -1190,11 +1344,63 @@ export function buildOsNetworkPolicyInspectScript(): string {
     $restrictNullSess = if ($lsParams -and $null -ne $lsParams.RestrictNullSessAccess) { [int]$lsParams.RestrictNullSessAccess -ne 0 } else { $true }
     $restrictAnon = if ($lsa -and $null -ne $lsa.restrictanonymous) { [int]$lsa.restrictanonymous -ne 0 } else { $false }
     $everyAnon = if ($lsa -and $null -ne $lsa.everyoneincludesanonymous) { [int]$lsa.everyoneincludesanonymous -ne 0 } else { $false }
+    $forceGuestFlag = if ($lsa -and $null -ne $lsa.forceguest) { [int]$lsa.forceguest -eq 1 } else { $false }
+    $smbBlockNtlmFlag = [bool](($cliCfg -and $null -ne $cliCfg.BlockNTLM -and [bool]$cliCfg.BlockNTLM) -or ($lwParams -and $null -ne $lwParams.BlockNTLM -and [int]$lwParams.BlockNTLM -ne 0) -or ($lwPolicy -and $null -ne $lwPolicy.BlockNTLM -and [int]$lwPolicy.BlockNTLM -ne 0))
+    $smbReqEncFlag = [bool](($cliCfg -and $null -ne $cliCfg.RequireEncryption -and [bool]$cliCfg.RequireEncryption) -or ($lwParams -and $null -ne $lwParams.RequireEncryption -and [int]$lwParams.RequireEncryption -ne 0) -or ($lwPolicy -and $null -ne $lwPolicy.RequireEncryption -and [int]$lwPolicy.RequireEncryption -ne 0))
+
+    $minPwLenVal = $null
+    try {
+      $psiPw = New-Object System.Diagnostics.ProcessStartInfo
+      $psiPw.FileName = 'net.exe'
+      $psiPw.Arguments = 'accounts'
+      $psiPw.UseShellExecute = $false
+      $psiPw.RedirectStandardInput = $true
+      $psiPw.RedirectStandardOutput = $true
+      $psiPw.RedirectStandardError = $true
+      $psiPw.CreateNoWindow = $true
+      try { $psiPw.StandardOutputEncoding = [System.Text.Encoding]::Default } catch {}
+      $pPw = [System.Diagnostics.Process]::Start($psiPw)
+      if ($pPw) {
+        try { $pPw.StandardInput.Close() } catch {}
+        if ($pPw.WaitForExit(3500)) {
+          $pwTxt = $pPw.StandardOutput.ReadToEnd()
+          foreach ($pwLn in ($pwTxt -split "[\\r\\n]+")) {
+            if ($pwLn -match '(?:Minimum password length|최소 암호 길이)\\s*:\\s*(\\d+)') {
+              $minPwLenVal = [int]$matches[1]
+              break
+            }
+          }
+        } else {
+          try { $pPw.Kill() } catch {}
+        }
+      }
+    } catch {}
+
+    $machineSidPrefix = ''
     $guestEnabled = $false
     try {
-      $gAccStat = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+      $localAccs = @(Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue)
+      $gAccStat = $localAccs | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
       if ($gAccStat) { $guestEnabled = -not [bool]$gAccStat.Disabled }
+      foreach ($la in $localAccs) {
+        if ($la.SID -match '^(S-1-5-21-\\d+-\\d+-\\d+)-\\d+$') {
+          $machineSidPrefix = $matches[1]
+          break
+        }
+      }
     } catch {}
+
+    $dupSid6167 = $false
+    try {
+      if (Get-Command Get-WinEvent -ErrorAction SilentlyContinue) {
+        $evts = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 6167; StartTime = (Get-Date).AddDays(-14) } -MaxEvents 1 -ErrorAction SilentlyContinue)
+        if ($evts.Count -gt 0) { $dupSid6167 = $true }
+      } else {
+        $evtsOld = @(Get-EventLog -LogName System -Newest 200 -ErrorAction SilentlyContinue | Where-Object { $_.EventID -eq 6167 })
+        if ($evtsOld.Count -gt 0) { $dupSid6167 = $true }
+      }
+    } catch {}
+
     $fw445Ok = $false
     $ahbiFwPresent = $false
     try {
@@ -1258,6 +1464,8 @@ export function buildOsNetworkPolicyInspectScript(): string {
       } catch { return $null }
     }
 
+    $kirSidVal = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides' '1517186191'
+
     $rawReg = @{
       srvRequireSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RequireSecuritySignature'
       srvEnableSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'EnableSecuritySignature'
@@ -1265,11 +1473,14 @@ export function buildOsNetworkPolicyInspectScript(): string {
       cliEnableSig = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'EnableSecuritySignature'
       cliGuestSvc = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'AllowInsecureGuestAuth'
       cliGuestPol = Get-AhBiRegRawInt 'SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' 'AllowInsecureGuestAuth'
+      cliBlockNtlm = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'BlockNTLM'
+      cliReqEnc = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'RequireEncryption'
       guest501Disabled = if ($guestEnabled) { 0 } else { 1 }
       seDenyNetworkLogon = $rawSeDenyVal
       limitBlankPwd = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LimitBlankPasswordUse'
       everyAnon = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'everyoneincludesanonymous'
       restrictAnon = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'restrictanonymous'
+      forceGuest = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'forceguest'
       restrictNullSess = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RestrictNullSessAccess'
       lmCompatLevel = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LmCompatibilityLevel'
       ntlmRestrictOutbound = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0' 'RestrictSendingNTLMTraffic'
@@ -1279,6 +1490,7 @@ export function buildOsNetworkPolicyInspectScript(): string {
       rpcNamedPipe = Get-AhBiRegRawInt 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcUseNamedPipeProtocol'
       rpcProtocols = Get-AhBiRegRawInt 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcProtocols'
       srvSmb1 = Get-AhBiRegRawInt 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'SMB1'
+      kirSidOverride = $kirSidVal
       ahbiFw445 = if ($ahbiFwPresent) { 1 } else { 0 }
     }
 
@@ -1303,6 +1515,13 @@ export function buildOsNetworkPolicyInspectScript(): string {
       restrictNullSessAccess = $restrictNullSess
       restrictAnonymous = $restrictAnon
       everyoneIncludesAnonymous = $everyAnon
+      forceGuest = $forceGuestFlag
+      minimumPasswordLength = $minPwLenVal
+      smbBlockNtlm = $smbBlockNtlmFlag
+      smbRequireEncryption = $smbReqEncFlag
+      machineSidPrefix = $machineSidPrefix
+      duplicateSidEvent6167Detected = $dupSid6167
+      kirOverride1517186191 = $kirSidVal
       guestAccountEnabled = $guestEnabled
       firewall445Allowed = $fw445Ok
       ahbiFirewallRulePresent = $ahbiFwPresent
@@ -1355,9 +1574,12 @@ export function buildRawSecurityRegistryScript(remoteHostTarget?: string): strin
         cliEnableSig = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'EnableSecuritySignature'
         cliGuestSvc = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'AllowInsecureGuestAuth'
         cliGuestPol = ReadVal 'SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' 'AllowInsecureGuestAuth'
+        cliBlockNtlm = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'BlockNTLM'
+        cliReqEnc = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'RequireEncryption'
         limitBlankPwd = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LimitBlankPasswordUse'
         everyAnon = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'everyoneincludesanonymous'
         restrictAnon = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'restrictanonymous'
+        forceGuest = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'forceguest'
         restrictNullSess = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RestrictNullSessAccess'
         lmCompatLevel = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LmCompatibilityLevel'
         ntlmRestrictOutbound = ReadVal 'SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0' 'RestrictSendingNTLMTraffic'
@@ -1367,6 +1589,7 @@ export function buildRawSecurityRegistryScript(remoteHostTarget?: string): strin
         rpcNamedPipe = ReadVal 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcUseNamedPipeProtocol'
         rpcProtocols = ReadVal 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcProtocols'
         srvSmb1 = ReadVal 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'SMB1'
+        kirSidOverride = ReadVal 'SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides' '1517186191'
       }
     }
 
@@ -1446,9 +1669,12 @@ export function buildRawSecurityRegistryScript(remoteHostTarget?: string): strin
             cliEnableSig = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'EnableSecuritySignature'
             cliGuestSvc = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'AllowInsecureGuestAuth'
             cliGuestPol = ReadRem 'SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation' 'AllowInsecureGuestAuth'
+            cliBlockNtlm = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'BlockNTLM'
+            cliReqEnc = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' 'RequireEncryption'
             limitBlankPwd = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LimitBlankPasswordUse'
             everyAnon = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'everyoneincludesanonymous'
             restrictAnon = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'restrictanonymous'
+            forceGuest = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'forceguest'
             restrictNullSess = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'RestrictNullSessAccess'
             lmCompatLevel = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa' 'LmCompatibilityLevel'
             ntlmRestrictOutbound = ReadRem 'SYSTEM\\CurrentControlSet\\Control\\Lsa\\MSV1_0' 'RestrictSendingNTLMTraffic'
@@ -1458,6 +1684,7 @@ export function buildRawSecurityRegistryScript(remoteHostTarget?: string): strin
             rpcNamedPipe = ReadRem 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcUseNamedPipeProtocol'
             rpcProtocols = ReadRem 'SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC' 'RpcProtocols'
             srvSmb1 = ReadRem 'SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' 'SMB1'
+            kirSidOverride = ReadRem 'SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides' '1517186191'
           }
           try { $rk.Close() } catch {}
           return $map
@@ -1643,6 +1870,29 @@ export function buildOsCompatibilityPatchScript(
     `.trim();
   }
 
+  if (mode === 'kir_duplicate_sid_compat') {
+    return `
+      ${PS_JSON_HELPER}
+      $actions = @()
+      $restarted = @()
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides" /v 1517186191 /t REG_DWORD /d 0 /f | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "KIR Duplicate SID Override(1517186191=0) 설정 실패 (관리자 권한 필요)" }
+      $actions += 'Win11 24H2~25H2 중복 Machine SID(KB5065426 · Event 6167) 차단 우회 KIR(Overrides\\1517186191=0) 적용 완료 (커널 반영을 위해 재부팅 필요)'
+      foreach ($svc in @('LanmanWorkstation', 'LanmanServer')) {
+        Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue | Out-Null
+        $restarted += $svc
+      }
+      @{
+        appliedActions = $actions
+        restartedServices = $restarted
+        netbiosStateChanged = $false
+        smb1Changed = $false
+        spoolerRestartFailed = $false
+        priorPendingReboot = $true
+      } | ConvertTo-AhBiJson
+    `.trim();
+  }
+
   if (mode === 'enable_smbv1_client') {
     return `
       ${PS_JSON_HELPER}
@@ -1715,6 +1965,8 @@ export function buildOsCompatibilityPatchScript(
           Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
         }
       } catch {}
+      try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
+      try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v SMB2 /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EnableSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
@@ -1724,19 +1976,37 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
+      reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+      reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
       try {
+        $psiBrMin = New-Object System.Diagnostics.ProcessStartInfo
+        $psiBrMin.FileName = 'net.exe'
+        $psiBrMin.Arguments = 'accounts /minpwlen:0'
+        $psiBrMin.UseShellExecute = $false
+        $psiBrMin.RedirectStandardInput = $true
+        $psiBrMin.RedirectStandardOutput = $true
+        $psiBrMin.RedirectStandardError = $true
+        $psiBrMin.CreateNoWindow = $true
+        $pBrMin = [System.Diagnostics.Process]::Start($psiBrMin)
+        if ($pBrMin) { try { $pBrMin.StandardInput.Close() } catch {}; if (-not $pBrMin.WaitForExit(5000)) { try { $pBrMin.Kill() } catch {} } }
         $gBr = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
         $gBrName = if ($gBr -and $gBr.Name) { $gBr.Name } else { 'Guest' }
         $psiBr = New-Object System.Diagnostics.ProcessStartInfo
         $psiBr.FileName = 'net.exe'
         $psiBr.Arguments = ('user "' + $gBrName + '" "" /active:yes /passwordreq:no')
         $psiBr.UseShellExecute = $false
+        $psiBr.RedirectStandardInput = $true
+        $psiBr.RedirectStandardOutput = $true
+        $psiBr.RedirectStandardError = $true
         $psiBr.CreateNoWindow = $true
         $pBr = [System.Diagnostics.Process]::Start($psiBr)
-        if ($pBr) { [void]$pBr.WaitForExit(5000) }
+        if ($pBr) { try { $pBr.StandardInput.Close() } catch {}; if (-not $pBr.WaitForExit(5000)) { try { $pBr.Kill() } catch {} } }
       } catch {}
       Set-AhBiGuestNetworkLogonPolicy $true
       $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 및 빈 암호 허용 정렬 (오류 1385·86 방지)'
@@ -1879,7 +2149,7 @@ export function buildOsCompatibilityPatchScript(
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d ${guestDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d ${nullRestrictDword} /f 2>$null | Out-Null
-      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d ${guestDword === 1 ? 1 : 0} /f 2>$null | Out-Null
+      reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d ${lmDword} /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d ${uacFilterDword} /f 2>$null | Out-Null
       Set-AhBiGuestNetworkLogonPolicy ${allowGuestRightsPs}
@@ -2034,6 +2304,8 @@ export function buildOsCompatibilityPatchScript(
         Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
       }
     } catch {}
+    try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
+    try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
     try {
       if (Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue) {
         Set-SmbServerConfiguration -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
@@ -2042,15 +2314,44 @@ export function buildOsCompatibilityPatchScript(
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v EnableLinkedConnections /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    try {
+      $psiScMin = New-Object System.Diagnostics.ProcessStartInfo
+      $psiScMin.FileName = 'net.exe'
+      $psiScMin.Arguments = 'accounts /minpwlen:0'
+      $psiScMin.UseShellExecute = $false
+      $psiScMin.RedirectStandardInput = $true
+      $psiScMin.RedirectStandardOutput = $true
+      $psiScMin.RedirectStandardError = $true
+      $psiScMin.CreateNoWindow = $true
+      $pScMin = [System.Diagnostics.Process]::Start($psiScMin)
+      if ($pScMin) { try { $pScMin.StandardInput.Close() } catch {}; if (-not $pScMin.WaitForExit(5000)) { try { $pScMin.Kill() } catch {} } }
+      $gSc = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+      $gScName = if ($gSc -and $gSc.Name) { $gSc.Name } else { 'Guest' }
+      $psiScG = New-Object System.Diagnostics.ProcessStartInfo
+      $psiScG.FileName = 'net.exe'
+      $psiScG.Arguments = ('user "' + $gScName + '" "" /active:yes /passwordreq:no')
+      $psiScG.UseShellExecute = $false
+      $psiScG.RedirectStandardInput = $true
+      $psiScG.RedirectStandardOutput = $true
+      $psiScG.RedirectStandardError = $true
+      $psiScG.CreateNoWindow = $true
+      $pScG = [System.Diagnostics.Process]::Start($psiScG)
+      if ($pScG) { try { $pScG.StandardInput.Close() } catch {}; if (-not $pScG.WaitForExit(5000)) { try { $pScG.Kill() } catch {} } }
+    } catch {}
     Set-AhBiGuestNetworkLogonPolicy $true
-    $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 및 빈 암호 허용 정렬 (오류 1385·86 방지)'
-    $actions += 'Win 11 24H2~26H2 SMB 서명 강제 완화 및 게스트 로그온 · LinkedConnections 호환 허용'
+    $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제, minpwlen:0 및 Classic(forceguest=0) 빈 암호 허용 정렬'
+    $actions += 'Win 11 24H2~26H2 SMB 서명 강제·BlockNTLM 완화 및 게스트 로그온 · LinkedConnections 호환 허용'
 
     $lsa = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -ErrorAction SilentlyContinue
     if (-not $lsa -or $null -eq $lsa.LmCompatibilityLevel -or [int]$lsa.LmCompatibilityLevel -lt 3) {
@@ -2137,7 +2438,17 @@ export function buildHostGuestUnlockBatchScript(
     `if($null -eq $cn){$cn=@()}elseif($cn -is [string]){$cn=@($cn)}`,
     `if($cn -notcontains '${safePsShare}'){Set-ItemProperty -Path $nk -Name NullSessionShares -Value (@($cn)+'${safePsShare}') -ErrorAction SilentlyContinue|Out-Null}`,
     `if(Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue){try{Set-SmbServerConfiguration -RequireSecuritySignature $false -EnableSecuritySignature $false -EncryptData $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{};try{Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{}}`,
-    `if(Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue){try{Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{}}`,
+    `if(Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue){try{Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -RequireSecuritySignature $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{};try{Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{};try{Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue|Out-Null}catch{}}`,
+    `$psiMin=New-Object System.Diagnostics.ProcessStartInfo`,
+    `$psiMin.FileName='net.exe'`,
+    `$psiMin.Arguments='accounts /minpwlen:0'`,
+    `$psiMin.UseShellExecute=$false`,
+    `$psiMin.RedirectStandardInput=$true`,
+    `$psiMin.RedirectStandardOutput=$true`,
+    `$psiMin.RedirectStandardError=$true`,
+    `$psiMin.CreateNoWindow=$true`,
+    `$pMin=[System.Diagnostics.Process]::Start($psiMin)`,
+    `if($pMin){try{$pMin.StandardInput.Close()}catch{};if(-not $pMin.WaitForExit(5000)){try{$pMin.Kill()}catch{}}}`,
     `$psi=New-Object System.Diagnostics.ProcessStartInfo`,
     `$psi.FileName='net.exe'`,
     `$psi.Arguments=('user '+[char]34+$gName+[char]34+' '+[char]34+[char]34+' /active:yes /passwordreq:no')`,
@@ -2191,6 +2502,7 @@ export function buildHostGuestUnlockBatchScript(
     '  echo [ERROR] Administrator privileges are required.',
     '  echo Right-click this .bat file and select [Run as administrator].',
     '  echo.',
+    '  if /I "%AHBI_NO_PAUSE%"=="1" exit /b 1',
     '  pause',
     '  exit /b 1',
     ')',
@@ -2199,7 +2511,7 @@ export function buildHostGuestUnlockBatchScript(
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f >nul || (echo [WARN] Failed to set everyoneincludesanonymous & set "AHBI_HAS_WARN=1")',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f >nul || (echo [WARN] Failed to set restrictanonymous & set "AHBI_HAS_WARN=1")',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f >nul || (echo [WARN] Failed to set LimitBlankPasswordUse & set "AHBI_HAS_WARN=1")',
-    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 1 /f >nul 2>&1',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f >nul 2>&1',
     '',
     'echo [2/6] Relaxing SMB server and workstation guest/signing policies...',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f >nul || set "AHBI_HAS_WARN=1"',
@@ -2209,7 +2521,11 @@ export function buildHostGuestUnlockBatchScript(
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RejectUnencryptedAccess /t REG_DWORD /d 0 /f >nul 2>&1',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f >nul 2>&1',
     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f >nul 2>&1',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f >nul 2>&1',
+    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f >nul 2>&1',
     'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f >nul 2>&1',
+    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v BlockNTLM /t REG_DWORD /d 0 /f >nul 2>&1',
+    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f >nul 2>&1',
     '',
     `echo [3/6] Creating share folder (${safeFolder}), NTFS/Share ACLs, Guest account & User Rights...`,
     'if exist "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" (',
@@ -2219,6 +2535,7 @@ export function buildHostGuestUnlockBatchScript(
     `  if not exist "${safeFolder}" mkdir "${safeFolder}"`,
     `  icacls "${safeFolder}" /grant "*S-1-1-0:(OI)(CI)F" /T /C /Q || set "AHBI_HAS_WARN=1"`,
     `  net share "${safeShare}=${safeFolder}" "/GRANT:Everyone,FULL" || set "AHBI_HAS_WARN=1"`,
+    '  net accounts /minpwlen:0 >nul 2>&1',
     '  net user Guest "" /active:yes /passwordreq:no || (echo [WARN] Guest activation/password reset returned an error. & set "AHBI_HAS_WARN=1")',
     ')',
     '',
@@ -2249,6 +2566,7 @@ export function buildHostGuestUnlockBatchScript(
     ')',
     'echo ========================================================================',
     'echo.',
+    'if /I "%AHBI_NO_PAUSE%"=="1" exit /b 0',
     'pause',
   ];
   return lines.join('\r\n') + '\r\n';
@@ -2265,14 +2583,24 @@ export function buildHostGuestUnlockPsCommand(shareName = 'AhBiShared'): string 
     `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa' /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f|Out-Null`,
     `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa' /v everyoneincludesanonymous /t REG_DWORD /d 1 /f|Out-Null`,
     `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa' /v restrictanonymous /t REG_DWORD /d 0 /f|Out-Null`,
-    `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa' /v forceguest /t REG_DWORD /d 1 /f 2>$null|Out-Null`,
+    `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa' /v forceguest /t REG_DWORD /d 0 /f 2>$null|Out-Null`,
     `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' /v RestrictNullSessAccess /t REG_DWORD /d 0 /f|Out-Null`,
     `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null|Out-Null`,
     `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' /v RejectUnencryptedAccess /t REG_DWORD /d 0 /f 2>$null|Out-Null`,
+    `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null|Out-Null`,
+    `reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters' /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null|Out-Null`,
     `$nk='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters'`,
     `$cn=(Get-ItemProperty -Path $nk -Name NullSessionShares -ErrorAction SilentlyContinue).NullSessionShares`,
     `if($null -eq $cn){$cn=@()}elseif($cn -is [string]){$cn=@($cn)}`,
     `if($cn -notcontains '${safePsShare}'){Set-ItemProperty -Path $nk -Name NullSessionShares -Value (@($cn)+'${safePsShare}') -ErrorAction SilentlyContinue|Out-Null}`,
+    `$psiMin=New-Object System.Diagnostics.ProcessStartInfo`,
+    `$psiMin.FileName='net.exe'`,
+    `$psiMin.Arguments='accounts /minpwlen:0'`,
+    `$psiMin.UseShellExecute=$false`,
+    `$psiMin.RedirectStandardInput=$true`,
+    `$psiMin.CreateNoWindow=$true`,
+    `$pMin=[System.Diagnostics.Process]::Start($psiMin)`,
+    `if($pMin){try{$pMin.StandardInput.Close()}catch{};[void]$pMin.WaitForExit(5000)}`,
     `$g=Get-WmiObject Win32_UserAccount -Filter 'LocalAccount=True' -ErrorAction SilentlyContinue|Where-Object{$_.SID -like '*-501'}|Select-Object -First 1`,
     `$gn=if($g -and $g.Name){$g.Name}else{'Guest'}`,
     `$gs=if($g -and $g.SID){'*'+$g.SID}else{''}`,
@@ -2280,9 +2608,10 @@ export function buildHostGuestUnlockPsCommand(shareName = 'AhBiShared'): string 
     `$psi.FileName='net.exe'`,
     `$psi.Arguments=('user '+[char]34+$gn+[char]34+' '+[char]34+[char]34+' /active:yes /passwordreq:no')`,
     `$psi.UseShellExecute=$false`,
+    `$psi.RedirectStandardInput=$true`,
     `$psi.CreateNoWindow=$true`,
     `$p=[System.Diagnostics.Process]::Start($psi)`,
-    `if($p){[void]$p.WaitForExit(5000)}`,
+    `if($p){try{$p.StandardInput.Close()}catch{};[void]$p.WaitForExit(5000)}`,
     `$inf=Join-Path $env:TEMP ('ahbi_'+$PID+'.inf')`,
     `$sdb=Join-Path $env:TEMP ('ahbi_'+$PID+'.sdb')`,
     `& secedit.exe /export /cfg $inf /areas USER_RIGHTS 2>$null|Out-Null`,
@@ -2321,15 +2650,84 @@ export function buildHostGuestUnlockPsScript(
     ${PS_GUEST_RIGHTS_HELPER}
     ${PS_JSON_HELPER}
     $actions = @()
+
+    $targetBatFolder = 'C:\\AhBiShared'
+    try {
+      if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+        $existingBatSh = Get-SmbShare -Name '${safeShare}' -ErrorAction SilentlyContinue
+        if ($existingBatSh -and $existingBatSh.Path) { $targetBatFolder = $existingBatSh.Path }
+      } else {
+        $regBatSh = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Shares' -Name '${safeShare}' -ErrorAction SilentlyContinue).'${safeShare}'
+        foreach ($rLine in @($regBatSh)) {
+          if ($rLine -match '^Path=(.+)$') { $targetBatFolder = $matches[1].Trim(); break }
+        }
+      }
+    } catch {}
+
+    $unblockBatPath = $null
+    $batCandidates = @()
+    if ($env:AHBI_UNBLOCK_BAT) { $batCandidates += $env:AHBI_UNBLOCK_BAT }
+    if ($env:AHBI_APP_SCRIPTS_DIR) { $batCandidates += (Join-Path $env:AHBI_APP_SCRIPTS_DIR 'upgradedHostGuestUnblock.bat') }
+    if ($env:AHBI_RESOURCES_DIR) { $batCandidates += (Join-Path $env:AHBI_RESOURCES_DIR 'scripts\\upgradedHostGuestUnblock.bat') }
+    if ($env:PORTABLE_EXECUTABLE_DIR) { $batCandidates += (Join-Path $env:PORTABLE_EXECUTABLE_DIR 'scripts\\upgradedHostGuestUnblock.bat') }
+    try {
+      $cwdBatBase = (Get-Location).Path
+      if ($cwdBatBase) { $batCandidates += (Join-Path $cwdBatBase 'scripts\\upgradedHostGuestUnblock.bat') }
+    } catch {}
+    foreach ($batCand in $batCandidates) {
+      if ($batCand -and (Test-Path -LiteralPath $batCand)) {
+        $unblockBatPath = $batCand
+        break
+      }
+    }
+
+    if ($unblockBatPath) {
+      $batLogPath = Join-Path $env:TEMP ('ahbi_unblock_bat_' + $PID + '_' + (Get-Random) + '.log')
+      try {
+        $psiBat = New-Object System.Diagnostics.ProcessStartInfo
+        $psiBat.FileName = 'cmd.exe'
+        $psiBat.Arguments = ('/d /c ' + [char]34 + 'call ' + [char]34 + $unblockBatPath + [char]34 + ' ' + [char]34 + '${safeShare}' + [char]34 + ' ' + [char]34 + $targetBatFolder + [char]34 + ' > ' + [char]34 + $batLogPath + [char]34 + ' 2>&1' + [char]34)
+        $psiBat.UseShellExecute = $false
+        $psiBat.RedirectStandardInput = $true
+        $psiBat.RedirectStandardOutput = $true
+        $psiBat.RedirectStandardError = $true
+        $psiBat.CreateNoWindow = $true
+        $psiBat.EnvironmentVariables['AHBI_NO_PAUSE'] = '1'
+        $procBat = [System.Diagnostics.Process]::Start($psiBat)
+        if ($procBat) {
+          try { $procBat.StandardInput.Close() } catch {}
+          if ($procBat.WaitForExit(15000)) {
+            $batCode = $procBat.ExitCode
+            $actions += ('upgradedHostGuestUnblock.bat 비블로킹 실행 완료 (종료 코드 ' + $batCode + ')')
+          } else {
+            try { $procBat.Kill() } catch {}
+            $actions += 'upgradedHostGuestUnblock.bat 실행 타임아웃(15s) 후 PowerShell 폴백 계속'
+          }
+        }
+      } catch {
+        $actions += ('upgradedHostGuestUnblock.bat 호출 예외: ' + $_.Exception.Message)
+      } finally {
+        if ($batLogPath -and (Test-Path -LiteralPath $batLogPath)) {
+          Remove-Item -LiteralPath $batLogPath -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f | Out-Null
-    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 0 /f | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v EnableSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RejectUnencryptedAccess /t REG_DWORD /d 0 /f 2>$null | Out-Null
-    $actions += 'LSA LimitBlankPasswordUse=0 & forceguest=1 & RestrictNullSessAccess=0 해제'
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
+    try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
+    $actions += 'LSA LimitBlankPasswordUse=0 · Classic(forceguest=0) · BlockNTLM=0 · RestrictNullSessAccess=0 해제'
 
     try {
       $nsKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters'
@@ -2350,6 +2748,23 @@ export function buildHostGuestUnlockPsScript(
       }
     } catch {}
 
+    try {
+      $psiMin = New-Object System.Diagnostics.ProcessStartInfo
+      $psiMin.FileName = 'net.exe'
+      $psiMin.Arguments = 'accounts /minpwlen:0'
+      $psiMin.UseShellExecute = $false
+      $psiMin.RedirectStandardInput = $true
+      $psiMin.RedirectStandardOutput = $true
+      $psiMin.RedirectStandardError = $true
+      $psiMin.CreateNoWindow = $true
+      $pMin = [System.Diagnostics.Process]::Start($psiMin)
+      if ($pMin) {
+        try { $pMin.StandardInput.Close() } catch {}
+        if (-not $pMin.WaitForExit(5000)) { try { $pMin.Kill() } catch {} }
+      }
+      $actions += '최소 암호 길이(net accounts /minpwlen:0) 초기화 완료'
+    } catch {}
+
     if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
       $guest = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
       if ($guest) {
@@ -2362,9 +2777,15 @@ export function buildHostGuestUnlockPsScript(
           $psiClr.FileName = 'net.exe'
           $psiClr.Arguments = ('user ' + [char]34 + $guest.Name + [char]34 + ' ' + [char]34 + [char]34 + ' /active:yes /passwordreq:no')
           $psiClr.UseShellExecute = $false
+          $psiClr.RedirectStandardInput = $true
+          $psiClr.RedirectStandardOutput = $true
+          $psiClr.RedirectStandardError = $true
           $psiClr.CreateNoWindow = $true
           $pClr = [System.Diagnostics.Process]::Start($psiClr)
-          if ($pClr) { [void]$pClr.WaitForExit(5000) }
+          if ($pClr) {
+            try { $pClr.StandardInput.Close() } catch {}
+            if (-not $pClr.WaitForExit(5000)) { try { $pClr.Kill() } catch {} }
+          }
         } catch {}
         Enable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue
         $actions += ('로컬 ' + $guest.Name + ' 계정 활성화 및 빈 암호 초기화')
@@ -2377,9 +2798,15 @@ export function buildHostGuestUnlockPsScript(
         $psiLeg.FileName = 'net.exe'
         $psiLeg.Arguments = ('user ' + [char]34 + $gLegacyName + [char]34 + ' ' + [char]34 + [char]34 + ' /active:yes /passwordreq:no')
         $psiLeg.UseShellExecute = $false
+        $psiLeg.RedirectStandardInput = $true
+        $psiLeg.RedirectStandardOutput = $true
+        $psiLeg.RedirectStandardError = $true
         $psiLeg.CreateNoWindow = $true
         $pLeg = [System.Diagnostics.Process]::Start($psiLeg)
-        if ($pLeg) { [void]$pLeg.WaitForExit(5000) }
+        if ($pLeg) {
+          try { $pLeg.StandardInput.Close() } catch {}
+          if (-not $pLeg.WaitForExit(5000)) { try { $pLeg.Kill() } catch {} }
+        }
       } catch {}
       $actions += 'net user Guest 빈 암호 활성화'
     }
@@ -2409,6 +2836,66 @@ export function buildHostGuestUnlockPsScript(
       shareName = '${safeShare}'
       appliedActions = $actions
       message = '호스트 PC 무비밀번호 공유 정책이 완전히 개방되었습니다. (오류 86/1223 해결)'
+    } | ConvertTo-AhBiJson
+  `.trim();
+}
+
+/**
+ * PowerShell script for the host PC to explicitly block empty-password Guest and local user accounts
+ * from network SMB logon (LimitBlankPasswordUse=1, Guest disabled, SeDenyNetworkLogonRight enforced).
+ */
+export function buildHostEmptyPasswordBlockPsScript(): string {
+  return `
+    ${PS_GUEST_RIGHTS_HELPER}
+    ${PS_JSON_HELPER}
+    $actions = @()
+
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    $actions += 'LSA LimitBlankPasswordUse=1(빈 암호 계정 네트워크 차단) · 익명/Null 세션 차단 복원'
+
+    if (Get-Command Disable-LocalUser -ErrorAction SilentlyContinue) {
+      $guestAcc = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
+      if ($guestAcc) {
+        Disable-LocalUser -Name $guestAcc.Name -ErrorAction SilentlyContinue | Out-Null
+        $actions += ('로컬 Guest 계정(' + $guestAcc.Name + ') 비활성화 완료')
+      }
+    } else {
+      try {
+        $gLegacy = Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction SilentlyContinue | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+        $gLegacyName = if ($gLegacy -and $gLegacy.Name) { $gLegacy.Name } else { 'Guest' }
+        $psiDis = New-Object System.Diagnostics.ProcessStartInfo
+        $psiDis.FileName = 'net.exe'
+        $psiDis.Arguments = ('user ' + [char]34 + $gLegacyName + [char]34 + ' /active:no')
+        $psiDis.UseShellExecute = $false
+        $psiDis.RedirectStandardInput = $true
+        $psiDis.RedirectStandardOutput = $true
+        $psiDis.RedirectStandardError = $true
+        $psiDis.CreateNoWindow = $true
+        $pDis = [System.Diagnostics.Process]::Start($psiDis)
+        if ($pDis) {
+          try { $pDis.StandardInput.Close() } catch {}
+          if (-not $pDis.WaitForExit(5000)) { try { $pDis.Kill() } catch {} }
+        }
+        $actions += ('net user ' + $gLegacyName + ' /active:no 비활성화 완료')
+      } catch {}
+    }
+
+    Set-AhBiGuestNetworkLogonPolicy $false
+    $actions += 'SeDenyNetworkLogonRight에 Guest(*S-1-5-32-546) 거부 규칙 복원'
+
+    Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
+    $actions += 'LanmanServer 서비스 즉시 새로고침'
+
+    @{
+      success = $true
+      blocked = $true
+      limitBlankPasswordUse = 1
+      appliedActions = $actions
+      message = '빈 암호 계정(Guest 및 로컬 계정) 네트워크 로그온 차단이 활성화되었습니다. (LimitBlankPasswordUse=1)'
     } | ConvertTo-AhBiJson
   `.trim();
 }
@@ -2777,6 +3264,7 @@ public class AhBiMprProbe {
     $probeSequence = @(
       @{ label = 'WNet-Guest'; user = 'Guest'; pass = '' },
       @{ label = 'WNet-HostGuest'; user = ($p_host + '\\Guest'); pass = '' },
+      @{ label = 'WNet-DefaultNull'; user = ([NullString]::Value); pass = ([NullString]::Value) },
       @{ label = 'WNet-Null'; user = ''; pass = '' }
     )
 

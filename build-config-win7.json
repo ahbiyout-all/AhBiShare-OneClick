@@ -15,6 +15,12 @@
     "icon.ico",
     "public/config.json"
   ],
+  "extraResources": [
+    {
+      "from": "scripts/upgradedHostGuestUnblock.bat",
+      "to": "scripts/upgradedHostGuestUnblock.bat"
+    }
+  ],
   "directories": {
     "output": "release-win7"
   },

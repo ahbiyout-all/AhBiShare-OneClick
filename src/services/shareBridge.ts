@@ -64,6 +64,7 @@ import {
   buildOsNetworkPolicyInspectScript,
   buildOsCompatibilityPatchScript,
   buildHostGuestUnlockPsScript,
+  buildHostEmptyPasswordBlockPsScript,
   buildRawSecurityRegistryScript,
   buildLocationPreflightScript,
   buildShareAuthProbeScript,
@@ -258,6 +259,13 @@ let webSimPolicyBase: Omit<OsNetworkPolicyStatus, 'compatibilityScore' | 'detect
   pointAndPrintRelaxed: false,
   printSpoolerRunning: true,
   pendingRebootFlag: false,
+  forceGuest: false,
+  minimumPasswordLength: 0,
+  smbBlockNtlm: false,
+  smbRequireEncryption: false,
+  machineSidPrefix: 'S-1-5-21-19840211-31048211-9401284',
+  duplicateSidEvent6167Detected: false,
+  kirOverride1517186191: null,
 };
 
 // Runtime in-memory credential cache so passwords decrypted from USB or entered on Host PC
@@ -1541,6 +1549,65 @@ export const shareBridge = {
     };
   },
 
+  async toggleBlockEmptyPasswordAccounts(
+    block: boolean,
+    shareName?: string,
+    netInfo?: LocalNetworkInfo
+  ): Promise<{ success: boolean; blocked: boolean; message: string; updatedPolicy?: OsNetworkPolicyStatus }> {
+    if (!block) {
+      const unlockRes = await this.runHostGuestUnlockDirect(shareName, netInfo);
+      return {
+        success: unlockRes.success,
+        blocked: false,
+        message: unlockRes.success
+          ? '빈 암호 계정 차단을 해제하고 upgradedHostGuestUnblock.bat 정책(LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · TCP 445)을 적용했습니다.'
+          : unlockRes.message,
+        updatedPolicy: unlockRes.updatedPolicy,
+      };
+    }
+
+    this.clearSmartAuthCache();
+    const resolvedNet = netInfo || (await this.getLocalNetworkInfo());
+    if (window.ahbiShareElectron?.runPowerShell) {
+      const res = await window.ahbiShareElectron.runPowerShell(buildHostEmptyPasswordBlockPsScript());
+      if (!res.success) {
+        return {
+          success: false,
+          blocked: false,
+          message: res.error || '빈 암호 계정 네트워크 차단(LimitBlankPasswordUse=1) 적용에 실패했습니다.',
+        };
+      }
+      const updatedPolicy = await this.inspectOsNetworkPolicy(resolvedNet);
+      await this.persistHostPolicySnapshot(resolvedNet.hostname, updatedPolicy, resolvedNet.primaryIp);
+      return {
+        success: true,
+        blocked: true,
+        message: '빈 암호 계정(Guest 및 로컬 계정) 차단을 활성화했습니다. (LimitBlankPasswordUse=1 · Guest 비활성화)',
+        updatedPolicy,
+      };
+    }
+
+    webSimPolicyBase = {
+      ...webSimPolicyBase,
+      limitBlankPasswordUse: true,
+      guestAccountEnabled: false,
+      guestNetworkLogonDenied: true,
+      restrictNullSessAccess: true,
+      restrictAnonymous: true,
+      everyoneIncludesAnonymous: false,
+      allowInsecureGuestAuth: false,
+      enableInsecureGuestLogons: false,
+    };
+    const updatedPolicy = await this.inspectOsNetworkPolicy(resolvedNet);
+    await this.persistHostPolicySnapshot(resolvedNet.hostname, updatedPolicy, resolvedNet.primaryIp);
+    return {
+      success: true,
+      blocked: true,
+      message: '[웹 프리뷰] 빈 암호 계정 차단 활성화 시뮬레이션 완료 (LimitBlankPasswordUse=1 · Guest 비활성화)',
+      updatedPolicy,
+    };
+  },
+
   async clearConflictingSmbSessions(
     targetHost?: string
   ): Promise<{ success: boolean; message: string }> {
@@ -1944,7 +2011,33 @@ Write-Output 'SMB_SESSION_CLEANED'
     onProgress: (steps: PipelineStep[]) => void,
     osEra?: WindowsNetworkEra
   ): Promise<{ success: boolean; mount?: MountedDrive; steps: PipelineStep[] }> {
-    const definitions = buildClientStepScripts(config, osEra);
+    let resolvedTargetHostName = (config.targetHostName || '').trim();
+    if (!resolvedTargetHostName) {
+      const tgtLower = (config.targetHost || '').trim().toLowerCase();
+      const matchedShare = (latestPortableDoc.shares || []).find(
+        (s) =>
+          (s.sourceIp || '').trim().toLowerCase() === tgtLower ||
+          (s.sourceHostName || '').trim().toLowerCase() === tgtLower
+      );
+      if (matchedShare?.sourceHostName) {
+        resolvedTargetHostName = matchedShare.sourceHostName.trim();
+      } else {
+        const matchedSnap = Object.values(latestPortableDoc.hostPolicies || {}).find(
+          (h) =>
+            (h.sourceIp || '').trim().toLowerCase() === tgtLower ||
+            (h.hostName || '').trim().toLowerCase() === tgtLower
+        );
+        if (matchedSnap?.hostName) {
+          resolvedTargetHostName = matchedSnap.hostName.trim();
+        }
+      }
+    }
+    const effectiveConfig: ClientTargetConfig =
+      resolvedTargetHostName &&
+      resolvedTargetHostName.toLowerCase() !== (config.targetHost || '').trim().toLowerCase()
+        ? { ...config, targetHostName: resolvedTargetHostName }
+        : config;
+    const definitions = buildClientStepScripts(effectiveConfig, osEra);
     const steps: PipelineStep[] = definitions.map((d) => ({
       id: d.id,
       title: d.title,
@@ -2251,6 +2344,16 @@ Write-Output 'SMB_SESSION_CLEANED'
             pointAndPrintRelaxed: Boolean(parsed.pointAndPrintRelaxed),
             printSpoolerRunning: parsed.printSpoolerRunning ?? true,
             pendingRebootFlag: Boolean(parsed.pendingRebootFlag),
+            forceGuest: typeof parsed.forceGuest === 'boolean' ? parsed.forceGuest : undefined,
+            minimumPasswordLength:
+              typeof parsed.minimumPasswordLength === 'number' ? parsed.minimumPasswordLength : null,
+            smbBlockNtlm: typeof parsed.smbBlockNtlm === 'boolean' ? parsed.smbBlockNtlm : undefined,
+            smbRequireEncryption:
+              typeof parsed.smbRequireEncryption === 'boolean' ? parsed.smbRequireEncryption : undefined,
+            machineSidPrefix: parsed.machineSidPrefix ? String(parsed.machineSidPrefix).trim() : undefined,
+            duplicateSidEvent6167Detected: Boolean(parsed.duplicateSidEvent6167Detected),
+            kirOverride1517186191:
+              typeof parsed.kirOverride1517186191 === 'number' ? parsed.kirOverride1517186191 : null,
             checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
           };
           const parsedRawReg = (parsed as { rawReg?: RawRegistryMapInput }).rawReg;
@@ -2308,6 +2411,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         rpcProtocols: simBaseWithTime.rpcProtocols,
         srvSmb1: simBaseWithTime.smb1Enabled ? 1 : 0,
         ahbiFw445: simBaseWithTime.ahbiFirewallRulePresent ? 1 : 0,
+        cliBlockNtlm: simBaseWithTime.smbBlockNtlm ? 1 : 0,
+        cliReqEnc: simBaseWithTime.smbRequireEncryption ? 1 : 0,
+        forceGuest: simBaseWithTime.forceGuest ? 1 : 0,
+        kirSidOverride: simBaseWithTime.kirOverride1517186191 ?? null,
       },
       'local_live',
       '로컬 레지스트리 조회 (시뮬레이션)',
@@ -2562,7 +2669,9 @@ Write-Output 'SMB_SESSION_CLEANED'
                           ? 'UAC 원격 토큰 필터를 기본 보안 상태로 복원했습니다.'
                           : mode === 'enable_smbv1_client'
                             ? '구형 NAS · 복합기용 SMB 1.0/CIFS 클라이언트 기능을 활성화했습니다.'
-                            : 'OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침을 완료했습니다.';
+                            : mode === 'kir_duplicate_sid_compat'
+                              ? '복제 PC 중복 Machine SID 차단 해제 KIR(1517186191=0)을 적용했습니다 (재부팅 필수).'
+                              : 'OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침을 완료했습니다.';
 
       return {
         success: res.success,
@@ -2592,6 +2701,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         restrictNullSessAccess: false,
         restrictAnonymous: false,
         everyoneIncludesAnonymous: true,
+        forceGuest: false,
+        minimumPasswordLength: 0,
+        smbBlockNtlm: false,
+        smbRequireEncryption: false,
         firewall445Allowed: true,
         ahbiFirewallRulePresent: true,
         lmCompatibilityLevel: 3,
@@ -2680,6 +2793,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         restrictAnonymous: false,
         everyoneIncludesAnonymous: true,
         guestAccountEnabled: true,
+        forceGuest: false,
+        minimumPasswordLength: 0,
+        smbBlockNtlm: false,
+        smbRequireEncryption: false,
         firewall445Allowed: true,
         ahbiFirewallRulePresent: true,
         lmCompatibilityLevel: 3,
@@ -2763,6 +2880,7 @@ Write-Output 'SMB_SESSION_CLEANED'
         enableInsecureGuestLogons: false,
         guestNetworkLogonDenied: true,
         guestAccountEnabled: false,
+        forceGuest: false,
         limitBlankPasswordUse: true,
         restrictNullSessAccess: true,
         restrictAnonymous: true,
@@ -2775,6 +2893,17 @@ Write-Output 'SMB_SESSION_CLEANED'
         '비인증 게스트 로그온·UAC 원격 토큰 필터 차단 복원',
         'LSA 익명 접근 차단 및 빈 암호 제한 복원',
         ...(lmUpdated ? ['NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원'] : []),
+      ];
+      restartedServices = ['LanmanWorkstation', 'LanmanServer'];
+    } else if (mode === 'kir_duplicate_sid_compat') {
+      webSimPolicyBase = {
+        ...webSimPolicyBase,
+        kirOverride1517186191: 0,
+        pendingRebootFlag: true,
+      };
+      appliedActions = [
+        'FeatureManagement\\Overrides\\1517186191=0 (KB5064081/KB5065426 중복 Machine SID 차단 KIR 비활성화) 적용',
+        '정책 반영을 위해 시스템 재부팅 필수',
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else {
@@ -2824,7 +2953,9 @@ Write-Output 'SMB_SESSION_CLEANED'
                           ? '[시뮬레이션] UAC 원격 토큰 필터 기본 보안 복원 완료'
                           : mode === 'enable_smbv1_client'
                             ? '[시뮬레이션] 구형 NAS·복합기용 SMBv1 클라이언트 선택적 기능 설치 완료'
-                            : '[시뮬레이션] OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침 완료',
+                            : mode === 'kir_duplicate_sid_compat'
+                              ? '[시뮬레이션] 복제 PC 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용 완료 (재부팅 필수)'
+                              : '[시뮬레이션] OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침 완료',
       appliedActions,
       rebootJudgment,
       updatedPolicy,

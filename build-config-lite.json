@@ -22,6 +22,12 @@
     "public/config.json",
     "!**/node_modules/**/*"
   ],
+  "extraResources": [
+    {
+      "from": "scripts/upgradedHostGuestUnblock.bat",
+      "to": "scripts/upgradedHostGuestUnblock.bat"
+    }
+  ],
   "directories": {
     "output": "release-lite"
   },

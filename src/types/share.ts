@@ -19,7 +19,8 @@ export type PolicyPatchMode =
   | 'enable_smbv1_client'
   | 'legacy_bridge_compat'
   | 'legacy_smb1_enable'
-  | 'legacy_bridge_rollback';
+  | 'legacy_bridge_rollback'
+  | 'kir_duplicate_sid_compat';
 
 export interface HostConfig {
   folderPath: string;
@@ -65,6 +66,7 @@ export interface DiscoveredPeer {
 
 export interface ClientTargetConfig {
   targetHost: string;
+  targetHostName?: string;
   shareName: string;
   driveLetter: string;
   authMode: AuthMode;
@@ -161,6 +163,8 @@ export interface OsNetworkPolicyStatus {
   enableInsecureGuestLogons: boolean;
   guestNetworkLogonDenied?: boolean;
   limitBlankPasswordUse?: boolean;
+  forceGuest?: boolean;
+  minimumPasswordLength?: number | null;
   restrictNullSessAccess?: boolean;
   restrictAnonymous?: boolean;
   everyoneIncludesAnonymous?: boolean;
@@ -169,6 +173,11 @@ export interface OsNetworkPolicyStatus {
   ahbiFirewallRulePresent?: boolean;
   lmCompatibilityLevel: number | null;
   ntlmRestrictOutbound: number | null;
+  smbBlockNtlm?: boolean;
+  smbRequireEncryption?: boolean;
+  machineSidPrefix?: string;
+  duplicateSidEvent6167Detected?: boolean;
+  kirOverride1517186191?: number | null;
   netbiosEnabled: boolean;
   smbEncryptData: boolean;
   smbRejectUnencryptedAccess?: boolean;
@@ -257,10 +266,14 @@ export interface HostPolicySnapshot {
   localAccountTokenFilterEnabled?: boolean;
   guestNetworkLogonDenied?: boolean;
   limitBlankPasswordUse?: boolean;
+  forceGuest?: boolean;
+  minimumPasswordLength?: number | null;
   restrictNullSessAccess?: boolean;
   restrictAnonymous?: boolean;
   guestAccountEnabled?: boolean;
   firewall445Allowed?: boolean;
+  machineSidPrefix?: string;
+  kirOverride1517186191?: number | null;
   capturedAt: string;
   rawRegistrySnapshot?: RawSecurityRegistrySnapshot;
 }
