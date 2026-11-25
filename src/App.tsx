@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap, RefreshCw, FolderOpen } from 'lucide-react';
+import { Server, Laptop, Sun, Moon, ShieldAlert, Usb, AlertTriangle, Clock, RotateCcw, X, Zap, RefreshCw, FolderOpen, Archive } from 'lucide-react';
 import {
   RoleMode,
   AppSection,
@@ -32,6 +32,9 @@ import {
   TroubleshootWizardStep,
   TroubleshootStepResolvedSource,
   AppLogStatusInfo,
+  BackupStoreStatus,
+  CreateBackupResult,
+  RestoreBackupResult,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
@@ -58,6 +61,7 @@ import { LocationManagerModal } from '@/components/LocationManagerModal';
 import { LocationPreflightModal } from '@/components/LocationPreflightModal';
 import { TroubleshootHandoffBanner } from '@/components/TroubleshootHandoffBanner';
 import { TroubleshootWizardModal } from '@/components/TroubleshootWizardModal';
+import { BackupRestoreModal } from '@/components/BackupRestoreModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
 import { WorkProgressModal, ProgressJobState } from './components/WorkProgressModal';
@@ -119,6 +123,9 @@ export const App: React.FC = () => {
 
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [appLogInfo, setAppLogInfo] = useState<AppLogStatusInfo | null>(null);
+  const [backupStatus, setBackupStatus] = useState<BackupStoreStatus | null>(null);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
   const netInfoRef = useRef(netInfo);
   netInfoRef.current = netInfo;
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -572,6 +579,17 @@ export const App: React.FC = () => {
     } catch {}
   }, []);
 
+  const refreshBackupStatus = useCallback(async () => {
+    setBackupLoading(true);
+    try {
+      const st = await shareBridge.listDataBackups();
+      setBackupStatus(st);
+    } catch {
+    } finally {
+      setBackupLoading(false);
+    }
+  }, []);
+
   const syncAllMatrixAndWizardState = useCallback(
     async (params: {
       netInfoSnap: LocalNetworkInfo;
@@ -680,6 +698,7 @@ export const App: React.FC = () => {
           }
         }
         await refreshAppLogInfo();
+        await refreshBackupStatus();
         appendLog(label, `${label} 상태(네트워크·공유·드라이브·USB 프로필) 새로고침 완료`, 'success');
         showToast(`${label} 상태를 최신 정보로 새로고침했습니다.`);
       } catch (err) {
@@ -691,7 +710,7 @@ export const App: React.FC = () => {
         setIsRefreshingTab(false);
       }
     },
-    [appendLog, refreshAppLogInfo, showToast, syncAllMatrixAndWizardState]
+    [appendLog, refreshAppLogInfo, refreshBackupStatus, showToast, syncAllMatrixAndWizardState]
   );
 
   useEffect(() => {
@@ -733,9 +752,10 @@ export const App: React.FC = () => {
       }
       await refreshLocationProfiles();
       await refreshAppLogInfo();
+      await refreshBackupStatus();
     };
     void bootstrap();
-  }, [appendLog, refreshLocationProfiles, refreshAppLogInfo, syncAllMatrixAndWizardState]);
+  }, [appendLog, refreshLocationProfiles, refreshAppLogInfo, refreshBackupStatus, syncAllMatrixAndWizardState]);
 
   // 1-second timer tick for active timed shares
   useEffect(() => {
@@ -1052,13 +1072,14 @@ export const App: React.FC = () => {
         const updatedMap = await shareBridge.deleteHostPolicySnapshot(hostName);
         setHostPolicySnapshots(updatedMap);
         refreshPortableSnapshot(netInfo.hostname);
+        void refreshBackupStatus();
         appendLog('OS 정책 스냅샷', `'${hostName}' 호스트 정책 스냅샷을 목록에서 삭제했습니다.`, 'success');
         showToast(`'${hostName}' 정책 스냅샷을 삭제했습니다.`);
       } catch {
         showToast('호스트 정책 스냅샷 삭제 중 오류가 발생했습니다.');
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
   );
 
   const handleClearAllHostPolicySnapshots = useCallback(async () => {
@@ -1066,12 +1087,13 @@ export const App: React.FC = () => {
       const updatedMap = await shareBridge.clearAllHostPolicySnapshots();
       setHostPolicySnapshots(updatedMap);
       refreshPortableSnapshot(netInfo.hostname);
+      void refreshBackupStatus();
       appendLog('OS 정책 스냅샷', '저장된 모든 호스트 정책 스냅샷 목록을 초기화했습니다.', 'success');
       showToast('저장된 호스트 정책 스냅샷 목록을 모두 비웠습니다.');
     } catch {
       showToast('호스트 정책 스냅샷 목록 초기화 중 오류가 발생했습니다.');
     }
-  }, [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]);
+  }, [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]);
 
   const myPendingHostTask = React.useMemo(() => {
     const currentLower = netInfo.hostname.trim().toLowerCase();
@@ -1115,13 +1137,14 @@ export const App: React.FC = () => {
         setPendingHostActions(updated);
         setConfirmingDismissPendingTask(false);
         refreshPortableSnapshot(netInfo.hostname);
+        void refreshBackupStatus();
         appendLog('호스트 대기 작업', `'${targetHostName}' 대상 USB 대기 작업을 삭제했습니다.`, 'success');
         showToast(`'${targetHostName}' 호스트 대기 작업을 삭제했습니다.`);
       } catch {
         showToast('호스트 대기 작업 삭제 중 오류가 발생했습니다.');
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
   );
 
   const handleApplyPendingHostTask = useCallback(
@@ -1750,6 +1773,7 @@ export const App: React.FC = () => {
       const res = await shareBridge.deleteTroubleshootTicket(ticketId);
       setTroubleshootTickets(res.tickets);
       refreshPortableSnapshot(netInfo.hostname);
+      void refreshBackupStatus();
       if (selectedTroubleshootTicketId === ticketId) {
         setSelectedTroubleshootTicketId(res.tickets[0]?.ticketId || null);
       }
@@ -1759,13 +1783,14 @@ export const App: React.FC = () => {
       appendLog('USB 오류 마법사', '선택한 USB 오류 티켓을 삭제했습니다.', 'success');
       showToast('USB 오류 티켓을 삭제했습니다.');
     },
-    [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
   );
 
   const handleClearResolvedTroubleshootTickets = useCallback(async () => {
     const res = await shareBridge.clearResolvedTroubleshootTickets();
     setTroubleshootTickets(res.tickets);
     refreshPortableSnapshot(netInfo.hostname);
+    void refreshBackupStatus();
     if (res.tickets.length === 0) {
       setTroubleshootWizardOpen(false);
       setSelectedTroubleshootTicketId(null);
@@ -1774,21 +1799,135 @@ export const App: React.FC = () => {
     }
     appendLog('USB 오류 마법사', `해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`, 'success');
     showToast(`해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`);
-  }, [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, appendLog, showToast]);
+  }, [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]);
 
   const handleDeletePortableHostShare = useCallback(
     async (sourceHostName: string, shareName: string) => {
       try {
         await shareBridge.deletePortableHostShare(sourceHostName, shareName);
         refreshPortableSnapshot(netInfo.hostname);
+        void refreshBackupStatus();
         appendLog('USB 포터블', `${sourceHostName} · \\\\...\\${shareName} 항목을 목록에서 삭제했습니다.`, 'success');
         showToast(`포터블 공유 항목(${shareName})을 삭제했습니다.`);
       } catch {
         showToast('포터블 공유 항목 삭제 중 오류가 발생했습니다.');
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
   );
+
+  const handleOpenBackupModal = useCallback(async () => {
+    setBackupModalOpen(true);
+    await refreshBackupStatus();
+  }, [refreshBackupStatus]);
+
+  const handleCreateManualBackup = useCallback(
+    async (reason?: string): Promise<CreateBackupResult> => {
+      const res = await shareBridge.createDataBackup({
+        trigger: 'manual',
+        reason: reason || '사용자 수동 백업',
+        hostName: netInfo.hostname,
+      });
+      await refreshBackupStatus();
+      if (res.success && res.snapshot) {
+        appendLog('자료 백업', `수동 백업 생성 완료: ${res.snapshot.fileName} (${res.snapshot.reason})`, 'success');
+        showToast(`백업 폴더에 스냅샷을 저장했습니다: ${res.snapshot.fileName}`);
+      } else {
+        appendLog('자료 백업', `백업 생성 실패: ${res.error || '알 수 없는 오류'}`, 'error');
+        showToast(res.error || '백업 생성 중 오류가 발생했습니다.');
+      }
+      return res;
+    },
+    [netInfo.hostname, refreshBackupStatus, appendLog, showToast]
+  );
+
+  const handleRestoreBackup = useCallback(
+    async (backupId: string): Promise<RestoreBackupResult> => {
+      const res = await shareBridge.restoreDataBackup(backupId, {
+        hostName: netInfo.hostname,
+      });
+      if (res.success) {
+        if (res.portableDocument) {
+          setPortableShares(sortPortableEntriesForClient(res.portableDocument.shares, netInfo.hostname));
+          setHostPolicySnapshots(res.portableDocument.hostPolicies ? { ...res.portableDocument.hostPolicies } : {});
+          setPendingHostActions(res.portableDocument.pendingHostActions ? { ...res.portableDocument.pendingHostActions } : {});
+          setTroubleshootTickets(res.portableDocument.troubleshootTickets ? [...res.portableDocument.troubleshootTickets] : []);
+        } else {
+          refreshPortableSnapshot(netInfo.hostname);
+        }
+        if (res.portableStatus) {
+          setPortableStatus(res.portableStatus);
+        }
+
+        const nextProfiles = res.locationProfiles || (await shareBridge.listLocationProfiles()).profiles;
+        setLocationProfiles(nextProfiles);
+
+        const prevActive = activeLocationProfileRef.current;
+        if (prevActive) {
+          const stillThere = nextProfiles.some((p) => p.profileId === prevActive.profileId);
+          if (stillThere) {
+            const reloaded = await shareBridge.loadLocationProfile(prevActive.profileId);
+            setActiveLocationProfile(reloaded.success && reloaded.profile ? reloaded.profile : null);
+          } else {
+            setActiveLocationProfile(null);
+            setLastLocationBatchResult(null);
+          }
+        }
+
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: policyStatus,
+          localShares: shares,
+          localMounts: mounts,
+          source: 'live_inspect',
+          silent: true,
+        });
+        await refreshBackupStatus();
+
+        const snapLabel = res.restoredSnapshot?.fileName || backupId;
+        appendLog('자료 복원', `백업 시점 복원 완료: ${snapLabel}`, 'success');
+        showToast(`선택한 백업(${snapLabel}) 시점으로 포터블 설정·사용장소·티켓을 복원했습니다.`);
+      } else {
+        await refreshBackupStatus();
+        appendLog('자료 복원', `백업 복원 실패: ${res.error || '알 수 없는 오류'}`, 'error');
+        showToast(res.error || '백업 복원 중 오류가 발생했습니다.');
+      }
+      return res;
+    },
+    [
+      netInfo,
+      policyStatus,
+      shares,
+      mounts,
+      refreshPortableSnapshot,
+      syncAllMatrixAndWizardState,
+      refreshBackupStatus,
+      appendLog,
+      showToast,
+    ]
+  );
+
+  const handleDeleteBackup = useCallback(
+    async (backupId: string): Promise<boolean> => {
+      const res = await shareBridge.deleteDataBackup(backupId);
+      await refreshBackupStatus();
+      if (res.success) {
+        appendLog('자료 백업', `백업 스냅샷(${backupId}) 삭제 완료`, 'success');
+        showToast('선택한 백업 스냅샷을 삭제했습니다.');
+        return true;
+      }
+      appendLog('자료 백업', `백업 삭제 실패: ${res.error || '알 수 없는 오류'}`, 'error');
+      showToast(res.error || '백업 스냅샷 삭제에 실패했습니다.');
+      return false;
+    },
+    [refreshBackupStatus, appendLog, showToast]
+  );
+
+  const handleOpenBackupFolder = useCallback(async () => {
+    const res = await shareBridge.openBackupFolder();
+    appendLog('자료 백업', res.message, res.success ? 'success' : 'error');
+    showToast(res.message);
+  }, [appendLog, showToast]);
 
   const handleTriggerReboot = useCallback(async () => {
     const res = await shareBridge.requestSystemReboot();
@@ -2999,6 +3138,7 @@ export const App: React.FC = () => {
 
       setActiveLocationProfile(res.profile);
       await refreshLocationProfiles();
+      void refreshBackupStatus();
       appendLog(
         '사용장소',
         `'${res.profile.locationName}' 프로필 저장 완료 (${res.profile.profileId}.location.json)`,
@@ -3007,7 +3147,7 @@ export const App: React.FC = () => {
       showToast(`사용장소 '${res.profile.locationName}' 설정을 개별 파일로 저장했습니다.`);
       return true;
     },
-    [netInfo, hostDraft, shares, clientDraft, mounts, activeLocationProfile, refreshLocationProfiles, appendLog, showToast]
+    [netInfo, hostDraft, shares, clientDraft, mounts, activeLocationProfile, refreshLocationProfiles, refreshBackupStatus, appendLog, showToast]
   );
 
   const handleExportLocationProfile = useCallback(
@@ -3079,10 +3219,11 @@ export const App: React.FC = () => {
         setLastLocationBatchResult(null);
       }
       await refreshLocationProfiles();
+      void refreshBackupStatus();
       appendLog('사용장소', `'${locationName}' 프로필 파일 삭제 완료`, 'success');
       showToast(`'${locationName}' 사용장소 프로필을 삭제했습니다.`);
     },
-    [activeLocationProfile, refreshLocationProfiles, appendLog, showToast]
+    [activeLocationProfile, refreshLocationProfiles, refreshBackupStatus, appendLog, showToast]
   );
 
   const handleLoadLocationProfileForEdit = useCallback(
@@ -3110,6 +3251,7 @@ export const App: React.FC = () => {
       }
       const saved = res.profile;
       await refreshLocationProfiles();
+      void refreshBackupStatus();
       if (applyToWorkspace) {
         applyLocationProfileToWorkspace(saved, false);
       } else if (activeLocationProfile?.profileId === saved.profileId) {
@@ -3127,6 +3269,7 @@ export const App: React.FC = () => {
       activeLocationProfile,
       applyLocationProfileToWorkspace,
       refreshLocationProfiles,
+      refreshBackupStatus,
       appendLog,
       showToast,
     ]
@@ -3384,7 +3527,9 @@ export const App: React.FC = () => {
         activeSection={activeSection}
         roleMode={roleMode}
         availableUpdateTag={latestRelease?.tagName || null}
+        backupCount={backupStatus?.snapshots.length || 0}
         onOpenUpdateModal={() => setUpdateModalOpen(true)}
+        onOpenBackupModal={() => void handleOpenBackupModal()}
         onNavigate={handleNavigate}
         onOpenDiagnostics={() => void handleOpenDiagnostics()}
       />
@@ -3807,6 +3952,15 @@ export const App: React.FC = () => {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  id="btn-logs-open-backup"
+                  type="button"
+                  onClick={() => void handleOpenBackupModal()}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer tabular-data"
+                >
+                  <Archive className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  백업·복원 관리 ({backupStatus?.snapshots.length || 0})
+                </button>
                 {appLogInfo?.supported && appLogInfo.directory && (
                   <button
                     id="btn-open-log-folder"
@@ -4088,6 +4242,19 @@ export const App: React.FC = () => {
         onMarkResolved={handleMarkTroubleshootResolved}
         onDeleteTicket={handleDeleteTroubleshootTicket}
         onClearResolved={handleClearResolvedTroubleshootTickets}
+      />
+
+      <BackupRestoreModal
+        isOpen={backupModalOpen}
+        status={backupStatus}
+        isLoading={backupLoading}
+        currentHostname={netInfo.hostname}
+        onClose={() => setBackupModalOpen(false)}
+        onRefresh={refreshBackupStatus}
+        onCreateManualBackup={handleCreateManualBackup}
+        onRestoreBackup={handleRestoreBackup}
+        onDeleteBackup={handleDeleteBackup}
+        onOpenBackupFolder={handleOpenBackupFolder}
       />
 
       <WorkProgressModal

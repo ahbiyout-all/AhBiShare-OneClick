@@ -25,9 +25,9 @@ const {
 } = require('./portableUpdater');
 const APP_PKG_VERSION = (() => {
   try {
-    return require('./package.json').version || '1.2.1';
+    return require('./package.json').version || '1.3.0';
   } catch {
-    return '1.2.1';
+    return '1.3.0';
   }
 })();
 
@@ -750,6 +750,47 @@ ipcMain.handle('get-app-log-info', async (_event, options) => {
     } catch {}
     return info;
   });
+});
+
+ipcMain.handle('list-data-backups', async () => {
+  return enqueuePortableStoreOp(() => portableStore.listBackupSnapshots());
+});
+
+ipcMain.handle('create-data-backup', async (_event, options) => {
+  return enqueuePortableStoreOp(() => portableStore.createBackupSnapshot(options || {}));
+});
+
+ipcMain.handle('restore-data-backup', async (_event, payload) => {
+  return enqueuePortableStoreOp(() =>
+    portableStore.restoreBackupSnapshot(payload?.backupId, payload || {})
+  );
+});
+
+ipcMain.handle('delete-data-backup', async (_event, payload) => {
+  return enqueuePortableStoreOp(() => portableStore.deleteBackupSnapshot(payload?.backupId));
+});
+
+ipcMain.handle('open-backup-folder', async () => {
+  const dirRes = await enqueuePortableStoreOp(() => {
+    const status = portableStore.listBackupSnapshots();
+    return {
+      directory: status.directory,
+      writable: status.writable,
+      writeProtected: status.writeProtected,
+      writeError: status.writeError,
+    };
+  });
+  if (!dirRes?.directory) {
+    return { success: false, directory: '', message: '백업 폴더 경로를 확인할 수 없습니다.' };
+  }
+  const errMsg = await shell.openPath(dirRes.directory);
+  return {
+    success: !errMsg,
+    directory: dirRes.directory,
+    message: errMsg
+      ? `백업 폴더를 열지 못했습니다: ${errMsg}`
+      : `Windows 탐색기에서 백업 폴더를 열었습니다: ${dirRes.directory}`,
+  };
 });
 
 ipcMain.handle('trigger-system-reboot', async () => {

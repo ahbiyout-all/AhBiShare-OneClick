@@ -31,7 +31,9 @@ metadata.json
 *.portable.corrupt-*.json
 *.location.json
 *.location.corrupt-*.json
+*.backup.json
 /locations/
+/backup/
 AhBiShare_CrossOS_Sync_Bridge*.json
 AhBiShare_Legacy_Win7_Win8_Kit/
 AhBiShare_*.bat

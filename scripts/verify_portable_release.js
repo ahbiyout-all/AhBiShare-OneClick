@@ -48,7 +48,7 @@ assert.deepStrictEqual(
   'package-lock.json root devDependencies must match package.json'
 );
 assert(/^\d+\.\d+\.\d+$/.test(rootPkg.version), `package.json version must strictly follow SemVer MAJOR.MINOR.PATCH (got "${rootPkg.version}")`);
-assert.strictEqual(rootPkg.version, '1.2.1');
+assert.strictEqual(rootPkg.version, '1.3.0');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
 const srcVersionTs = fs.readFileSync(path.join(rootDir, 'src', 'version.ts'), 'utf8');
 assert(
@@ -1958,7 +1958,283 @@ try {
   pass('Bidirectional sync & SyncAwarePolicyBadge (Policy Matched + Execute lock) between OS Compatibility Matrix, HostPanel, pendingHostActions & USB Troubleshoot Wizard verified');
 }
 
+// 15. Verify <appDir>/backup auto/manual encrypted snapshots, 20-file rotation, pre-modify/pre-delete/pre-restore triggers, path traversal guard & BackupRestoreModal wiring
+const tmpBackupAppDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-backup-verify-'));
+try {
+  const backupStore = portableStore.createPortableStore({
+    env: { PORTABLE_EXECUTABLE_DIR: tmpBackupAppDir },
+    app: { isPackaged: true, getPath: () => tmpBackupAppDir },
+  });
+
+  // 15a. Listing backups automatically creates <appDir>/backup when writable
+  const expectedBackupDir = path.join(tmpBackupAppDir, portableStore.BACKUP_DIR_NAME);
+  const initList = backupStore.listBackupSnapshots();
+  assert.strictEqual(initList.success, true);
+  assert.strictEqual(path.resolve(initList.directory), path.resolve(expectedBackupDir));
+  assert.strictEqual(fs.existsSync(expectedBackupDir), true, 'listBackupSnapshots must create <appDir>/backup');
+  assert.strictEqual(initList.maxSnapshots, 20);
+
+  // 15b. Path traversal rejection on resolveSafeBackupFilePath
+  let traversalBlocked = false;
+  try {
+    portableStore.resolveSafeBackupFilePath(tmpBackupAppDir, '../outside.backup.json');
+  } catch {
+    traversalBlocked = true;
+  }
+  assert.strictEqual(traversalBlocked, true, 'resolveSafeBackupFilePath must reject directory traversal');
+
+  let badExtBlocked = false;
+  try {
+    portableStore.resolveSafeBackupFilePath(tmpBackupAppDir, 'evil.txt');
+  } catch {
+    badExtBlocked = true;
+  }
+  assert.strictEqual(badExtBlocked, true, 'resolveSafeBackupFilePath must reject non-.backup.json files');
+
+  // 15c. Seed portable data (with secret share password, hostPolicies, troubleshootTickets) + location profile (with secret password)
+  const secretSharePass = 'TopSecretBackupShare!99';
+  const secretLocPass = 'TopSecretLocationPass!88';
+  const seedPortableSave = backupStore.savePortableData({
+    schemaVersion: 1,
+    updatedAt: '2026-11-25T01:00:00.000Z',
+    shares: [
+      {
+        shareName: 'BackupDocs',
+        folderPath: 'D:\\BackupDocs',
+        uncPath: '\\\\192.168.0.105\\BackupDocs',
+        authMode: 'account',
+        permission: 'full',
+        username: 'ShareAdmin',
+        password: secretSharePass,
+        connectionCode: 'ABSHARE://dummy',
+        sourceHostName: 'HOST-BAK-01',
+        sourceIp: '192.168.0.105',
+        updatedAt: '2026-11-25T01:00:00.000Z',
+      },
+    ],
+    hostPolicies: {
+      'host-bak-01': {
+        hostName: 'HOST-BAK-01',
+        sourceIp: '192.168.0.105',
+        osBuild: 26100,
+        osEra: 'win11_25_26h2',
+        osDisplayVersion: '25H2',
+        allowInsecureGuestAuth: true,
+        guestAccountEnabled: true,
+        guestNetworkLogonDenied: false,
+        smbServerSigningRequired: false,
+        firewall445Allowed: true,
+        capturedAt: '2026-11-25T01:00:00.000Z',
+      },
+    },
+    troubleshootTickets: [
+      {
+        ticketId: 'ts-bak-verify-1',
+        schemaVersion: 1,
+        originRole: 'client',
+        originHostName: 'CLIENT-BAK-01',
+        targetHostName: 'HOST-BAK-01',
+        targetIp: '192.168.0.105',
+        shareName: 'BackupDocs',
+        driveLetter: 'Z:',
+        authMode: 'account',
+        errorCode: 'Error 86',
+        errorTitle: '비밀번호 불일치',
+        rawErrorSummary: 'net use failed: Error 86',
+        recommendedSide: 'client',
+        hostSteps: [],
+        clientSteps: [],
+        status: 'open',
+        createdAt: '2026-11-25T01:00:00.000Z',
+        updatedAt: '2026-11-25T01:00:00.000Z',
+      },
+    ],
+  });
+  assert.strictEqual(seedPortableSave.success, true);
+
+  const seedLocSave = backupStore.saveLocationProfile({
+    profileId: 'office-hq',
+    locationName: '본사 사무실',
+    description: '백업 테스트 장소',
+    networkHint: { subnetPrefix: '192.168.0', primaryIp: '192.168.0.105', hostname: 'HOST-BAK-01' },
+    savedShares: [
+      {
+        shareName: 'BackupDocs',
+        folderPath: 'D:\\BackupDocs',
+        uncPath: '\\\\192.168.0.105\\BackupDocs',
+        authMode: 'account',
+        permission: 'full',
+        username: 'ShareAdmin',
+        password: secretSharePass,
+        connectionCode: 'ABSHARE://dummy',
+        sourceHostName: 'HOST-BAK-01',
+        sourceIp: '192.168.0.105',
+        updatedAt: '2026-11-25T01:00:00.000Z',
+      },
+    ],
+    clientTargets: [
+      {
+        targetHost: '192.168.0.105',
+        shareName: 'BackupDocs',
+        driveLetter: 'Z:',
+        authMode: 'account',
+        username: 'LocUser',
+        password: secretLocPass,
+        persistent: true,
+      },
+    ],
+  });
+  assert.strictEqual(seedLocSave.success, true);
+
+  // 15d. Create manual snapshot & confirm AES-256-GCM ciphertext (ZERO plaintext leak)
+  const manualBak = backupStore.createBackupSnapshot({
+    trigger: 'manual',
+    reason: '초기 정상 상태 수동 백업',
+    hostName: 'HOST-BAK-01',
+  });
+  assert.strictEqual(manualBak.success, true);
+  assert.strictEqual(manualBak.snapshot.counts.shareCount, 1);
+  assert.strictEqual(manualBak.snapshot.counts.hostPolicyCount, 1);
+  assert.strictEqual(manualBak.snapshot.counts.ticketCount, 1);
+  assert.strictEqual(manualBak.snapshot.counts.locationCount, 1);
+
+  const rawBackupDisk = fs.readFileSync(manualBak.snapshot.filePath, 'utf8');
+  assert(!rawBackupDisk.includes(secretSharePass), 'Backup snapshot file must NEVER leak plaintext share password');
+  assert(!rawBackupDisk.includes(secretLocPass), 'Backup snapshot file must NEVER leak plaintext location password');
+  assert(rawBackupDisk.includes('encryptedCredentials'), 'Backup snapshot file must preserve AES-256-GCM encryptedCredentials');
+
+  // 15e. Duplicate unchanged auto backup skips; modifying a changed state triggers auto_before_modify; deleting triggers auto_before_delete
+  const dupAuto = backupStore.createBackupSnapshot({
+    trigger: 'auto_before_modify',
+    reason: '중복 테스트',
+    hostName: 'HOST-BAK-01',
+  });
+  assert.strictEqual(dupAuto.success, true);
+  assert.strictEqual(dupAuto.skippedDuplicate, true, 'Duplicate auto backup with identical contentHash must skip');
+
+  const branchInitSave = backupStore.saveLocationProfile({
+    profileId: 'branch-lab',
+    locationName: '지사 연구실',
+    description: '신규 장소 생성',
+    networkHint: { subnetPrefix: '192.168.10', primaryIp: '192.168.10.20', hostname: 'LAB-PC' },
+    savedShares: [],
+    clientTargets: [],
+  });
+  assert.strictEqual(branchInitSave.success, true);
+
+  const modifyLocSave = backupStore.saveLocationProfile({
+    profileId: 'branch-lab',
+    locationName: '지사 연구실 (수정됨)',
+    description: '변경 후 테스트',
+    networkHint: { subnetPrefix: '192.168.10', primaryIp: '192.168.10.20', hostname: 'LAB-PC' },
+    savedShares: [],
+    clientTargets: [],
+  });
+  assert.strictEqual(modifyLocSave.success, true);
+
+  // Deleting location profile triggers auto_before_delete
+  const deleteLocRes = backupStore.deleteLocationProfile('branch-lab');
+  assert.strictEqual(deleteLocRes.success, true);
+
+  const afterAutoList = backupStore.listBackupSnapshots();
+  assert(
+    afterAutoList.snapshots.some((s) => s.trigger === 'auto_before_modify') &&
+      afterAutoList.snapshots.some((s) => s.trigger === 'auto_before_delete'),
+    'Location modify and delete must automatically generate auto_before_modify and auto_before_delete snapshots'
+  );
+
+  // Wipe live portable shares & tickets before testing restore
+  backupStore.savePortableData({
+    schemaVersion: 1,
+    updatedAt: '2026-11-25T02:00:00.000Z',
+    shares: [],
+    troubleshootTickets: [],
+  });
+
+  // 15f. Restore manual snapshot -> verifies auto_before_restore safety backup + full decrypted data restoration
+  const restoreRes = backupStore.restoreBackupSnapshot(manualBak.snapshot.backupId, { hostName: 'HOST-BAK-01' });
+  assert.strictEqual(restoreRes.success, true, 'restoreBackupSnapshot must succeed');
+  assert(restoreRes.safetyBackup && restoreRes.safetyBackup.trigger === 'auto_before_restore', 'Restore must create auto_before_restore safety backup first');
+  assert.strictEqual(restoreRes.portableDocument.shares.length, 1);
+  assert.strictEqual(restoreRes.portableDocument.shares[0].password, secretSharePass);
+  assert.strictEqual(restoreRes.portableDocument.troubleshootTickets.length, 1);
+  assert.strictEqual(restoreRes.locationProfiles.length, 1);
+  const restoredLoc = backupStore.loadLocationProfile('office-hq');
+  assert.strictEqual(restoredLoc.success, true);
+  assert.strictEqual(restoredLoc.profile.locationName, '본사 사무실');
+  assert.strictEqual(restoredLoc.profile.clientTargets[0].password, secretLocPass);
+
+  // 15g. Create >20 manual backups -> verify rotation strictly enforces max 20 files in <appDir>/backup
+  for (let i = 0; i < 22; i += 1) {
+    const r = backupStore.createBackupSnapshot({
+      trigger: 'manual',
+      reason: `회전 테스트 #${i + 1}`,
+      hostName: 'HOST-BAK-01',
+      allowDuplicate: true,
+    });
+    assert.strictEqual(r.success, true);
+  }
+  const rotatedList = backupStore.listBackupSnapshots();
+  assert.strictEqual(
+    rotatedList.snapshots.length,
+    portableStore.BACKUP_MAX_SNAPSHOTS,
+    'Backup rotation must strictly retain at most 20 snapshots'
+  );
+  const actualBakFiles = fs.readdirSync(expectedBackupDir).filter((f) => f.endsWith(portableStore.BACKUP_FILE_EXT));
+  assert.strictEqual(actualBakFiles.length, 20, 'Disk <appDir>/backup directory must contain exactly 20 .backup.json files after rotation');
+  assert(
+    !fs.readdirSync(expectedBackupDir).some((f) => f.endsWith('.tmp') || f.endsWith('.lock')),
+    'Disk <appDir>/backup must leave zero .tmp or .lock files after operations'
+  );
+
+  // 15h. Verify deleteBackupSnapshot removes individual snapshot
+  const delTargetId = rotatedList.snapshots[0].backupId;
+  const delBakRes = backupStore.deleteBackupSnapshot(delTargetId);
+  assert.strictEqual(delBakRes.success, true);
+  assert.strictEqual(backupStore.listBackupSnapshots().snapshots.length, 19);
+
+  // 15i. Verify IPC, preload, shareBridge auto-backup hooks, TopBar, BackupRestoreModal & App wiring
+  const backupModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'BackupRestoreModal.tsx'), 'utf8');
+  const topBarSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TopBar.tsx'), 'utf8');
+  for (const ipcCh of ['list-data-backups', 'create-data-backup', 'restore-data-backup', 'delete-data-backup', 'open-backup-folder']) {
+    assert(modMain.includes(`'${ipcCh}'`), `main.js missing backup IPC channel: ${ipcCh}`);
+  }
+  for (const preloadApi of ['listDataBackups:', 'createDataBackup:', 'restoreDataBackup:', 'deleteDataBackup:', 'openBackupFolder:']) {
+    assert(modPreload.includes(preloadApi), `preload.js missing backup API: ${preloadApi}`);
+  }
+  for (const bridgeFn of [
+    'async listDataBackups(',
+    'async createDataBackup(',
+    'async restoreDataBackup(',
+    'async deleteDataBackup(',
+    'async openBackupFolder(',
+  ]) {
+    assert(bridgeSrc.includes(bridgeFn), `shareBridge.ts missing ${bridgeFn}`);
+  }
+  assert(
+    backupModalSrc.includes('role="dialog"') &&
+      backupModalSrc.includes('aria-modal="true"') &&
+      backupModalSrc.includes('backup-restore-modal') &&
+      backupModalSrc.includes('btn-create-manual-backup') &&
+      backupModalSrc.includes('btn-open-backup-folder') &&
+      backupModalSrc.includes('btn-restore-backup-') &&
+      backupModalSrc.includes('btn-confirm-restore-') &&
+      backupModalSrc.includes('btn-delete-backup-') &&
+      backupModalSrc.includes('btn-confirm-delete-') &&
+      topBarSrc.includes('btn-topbar-backup-restore') &&
+      appTsxSrc.includes('BackupRestoreModal') &&
+      appTsxSrc.includes('btn-logs-open-backup') &&
+      appTsxSrc.includes('handleRestoreBackup'),
+    'BackupRestoreModal / TopBar / App.tsx missing required controls or restore wiring'
+  );
+
+  pass('App-directory <appDir>/backup encrypted snapshots, 20-file rotation, auto triggers, restore roundtrip & BackupRestoreModal UI verified');
+} finally {
+  fs.rmSync(tmpBackupAppDir, { recursive: true, force: true });
+}
+
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);
 console.log('=======================================================');
+
 

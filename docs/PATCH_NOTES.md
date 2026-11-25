@@ -1,5 +1,16 @@
 # 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)
 
+## 📅 v1.3.0 (2026-11-25) — [MINOR] 자료 자동 백업 및 시점 복원 시스템 추가
+- **변경 구분**: `MINOR` (하위 호환 신규 기능 추가 (MINOR))
+- **개발자 · 저작권**: AhBiYout · (주)청운정보시스템 (cisnet.co.kr)
+- **배포 파일**: `AhBiShare_OneClick_v1.3.0.exe`, `AhBiShare_OneClick-Lite_v1.3.0.exe`, `AhBiShare_OneClick_Win7_v1.3.0.exe`, `AhBiShare_OneClick-Setup_v1.3.0.exe`
+
+### 주요 변경 및 특이점 기록
+1. 앱 실행 폴더 하위 backup 폴더에 포터블 설정, 위치 프로필, 오류 티켓 전체를 AES-256-GCM 암호화 상태로 자동 및 수동 백업
+2. 삭제·변경·초기화·복원 직전 자동 안전 백업 및 최근 20개 스냅샷 회전 보관(BACKUP_MAX_SNAPSHOTS = 20)
+3. 전용 백업 복원 모달(BackupRestoreModal)을 통해 백업 목록 조회, 필터/검색, 수동 백업 생성, 원클릭 시점 복원, 개별 삭제 및 백업 폴더 열기 지원
+4. 상단 바(TopBar) 백업·복원 트리거 버튼 및 실행 이력(logs) 화면 백업 관리 단축 버튼 와이어링
+
 ## 📅 v1.2.1 (2026-11-22) — [PATCH] 10대 보안 원복 심층 감사 · 전문가 레지스트리 비교 · 사용장소 프로필 내용 수정 · 사전 검증 · 스마트 인증 감지 · 탐색기 UNC 열기 · USB 쓰기 안전성 · USB 양방향 오류 전달 마법사 & 7~17차 자아성찰 오류 수정
 - **변경 구분**: `PATCH` (버그 수정 · 보안 및 호환성 패치 (PATCH))
 - **개발자 · 저작권**: AhBiYout · (주)청운정보시스템 (cisnet.co.kr)

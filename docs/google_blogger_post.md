@@ -7,14 +7,14 @@
 
 ## 1️⃣ [작성 모드 (서식 있는 텍스트)]
 
-# AhBiShare OneClick v1.2.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
+# AhBiShare OneClick v1.3.0 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
 
 ## 프로그램 소개
 **AhBiShare OneClick**은 Windows PC 간 폴더 공유 개설(메인 PC), 네트워크 드라이브 연결(클라이언트 PC), 사용장소별(사무실·집·현장) 설정 파일 저장 및 원클릭 일괄 적용, Windows 10·11 정책 불일치 자동 정렬, 그리고 Windows 7·8·8.1 구형 OS 호환 브릿지 및 오프라인 스크립트 생성을 클릭 한 번으로 해결하는 **무료 오픈소스 유틸리티**입니다.
 
 ---
 
-## ✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-22)
+## ✨ 이번 업데이트 주요 내용 (v1.3.0 · 2026-11-22)
 - **10대 보안 원복 심층 감사 · 호스트 불일치 배지 · 전문가 레지스트리 비교 뷰 & 사용장소 프로필 수정 (`v1.2.1`)**:
   - 보안 원복 직후 SMB 서명·게스트 차단·NTLM·LSA 등 10개 핵심 항목의 복구 상태를 정밀 검증하는 **보안 원복 심층 감사 보고서**, 대상 호스트와의 차이를 표시하는 **항목별 색상 배지**, 로컬·호스트 실제 레지스트리 원시 값을 나란히 비교하는 **전문가 비교 뷰**를 추가했습니다.
   - 저장된 사용장소 프로필(`.location.json`)의 이름·메모·네트워크 대역·호스트 공유·클라이언트 드라이브·프리셋을 앱 내에서 직접 고칠 수 있는 **프로필 내용 수정 기능**과, 일괄 적용 실행 직전에 로컬 폴더 존재·NTFS 접근 권한·드라이브 문자 충돌·TCP 445 포트 응답·계정 자격증명·관리자/SMB 서비스 상태를 읽기 전용으로 미리 진단하고 결과(`통과`·`주의`·`오류`)를 보여주는 **일괄 적용 사전 검증(Pre-flight Check)** 단계를 도입했습니다.
@@ -51,10 +51,10 @@
 ## 📦 배포 파일 안내 (4종)
 | 배포 파일명 | 권장 운영체제 | 설명 |
 | :--- | :--- | :--- |
-| **`AhBiShare_OneClick_v1.2.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
-| **`AhBiShare_OneClick-Lite_v1.2.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·그래픽 모듈을 경량화한 포터블 버전 |
-| **`AhBiShare_OneClick_Win7_v1.2.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 구형 OS 전용 Electron 21 기반 호환 포터블 빌드 |
-| **`AhBiShare_OneClick-Setup_v1.2.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (바로가기 및 방화벽 자동 등록) |
+| **`AhBiShare_OneClick_v1.3.0.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
+| **`AhBiShare_OneClick-Lite_v1.3.0.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·그래픽 모듈을 경량화한 포터블 버전 |
+| **`AhBiShare_OneClick_Win7_v1.3.0.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 구형 OS 전용 Electron 21 기반 호환 포터블 빌드 |
+| **`AhBiShare_OneClick-Setup_v1.3.0.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (바로가기 및 방화벽 자동 등록) |
 
 ---
 
@@ -64,13 +64,13 @@
 ---
 
 ## 📥 공식 다운로드
-- 🔗 **[AhBiShare OneClick v1.2.1 공식 다운로드 (GitHub Releases)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)**
+- 🔗 **[AhBiShare OneClick v1.3.0 공식 다운로드 (GitHub Releases)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)**
 
 ---
 
 ## 🏷️ 버전 및 시스템 요구 사항
-- **현재 버전**: v1.2.1 (Semantic Versioning: `MAJOR.MINOR.PATCH`)
-- **배포 파일**: `AhBiShare_OneClick_v1.2.1.exe`, `AhBiShare_OneClick-Lite_v1.2.1.exe`, `AhBiShare_OneClick_Win7_v1.2.1.exe`, `AhBiShare_OneClick-Setup_v1.2.1.exe`
+- **현재 버전**: v1.3.0 (Semantic Versioning: `MAJOR.MINOR.PATCH`)
+- **배포 파일**: `AhBiShare_OneClick_v1.3.0.exe`, `AhBiShare_OneClick-Lite_v1.3.0.exe`, `AhBiShare_OneClick_Win7_v1.3.0.exe`, `AhBiShare_OneClick-Setup_v1.3.0.exe`
 - **지원 운영체제**: Windows 7 SP1, Windows 8 / 8.1, Windows 10, Windows 11 (21H2 ~ 26H2, x64)
 - **실행 권한**: 관리자 권한 필수 (SMB 서비스, 방화벽 TCP 445·139 및 레지스트리 정책 적용)
 
@@ -127,7 +127,7 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
 ```html
 <div style="font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #1e293b; line-height: 1.75; max-width: 840px; margin: 0 auto; font-size: 15px;">
   <h2 style="color: #4338ca; border-bottom: 2px solid #4f46e5; padding-bottom: 12px; margin-bottom: 18px; line-height: 1.4;">
-    AhBiShare OneClick v1.2.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
+    AhBiShare OneClick v1.3.0 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
   </h2>
 
   <p style="margin-bottom: 18px;">
@@ -135,7 +135,7 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
   </p>
 
   <div style="background: #eef2ff; border-left: 4px solid #4f46e5; border-radius: 6px; padding: 16px 18px; margin: 20px 0;">
-    <h3 style="color: #312e81; margin: 0 0 10px 0; font-size: 17px;">✨ 이번 업데이트 주요 내용 (v1.2.1 · 2026-11-22)</h3>
+    <h3 style="color: #312e81; margin: 0 0 10px 0; font-size: 17px;">✨ 이번 업데이트 주요 내용 (v1.3.0 · 2026-11-22)</h3>
     <ul style="margin: 0; padding-left: 20px;">
       <li style="margin-bottom: 8px;"><strong>10대 보안 원복 감사 · 프로필 수정 · 사전 검증 · 스마트 인증 감지 · 탐색기 UNC 열기 · USB 쓰기 안전성 · USB 양방향 오류 전달 마법사 &amp; 7~17차 심층 점검 (v1.2.1)</strong>: 보안 원복 후 10개 핵심 항목 감사 보고서·항목별 색상 배지·<strong>전문가 레지스트리 좌우 비교 뷰</strong>, 저장된 <code>.location.json</code> <strong>프로필 직접 수정 에디터</strong>, <strong>일괄 적용 사전 검증 모달</strong>, 클라이언트 <strong>비밀번호 눈 아이콘 토글</strong>·<strong>5종 숫자 암호 프리셋</strong>·<strong>전 6개 탭 새로고침 버튼</strong>·<strong><code>ActiveShare</code> <code>탐색기에서 열기</code></strong>(<code>\\IP\공유명</code> UNC 바로 열기), 유효 IPv4 자동 <code>probeSmbTarget</code> <code>useEffect</code>·30초 TTL 캐시·자격증명 조합 제안·<code>1219</code> 세션 정리를 결합한 <strong>스마트 인증 감지(<code>detectSmartShareAuth</code> · <code>ShareAuthProbeBar</code>)</strong>, <strong>USB 쓰기 안전성 강화</strong>(쓰기 금지 비주입 검증·비파괴 <code>wx</code> 프로브·<code>atomicWriteBuffer</code>·<code>exit 4</code> 가드) 및 <strong>USB 양방향 오류 전달 &amp; 3단계 해결 마법사</strong>(기존 <code>AhBiShare_OneClick.portable.json</code> 내 <code>troubleshootTickets</code> 평문 마스킹 통합 저장 · 반대편 PC 자동 매칭 상단 배너 및 3단계 마법사 자동 오픈 · 수동 정리까지 이력 보존)를 도입했으며, 제17차 점검(<code>evaluateSmartAuthDecision</code> 엄격 준수·패널 억제 동기화·<code>pendingClientAuthMode</code> 배너 유지·<code>loadPortableData</code> AV 잠금 <code>.corrupt</code> 오인 격리 방지) 및 <code>IPC$</code> 오탐·<code>onBlur/onSubmit</code> 경합·구형 OS 토폴로지/방화벽/<code>.bat</code> <code>[char]34</code>/<code>Error 58</code>·모달 <code>onCloseRef</code>·업데이터 취소 경합·NTLM 복원 등 7~17차 심층 점검 오류를 수정했습니다.</li>
       <li style="margin-bottom: 8px;"><strong>실시간 작업 진행 모션창(WorkProgressModal) &amp; 6차 자아성찰 심층 점검 안정화 (v1.2.0 · MINOR)</strong>: 공유 개설·해제, 드라이브 연결·해제, OS 정책 변경·자동 정렬, 구형 OS 통합, 사용장소 일괄 적용, 보안 원복 등 주요 작업 11종에 <strong>듀얼 링 모션 · 실시간 단계 목록 · 경과 시간 표시창</strong>(실행 중 배경·포커스 잠금, 성공 1.5초 자동 닫힘, 오류 수동 확인)을 도입하고, <code>prefers-reduced-motion</code> 깜빡임 방지·만료 보안 원복/OS 패치 실패 판정·<code>validShares</code> 일괄 적용 인덱스 일치를 반영했습니다.</li>
@@ -160,22 +160,22 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
     </thead>
     <tbody>
       <tr>
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_v1.2.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_v1.3.0.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 10 / 11 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행)</td>
       </tr>
       <tr style="background: #f8fafc;">
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Lite_v1.2.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Lite_v1.3.0.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 10 / 11 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블</td>
       </tr>
       <tr>
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_Win7_v1.2.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick_Win7_v1.3.0.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 7 SP1 / 8 / 8.1 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">구형 OS 전용 Electron 21 기반 호환 포터블 빌드</td>
       </tr>
       <tr style="background: #f8fafc;">
-        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Setup_v1.2.1.exe</code></td>
+        <td style="padding: 9px 12px; border: 1px solid #cbd5e1;"><code>AhBiShare_OneClick-Setup_v1.3.0.exe</code></td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Windows 7 ~ 11 (x64)</td>
         <td style="padding: 9px 12px; border: 1px solid #cbd5e1;">Inno Setup 설치형 (바로가기·방화벽 자동 등록)</td>
       </tr>
@@ -189,13 +189,13 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, W
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">📥 공식 다운로드</h3>
   <p style="margin: 12px 0 22px 0;">
-    <a href="https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4f46e5; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">AhBiShare OneClick v1.2.1 공식 다운로드 (GitHub Releases)</a>
+    <a href="https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest" target="_blank" rel="noopener noreferrer" style="display: inline-block; background: #4f46e5; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">AhBiShare OneClick v1.3.0 공식 다운로드 (GitHub Releases)</a>
   </p>
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">🏷️ 버전 및 시스템 요구 사항</h3>
   <ul style="padding-left: 20px;">
-    <li><strong>최신 버전</strong>: v1.2.1 (Semantic Versioning: MAJOR.MINOR.PATCH)</li>
-    <li><strong>배포 파일</strong>: <code>AhBiShare_OneClick_v1.2.1.exe</code> · <code>AhBiShare_OneClick-Lite_v1.2.1.exe</code> · <code>AhBiShare_OneClick_Win7_v1.2.1.exe</code> · <code>AhBiShare_OneClick-Setup_v1.2.1.exe</code></li>
+    <li><strong>최신 버전</strong>: v1.3.0 (Semantic Versioning: MAJOR.MINOR.PATCH)</li>
+    <li><strong>배포 파일</strong>: <code>AhBiShare_OneClick_v1.3.0.exe</code> · <code>AhBiShare_OneClick-Lite_v1.3.0.exe</code> · <code>AhBiShare_OneClick_Win7_v1.3.0.exe</code> · <code>AhBiShare_OneClick-Setup_v1.3.0.exe</code></li>
     <li><strong>운영체제</strong>: Windows 7 SP1, Windows 8 / 8.1, Windows 10, Windows 11 (21H2 ~ 26H2, x64)</li>
     <li><strong>실행 권한</strong>: 관리자 권한 필수 (SMB 서비스, 방화벽 TCP 445·139 및 레지스트리 정책 적용)</li>
   </ul>

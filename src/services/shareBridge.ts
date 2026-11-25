@@ -47,6 +47,11 @@ import {
   TroubleshootStepResolvedSource,
   TroubleshootSyncSummary,
   AppLogStatusInfo,
+  BackupTriggerType,
+  BackupSnapshotSummary,
+  BackupStoreStatus,
+  CreateBackupResult,
+  RestoreBackupResult,
 } from '@/types/share';
 import {
   decodeConnectionCode,
@@ -123,6 +128,29 @@ declare global {
         hostName?: string;
       }) => Promise<{ success: boolean; directory: string; fileName?: string; filePath: string; error?: string }>;
       getAppLogInfo?: (options?: { limit?: number }) => Promise<AppLogStatusInfo>;
+      listDataBackups?: () => Promise<BackupStoreStatus>;
+      createDataBackup?: (options?: {
+        trigger?: BackupTriggerType;
+        reason?: string;
+        hostName?: string;
+        allowDuplicate?: boolean;
+      }) => Promise<CreateBackupResult>;
+      restoreDataBackup?: (payload: {
+        backupId: string;
+        hostName?: string;
+        skipSafetyBackup?: boolean;
+      }) => Promise<RestoreBackupResult>;
+      deleteDataBackup?: (payload: { backupId: string }) => Promise<{
+        success: boolean;
+        deletedBackupId?: string;
+        writeProtected?: boolean;
+        error?: string;
+      }>;
+      openBackupFolder?: () => Promise<{
+        success: boolean;
+        directory: string;
+        message: string;
+      }>;
       triggerSystemReboot?: () => Promise<{ success: boolean; message: string }>;
       saveLegacyScripts?: (payload: {
         folderName: string;
@@ -219,7 +247,9 @@ const STORAGE_MOUNTS_KEY = 'ahbishare_oneclick_mounts_v1';
 const STORAGE_PORTABLE_SIM_KEY = 'ahbishare_portable_json_sim_v1';
 const STORAGE_LEGACY_ROLLBACK_KEY = 'ahbishare_legacy_rollback_snapshot_v1';
 const STORAGE_LOCATIONS_SIM_KEY = 'ahbishare_location_profiles_sim_v1';
+const STORAGE_BACKUPS_SIM_KEY = 'ahbishare_data_backups_sim_v1';
 const PORTABLE_FILE_NAME = 'AhBiShare_OneClick.portable.json';
+const BACKUP_MAX_SNAPSHOTS = 20;
 
 // Simulated Windows 11 24H2 baseline policy state used only in browser preview mode
 let webSimPolicyBase: Omit<OsNetworkPolicyStatus, 'compatibilityScore' | 'detectedIssues' | 'checkedAt'> = {
@@ -299,6 +329,15 @@ function setCachedPassword(hostName: string, shareName: string, password?: strin
 
 function getCachedPassword(hostName: string, shareName: string): string | undefined {
   return runtimeSharePasswordCache.get(cacheKeyForShare(hostName, shareName));
+}
+
+function syncPasswordCacheFromPortable(doc: PortableShareDocument, fallbackHost = ''): void {
+  if (!doc || !Array.isArray(doc.shares)) return;
+  for (const entry of doc.shares) {
+    if (entry.password) {
+      setCachedPassword(entry.sourceHostName || fallbackHost, entry.shareName, entry.password);
+    }
+  }
 }
 
 const SMART_AUTH_CACHE_TTL_MS = 20_000;
@@ -1141,6 +1180,17 @@ export const shareBridge = {
     targetHostName: string
   ): Promise<Record<string, PendingHostPolicyTask>> {
     const cleanLower = (targetHostName || '').trim().toLowerCase();
+    const hadTarget = Object.entries(latestPortableDoc.pendingHostActions || {}).some(
+      ([k, v]) =>
+        k.trim().toLowerCase() === cleanLower ||
+        (v.targetHostName || '').trim().toLowerCase() === cleanLower
+    );
+    if (hadTarget) {
+      await this.createDataBackup({
+        trigger: 'auto_before_delete',
+        reason: `호스트 '${targetHostName}' 대기 작업 삭제 직전 자동 백업`,
+      });
+    }
     const nextMap: Record<string, PendingHostPolicyTask> = {};
     for (const [k, v] of Object.entries(latestPortableDoc.pendingHostActions || {})) {
       if (
@@ -1294,6 +1344,17 @@ export const shareBridge = {
     hostName: string
   ): Promise<Record<string, HostPolicySnapshot>> {
     const cleanLower = (hostName || '').trim().toLowerCase();
+    const hadMatch = Object.entries(latestPortableDoc.hostPolicies || {}).some(
+      ([k, v]) =>
+        k.trim().toLowerCase() === cleanLower ||
+        (v.hostName || '').trim().toLowerCase() === cleanLower
+    );
+    if (hadMatch) {
+      await this.createDataBackup({
+        trigger: 'auto_before_delete',
+        reason: `호스트 '${hostName}' 정책 스냅샷 삭제 직전 자동 백업`,
+      });
+    }
     const curMap: Record<string, HostPolicySnapshot> = {};
     for (const [k, v] of Object.entries(latestPortableDoc.hostPolicies || {})) {
       if (k.trim().toLowerCase() !== cleanLower && (v.hostName || '').trim().toLowerCase() !== cleanLower) {
@@ -1320,6 +1381,12 @@ export const shareBridge = {
   },
 
   async clearAllHostPolicySnapshots(): Promise<Record<string, HostPolicySnapshot>> {
+    if (Object.keys(latestPortableDoc.hostPolicies || {}).length > 0) {
+      await this.createDataBackup({
+        trigger: 'auto_before_reset',
+        reason: '호스트 정책 스냅샷 전체 초기화 직전 자동 백업',
+      });
+    }
     const nextDoc: PortableShareDocument = {
       schemaVersion: 1,
       updatedAt: new Date().toISOString(),
@@ -1350,6 +1417,12 @@ export const shareBridge = {
       const eShare = (entry.shareName || '').trim().toLowerCase();
       return !(eHost === hostLower && eShare === shareLower);
     });
+    if (filteredShares.length < (latestPortableDoc.shares || []).length) {
+      await this.createDataBackup({
+        trigger: 'auto_before_delete',
+        reason: `USB 저장 공유 설정 '${shareName}' (${sourceHostName}) 삭제 직전 자동 백업`,
+      });
+    }
     const nextDoc: PortableShareDocument = {
       schemaVersion: 1,
       updatedAt: new Date().toISOString(),
@@ -1497,7 +1570,15 @@ export const shareBridge = {
   async deleteTroubleshootTicket(
     ticketId: string
   ): Promise<{ success: boolean; tickets: TroubleshootTicket[]; portableStatus: PortableStorageStatus }> {
-    const nextList = this.getTroubleshootTickets().filter((t) => t.ticketId !== ticketId);
+    const current = this.getTroubleshootTickets();
+    const target = current.find((t) => t.ticketId === ticketId);
+    if (target) {
+      await this.createDataBackup({
+        trigger: 'auto_before_delete',
+        reason: `USB 오류 티켓(${target.errorCode} · ${target.shareName}) 삭제 직전 자동 백업`,
+      });
+    }
+    const nextList = current.filter((t) => t.ticketId !== ticketId);
     return this.persistTroubleshootTicketList(nextList);
   },
 
@@ -1510,6 +1591,12 @@ export const shareBridge = {
     const current = this.getTroubleshootTickets();
     const nextList = current.filter((t) => t.status !== 'resolved');
     const removedCount = current.length - nextList.length;
+    if (removedCount > 0) {
+      await this.createDataBackup({
+        trigger: 'auto_before_reset',
+        reason: `해결 완료된 오류 티켓 ${removedCount}건 일괄 정리 직전 자동 백업`,
+      });
+    }
     const saved = await this.persistTroubleshootTicketList(nextList);
     return {
       ...saved,
@@ -1623,6 +1710,248 @@ export const shareBridge = {
       writable: false,
       files: [],
       recentLines: [],
+    };
+  },
+
+  async listDataBackups(): Promise<BackupStoreStatus> {
+    if (window.ahbiShareElectron?.listDataBackups) {
+      try {
+        return await window.ahbiShareElectron.listDataBackups();
+      } catch {}
+    }
+    const rawList = readStore<Array<BackupSnapshotSummary & { portableRaw?: string; locationsRaw?: LocationProfileFile[] }>>(
+      STORAGE_BACKUPS_SIM_KEY,
+      []
+    );
+    const snapshots: BackupSnapshotSummary[] = rawList.map(({ portableRaw: _p, locationsRaw: _l, ...summary }) => summary);
+    return {
+      success: true,
+      directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+      writable: true,
+      writeProtected: false,
+      maxSnapshots: BACKUP_MAX_SNAPSHOTS,
+      snapshots,
+    };
+  },
+
+  async createDataBackup(options?: {
+    trigger?: BackupTriggerType;
+    reason?: string;
+    hostName?: string;
+    allowDuplicate?: boolean;
+  }): Promise<CreateBackupResult> {
+    if (window.ahbiShareElectron?.createDataBackup) {
+      try {
+        return await window.ahbiShareElectron.createDataBackup(options || {});
+      } catch (err) {
+        return {
+          success: false,
+          directory: '',
+          error: err instanceof Error ? err.message : '백업 생성 IPC 호출 실패',
+        };
+      }
+    }
+
+    const trigger: BackupTriggerType = options?.trigger || 'manual';
+    const reason = (
+      options?.reason ||
+      (trigger === 'auto_before_delete'
+        ? '삭제 직전 자동 보호 백업'
+        : trigger === 'auto_before_modify'
+          ? '설정 변경 직전 자동 보호 백업'
+          : trigger === 'auto_before_reset'
+            ? '일괄 정리·초기화 직전 자동 보호 백업'
+            : trigger === 'auto_before_restore'
+              ? '백업 복원 직전 자동 안전 백업'
+              : '사용자 수동 백업')
+    ).trim();
+
+    const portableRaw =
+      (typeof window !== 'undefined' ? window.localStorage.getItem(STORAGE_PORTABLE_SIM_KEY) : null) ||
+      JSON.stringify({ schemaVersion: 1, updatedAt: '', shares: [] });
+    const locationsRaw = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    let parsedPortable: PortableShareDocument = { schemaVersion: 1, updatedAt: '', shares: [] };
+    try {
+      parsedPortable = JSON.parse(portableRaw) as PortableShareDocument;
+    } catch {}
+
+    const counts = {
+      shareCount: Array.isArray(parsedPortable.shares) ? parsedPortable.shares.length : 0,
+      hostPolicyCount: parsedPortable.hostPolicies ? Object.keys(parsedPortable.hostPolicies).length : 0,
+      pendingTaskCount: parsedPortable.pendingHostActions ? Object.keys(parsedPortable.pendingHostActions).length : 0,
+      ticketCount: Array.isArray(parsedPortable.troubleshootTickets) ? parsedPortable.troubleshootTickets.length : 0,
+      locationCount: locationsRaw.length,
+    };
+    const totalItems =
+      counts.shareCount + counts.hostPolicyCount + counts.pendingTaskCount + counts.ticketCount + counts.locationCount;
+
+    if (trigger !== 'manual' && totalItems === 0) {
+      return {
+        success: true,
+        skippedEmpty: true,
+        directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+        prunedCount: 0,
+      };
+    }
+
+    const canonicalString = JSON.stringify({
+      shares: parsedPortable.shares || [],
+      hostPolicies: parsedPortable.hostPolicies || {},
+      pendingHostActions: parsedPortable.pendingHostActions || {},
+      troubleshootTickets: parsedPortable.troubleshootTickets || [],
+      lastClientTarget: parsedPortable.lastClientTarget || null,
+      locationsRaw,
+    });
+    let hashAcc = 2166136261;
+    for (let i = 0; i < canonicalString.length; i += 1) {
+      hashAcc ^= canonicalString.charCodeAt(i);
+      hashAcc = Math.imul(hashAcc, 16777619);
+    }
+    const contentHash = (hashAcc >>> 0).toString(16).padStart(8, '0');
+
+    const existing = readStore<
+      Array<BackupSnapshotSummary & { portableRaw?: string; locationsRaw?: LocationProfileFile[] }>
+    >(STORAGE_BACKUPS_SIM_KEY, []);
+
+    if (trigger !== 'manual' && !options?.allowDuplicate && existing.length > 0 && existing[0].contentHash === contentHash) {
+      const { portableRaw: _p, locationsRaw: _l, ...summary } = existing[0];
+      return {
+        success: true,
+        skippedDuplicate: true,
+        directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+        snapshot: summary,
+        prunedCount: 0,
+      };
+    }
+
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(
+      now.getMinutes()
+    )}${pad(now.getSeconds())}`;
+    const rand = Math.random().toString(16).slice(2, 8);
+    const backupId = `bak-${stamp}-${rand}`;
+    const fileName = `AhBiShare_Backup_${stamp}_${rand}.backup.json`;
+    const serializedLen = new Blob([canonicalString]).size;
+
+    const entry = {
+      backupId,
+      fileName,
+      filePath: `backup/${fileName}`,
+      createdAt: now.toISOString(),
+      trigger,
+      reason,
+      createdByHostName: options?.hostName || 'WEB-PREVIEW-PC',
+      contentHash,
+      sizeBytes: serializedLen,
+      counts,
+      portableRaw,
+      locationsRaw,
+    };
+
+    const nextStored = [entry, ...existing].slice(0, BACKUP_MAX_SNAPSHOTS);
+    const prunedCount = Math.max(0, existing.length + 1 - nextStored.length);
+    writeStore(STORAGE_BACKUPS_SIM_KEY, nextStored);
+
+    const { portableRaw: _p, locationsRaw: _l, ...summary } = entry;
+    return {
+      success: true,
+      skippedDuplicate: false,
+      directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+      snapshot: summary,
+      prunedCount,
+    };
+  },
+
+  async restoreDataBackup(
+    backupId: string,
+    options?: { hostName?: string; skipSafetyBackup?: boolean }
+  ): Promise<RestoreBackupResult> {
+    if (window.ahbiShareElectron?.restoreDataBackup) {
+      const res = await window.ahbiShareElectron.restoreDataBackup({
+        backupId,
+        ...(options || {}),
+      });
+      if (res.success && res.portableDocument) {
+        latestPortableDoc = res.portableDocument;
+        if (res.portableStatus) latestPortableStatus = res.portableStatus;
+        syncPasswordCacheFromPortable(res.portableDocument);
+        this.clearSmartAuthCache();
+      }
+      return res;
+    }
+
+    const existing = readStore<
+      Array<BackupSnapshotSummary & { portableRaw?: string; locationsRaw?: LocationProfileFile[] }>
+    >(STORAGE_BACKUPS_SIM_KEY, []);
+    const matched = existing.find((e) => e.backupId === backupId || e.fileName === backupId);
+    if (!matched) {
+      return { success: false, error: '선택한 백업 스냅샷을 찾을 수 없습니다.' };
+    }
+
+    let safetyBackup: BackupSnapshotSummary | null = null;
+    if (!options?.skipSafetyBackup) {
+      const pre = await this.createDataBackup({
+        trigger: 'auto_before_restore',
+        reason: `백업('${matched.reason}') 복원 직전 자동 안전 백업`,
+        hostName: options?.hostName,
+      });
+      if (pre.success && pre.snapshot) safetyBackup = pre.snapshot;
+    }
+
+    if (typeof window !== 'undefined' && matched.portableRaw) {
+      window.localStorage.setItem(STORAGE_PORTABLE_SIM_KEY, matched.portableRaw);
+    }
+    if (Array.isArray(matched.locationsRaw)) {
+      writeStore(STORAGE_LOCATIONS_SIM_KEY, matched.locationsRaw);
+    }
+
+    const loaded = await loadWebPreviewPortable();
+    latestPortableDoc = loaded.document;
+    latestPortableStatus = loaded.status;
+    syncPasswordCacheFromPortable(loaded.document);
+    this.clearSmartAuthCache();
+
+    const locSummaries = await this.listLocationProfiles();
+    const { portableRaw: _p, locationsRaw: _l, ...restoredSummary } = matched;
+    return {
+      success: true,
+      restoredSnapshot: restoredSummary,
+      safetyBackup,
+      portableDocument: loaded.document,
+      portableStatus: loaded.status,
+      locationProfiles: locSummaries.profiles,
+    };
+  },
+
+  async deleteDataBackup(backupId: string): Promise<{
+    success: boolean;
+    deletedBackupId?: string;
+    writeProtected?: boolean;
+    error?: string;
+  }> {
+    if (window.ahbiShareElectron?.deleteDataBackup) {
+      return await window.ahbiShareElectron.deleteDataBackup({ backupId });
+    }
+    const existing = readStore<
+      Array<BackupSnapshotSummary & { portableRaw?: string; locationsRaw?: LocationProfileFile[] }>
+    >(STORAGE_BACKUPS_SIM_KEY, []);
+    const filtered = existing.filter((e) => e.backupId !== backupId && e.fileName !== backupId);
+    if (filtered.length === existing.length) {
+      return { success: false, error: '삭제할 백업을 찾을 수 없습니다.' };
+    }
+    writeStore(STORAGE_BACKUPS_SIM_KEY, filtered);
+    return { success: true, deletedBackupId: backupId };
+  },
+
+  async openBackupFolder(): Promise<{ success: boolean; directory: string; message: string }> {
+    if (window.ahbiShareElectron?.openBackupFolder) {
+      return await window.ahbiShareElectron.openBackupFolder();
+    }
+    return {
+      success: true,
+      directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+      message: '웹 미리보기 모드: Windows 실행 환경에서는 앱 실행 폴더 하위 backup 폴더가 즉시 열립니다.',
     };
   },
 
@@ -4182,6 +4511,12 @@ Write-Output 'SMB_SESSION_CLEANED'
       clientTargets: runtimeClientTargets,
     };
     const latestExisting = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+    if (latestExisting.some((p) => p.profileId === profile.profileId)) {
+      await this.createDataBackup({
+        trigger: 'auto_before_modify',
+        reason: `사용장소 '${profile.locationName}' 수정 직전 자동 백업`,
+      });
+    }
     const nextList = [sanitizedForSim, ...latestExisting.filter((p) => p.profileId !== profile.profileId)];
     writeStore(STORAGE_LOCATIONS_SIM_KEY, nextList);
     this.cacheLocationProfileCredentials(runtimeProfile);
@@ -4325,6 +4660,13 @@ Write-Output 'SMB_SESSION_CLEANED'
     }
     return await runSerializedWebLocationOp(async () => {
       const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
+      const targetLoc = stored.find((p) => p.profileId === profileId);
+      if (targetLoc) {
+        await this.createDataBackup({
+          trigger: 'auto_before_delete',
+          reason: `사용장소 '${targetLoc.locationName}' 삭제 직전 자동 백업`,
+        });
+      }
       writeStore(
         STORAGE_LOCATIONS_SIM_KEY,
         stored.filter((p) => p.profileId !== profileId)

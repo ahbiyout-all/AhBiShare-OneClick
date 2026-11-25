@@ -847,6 +847,32 @@ function atomicWriteJson(filePath, payloadObj) {
 
 const LOCATIONS_DIR_NAME = 'locations';
 const LOCATION_FILE_EXT = '.location.json';
+const BACKUP_DIR_NAME = 'backup';
+const BACKUP_FILE_EXT = '.backup.json';
+const BACKUP_MAX_SNAPSHOTS = 20;
+
+function resolveSafeBackupDir(baseDir) {
+  return path.resolve(baseDir, BACKUP_DIR_NAME);
+}
+
+function resolveSafeBackupFilePath(baseDir, fileName) {
+  const backupDir = resolveSafeBackupDir(baseDir);
+  const rawName = String(fileName || '').trim();
+  if (
+    !rawName ||
+    rawName !== path.basename(rawName) ||
+    rawName.includes('..') ||
+    !rawName.toLowerCase().endsWith(BACKUP_FILE_EXT) ||
+    /[\0\r\n/\\]/.test(rawName)
+  ) {
+    throw new Error('허용되지 않은 백업 파일 이름입니다.');
+  }
+  const filePath = path.resolve(backupDir, rawName);
+  if (!filePath.startsWith(backupDir + path.sep)) {
+    throw new Error('허용되지 않은 백업 파일 경로입니다.');
+  }
+  return { backupDir, fileName: rawName, filePath };
+}
 
 function sanitizeLocationId(rawId, fallbackName) {
   const source = String(rawId || fallbackName || '').trim();
@@ -1293,6 +1319,17 @@ function createPortableStore(options = {}) {
       };
     }
 
+    // Automatically back up existing catalog state before overwriting an existing location profile
+    try {
+      const existingMatches = findAllLocationFilesByProfileId(loc.directory, diskProfile.profileId);
+      if (existingMatches.length > 0 && loc.writable) {
+        createBackupSnapshot({
+          trigger: 'auto_before_modify',
+          reason: `사용장소 '${diskProfile.locationName}' 수정 직전 자동 백업`,
+        });
+      }
+    } catch {}
+
     const lockPath = path.join(locDir, '.locations.lock');
     return withFileLockSync(lockPath, () => {
       const staleAliasFiles = findAllLocationFilesByProfileId(loc.directory, diskProfile.profileId).filter(
@@ -1356,6 +1393,24 @@ function createPortableStore(options = {}) {
   const deleteLocationProfile = (profileId) => {
     const loc = getLocation();
     const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
+
+    // Automatically back up existing data before deleting a location profile
+    try {
+      const preMatches = findAllLocationFilesByProfileId(loc.directory, profileId);
+      if (preMatches.length > 0 && loc.writable) {
+        let locLabel = String(profileId || '');
+        try {
+          const rawPre = fs.readFileSync(preMatches[0], 'utf8').replace(/^\uFEFF/, '');
+          const parsedPre = JSON.parse(rawPre);
+          if (parsedPre && parsedPre.locationName) locLabel = String(parsedPre.locationName);
+        } catch {}
+        createBackupSnapshot({
+          trigger: 'auto_before_delete',
+          reason: `사용장소 '${locLabel}' 삭제 직전 자동 백업`,
+        });
+      }
+    } catch {}
+
     const lockPath = path.join(locDir, '.locations.lock');
     return withFileLockSync(lockPath, () => {
       const matches = findAllLocationFilesByProfileId(loc.directory, profileId);
@@ -1533,6 +1588,485 @@ function createPortableStore(options = {}) {
     };
   };
 
+  function buildBackupCounts(portableDocument, locationProfiles) {
+    const shares = Array.isArray(portableDocument?.shares) ? portableDocument.shares : [];
+    const hostPolicies = portableDocument?.hostPolicies ? Object.keys(portableDocument.hostPolicies).length : 0;
+    const pendingTasks = portableDocument?.pendingHostActions
+      ? Object.keys(portableDocument.pendingHostActions).length
+      : 0;
+    const tickets = Array.isArray(portableDocument?.troubleshootTickets)
+      ? portableDocument.troubleshootTickets.length
+      : 0;
+    const locations = Array.isArray(locationProfiles) ? locationProfiles.length : 0;
+    return {
+      shareCount: shares.length,
+      hostPolicyCount: hostPolicies,
+      pendingTaskCount: pendingTasks,
+      ticketCount: tickets,
+      locationCount: locations,
+    };
+  }
+
+  function computeBackupContentHash(portableDocument, locationProfiles) {
+    const canonical = {
+      shares: Array.isArray(portableDocument?.shares) ? portableDocument.shares : [],
+      hostPolicies: portableDocument?.hostPolicies || {},
+      pendingHostActions: portableDocument?.pendingHostActions || {},
+      troubleshootTickets: Array.isArray(portableDocument?.troubleshootTickets)
+        ? portableDocument.troubleshootTickets
+        : [],
+      lastClientTarget: portableDocument?.lastClientTarget || null,
+      locationProfiles: Array.isArray(locationProfiles) ? locationProfiles : [],
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex').slice(0, 16);
+  }
+
+  function collectEncryptedBundleFromDisk(loc) {
+    let portableDocument = prepareDiskDocument(emptyDocument());
+    if (fs.existsSync(loc.filePath)) {
+      try {
+        const rawPortable = readUtf8WithRetrySync(loc.filePath);
+        const parsedPortable = JSON.parse(rawPortable);
+        portableDocument = prepareDiskDocument(parsedPortable);
+      } catch {}
+    }
+
+    const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
+    const locationProfiles = [];
+    const seenIds = new Set();
+    if (fs.existsSync(locDir)) {
+      try {
+        for (const entry of fs.readdirSync(locDir)) {
+          if (!entry.toLowerCase().endsWith(LOCATION_FILE_EXT)) continue;
+          const fullPath = path.resolve(locDir, entry);
+          if (!fullPath.startsWith(locDir + path.sep)) continue;
+          try {
+            const raw = fs.readFileSync(fullPath, 'utf8').replace(/^\uFEFF/, '');
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object' || !parsed.locationName) continue;
+            const diskLoc = prepareLocationProfileForDisk(parsed);
+            if (parsed.updatedAt) {
+              diskLoc.updatedAt = String(parsed.updatedAt);
+            }
+            if (seenIds.has(diskLoc.profileId)) continue;
+            seenIds.add(diskLoc.profileId);
+            locationProfiles.push(diskLoc);
+          } catch {}
+        }
+      } catch {}
+    }
+    locationProfiles.sort((a, b) => String(a.profileId || '').localeCompare(String(b.profileId || '')));
+
+    const counts = buildBackupCounts(portableDocument, locationProfiles);
+    const contentHash = computeBackupContentHash(portableDocument, locationProfiles);
+    return { portableDocument, locationProfiles, counts, contentHash };
+  }
+
+  function toBackupSummary(parsed, fileName, filePath, sizeBytes) {
+    const counts = parsed?.counts || buildBackupCounts(parsed?.portableDocument, parsed?.locationProfiles);
+    return {
+      backupId: String(parsed?.backupId || fileName.replace(BACKUP_FILE_EXT, '')),
+      fileName,
+      filePath,
+      createdAt: String(parsed?.createdAt || new Date().toISOString()),
+      trigger: String(parsed?.trigger || 'manual'),
+      reason: String(parsed?.reason || '데이터 백업'),
+      createdByHostName: String(parsed?.createdByHostName || ''),
+      contentHash: String(parsed?.contentHash || ''),
+      sizeBytes: Number(sizeBytes) || 0,
+      counts,
+    };
+  }
+
+  function readBackupEntriesSorted(backupDir) {
+    const items = [];
+    if (!fs.existsSync(backupDir)) return items;
+    try {
+      for (const entry of fs.readdirSync(backupDir)) {
+        if (!entry.toLowerCase().endsWith(BACKUP_FILE_EXT)) continue;
+        let fullPath;
+        try {
+          ({ filePath: fullPath } = resolveSafeBackupFilePath(path.dirname(backupDir), entry));
+        } catch {
+          continue;
+        }
+        try {
+          const st = fs.statSync(fullPath);
+          if (!st.isFile()) continue;
+          const raw = fs.readFileSync(fullPath, 'utf8').replace(/^\uFEFF/, '');
+          const parsed = JSON.parse(raw);
+          if (!parsed || parsed.kind !== 'ahbishare-data-backup') continue;
+          items.push({
+            summary: toBackupSummary(parsed, entry, fullPath, st.size),
+            parsed,
+          });
+        } catch {}
+      }
+    } catch {}
+    items.sort((a, b) => {
+      const cmp = String(b.summary.createdAt || '').localeCompare(String(a.summary.createdAt || ''));
+      if (cmp !== 0) return cmp;
+      return String(b.summary.fileName || '').localeCompare(String(a.summary.fileName || ''));
+    });
+    return items;
+  }
+
+  function formatBackupFileStamp(date = new Date()) {
+    const d = date instanceof Date ? date : new Date(date);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(
+      d.getMinutes()
+    )}${pad(d.getSeconds())}`;
+  }
+
+  const ensureBackupDirectory = () => {
+    const loc = getLocation();
+    const backupDir = resolveSafeBackupDir(loc.directory);
+    if (!loc.writable) {
+      return {
+        success: false,
+        directory: backupDir,
+        writable: false,
+        writeProtected: Boolean(loc.writeProtected),
+        error: loc.writeError || '앱 실행 폴더가 쓰기 불가 상태입니다.',
+      };
+    }
+    try {
+      fs.mkdirSync(backupDir, { recursive: true });
+      const probe = probeDirectoryWriteSafety(backupDir);
+      if (!probe.writable) {
+        return {
+          success: false,
+          directory: backupDir,
+          writable: false,
+          writeProtected: Boolean(probe.writeProtected),
+          error: probe.writeError || '백업 폴더 쓰기 안전 점검 실패',
+        };
+      }
+      return {
+        success: true,
+        directory: backupDir,
+        writable: true,
+        writeProtected: false,
+      };
+    } catch (err) {
+      const classified = classifyUsbWriteError(err, '백업 폴더 생성');
+      return {
+        success: false,
+        directory: backupDir,
+        writable: false,
+        writeProtected: classified.writeProtected,
+        error: classified.message,
+      };
+    }
+  };
+
+  const listBackupSnapshots = () => {
+    const loc = getLocation();
+    const backupDir = resolveSafeBackupDir(loc.directory);
+    if (loc.writable && !fs.existsSync(backupDir)) {
+      try {
+        fs.mkdirSync(backupDir, { recursive: true });
+      } catch {}
+    }
+    const entries = readBackupEntriesSorted(backupDir);
+    return {
+      success: true,
+      directory: backupDir,
+      writable: Boolean(loc.writable),
+      writeProtected: Boolean(loc.writeProtected),
+      maxSnapshots: BACKUP_MAX_SNAPSHOTS,
+      snapshots: entries.map((e) => e.summary),
+      ...(loc.writeError ? { writeError: loc.writeError } : {}),
+    };
+  };
+
+  function createBackupSnapshot(options = {}) {
+    const loc = getLocation();
+    const ensured = ensureBackupDirectory();
+    if (!ensured.success) {
+      return {
+        success: false,
+        directory: ensured.directory,
+        writeProtected: Boolean(ensured.writeProtected),
+        error: ensured.error,
+      };
+    }
+
+    const trigger = String(options.trigger || 'manual');
+    const reason = String(
+      options.reason ||
+        (trigger === 'auto_before_delete'
+          ? '삭제 직전 자동 보호 백업'
+          : trigger === 'auto_before_modify'
+            ? '설정 변경 직전 자동 보호 백업'
+            : trigger === 'auto_before_reset'
+              ? '일괄 정리·초기화 직전 자동 보호 백업'
+              : trigger === 'auto_before_restore'
+                ? '백업 복원 직전 자동 안전 백업'
+                : '사용자 수동 백업')
+    ).trim();
+    const hostName = String(options.hostName || '').trim();
+    const allowDuplicate = Boolean(options.allowDuplicate);
+
+    const lockPath = path.join(ensured.directory, '.backup.lock');
+    return withFileLockSync(lockPath, () => {
+      const bundle = collectEncryptedBundleFromDisk(loc);
+      const totalItems =
+        bundle.counts.shareCount +
+        bundle.counts.hostPolicyCount +
+        bundle.counts.pendingTaskCount +
+        bundle.counts.ticketCount +
+        bundle.counts.locationCount;
+
+      if (trigger !== 'manual' && totalItems === 0 && !fs.existsSync(loc.filePath)) {
+        return {
+          success: true,
+          skippedEmpty: true,
+          directory: ensured.directory,
+          prunedCount: 0,
+        };
+      }
+
+      const existing = readBackupEntriesSorted(ensured.directory);
+      if (
+        trigger !== 'manual' &&
+        !allowDuplicate &&
+        existing.length > 0 &&
+        existing[0].summary.contentHash === bundle.contentHash
+      ) {
+        return {
+          success: true,
+          skippedDuplicate: true,
+          directory: ensured.directory,
+          snapshot: existing[0].summary,
+          prunedCount: 0,
+        };
+      }
+
+      const now = new Date();
+      const suffix = crypto.randomBytes(3).toString('hex');
+      const backupId = `bak-${formatBackupFileStamp(now)}-${suffix}`;
+      const fileName = `AhBiShare_Backup_${formatBackupFileStamp(now)}_${suffix}${BACKUP_FILE_EXT}`;
+      const { filePath } = resolveSafeBackupFilePath(loc.directory, fileName);
+
+      const snapshotDoc = {
+        schemaVersion: 1,
+        kind: 'ahbishare-data-backup',
+        backupId,
+        createdAt: now.toISOString(),
+        trigger,
+        reason,
+        createdByHostName: hostName,
+        contentHash: bundle.contentHash,
+        counts: bundle.counts,
+        portableDocument: bundle.portableDocument,
+        locationProfiles: bundle.locationProfiles,
+      };
+
+      const writeRes = atomicWriteJson(filePath, snapshotDoc);
+      if (!writeRes.success) {
+        return {
+          success: false,
+          directory: ensured.directory,
+          writeProtected: Boolean(writeRes.writeProtected),
+          error: writeRes.error || '백업 스냅샷 저장에 실패했습니다.',
+        };
+      }
+
+      let statSize = 0;
+      try {
+        statSize = fs.statSync(filePath).size;
+      } catch {}
+
+      // Rotate older snapshots beyond BACKUP_MAX_SNAPSHOTS (keep newest 20)
+      const afterEntries = readBackupEntriesSorted(ensured.directory);
+      let prunedCount = 0;
+      for (let i = BACKUP_MAX_SNAPSHOTS; i < afterEntries.length; i += 1) {
+        try {
+          if (fs.existsSync(afterEntries[i].summary.filePath)) {
+            fs.unlinkSync(afterEntries[i].summary.filePath);
+            prunedCount += 1;
+          }
+        } catch {}
+      }
+
+      return {
+        success: true,
+        skippedDuplicate: false,
+        directory: ensured.directory,
+        snapshot: toBackupSummary(snapshotDoc, fileName, filePath, statSize),
+        prunedCount,
+      };
+    });
+  }
+
+  const restoreBackupSnapshot = (backupIdOrFileName, options = {}) => {
+    const loc = getLocation();
+    const backupDir = resolveSafeBackupDir(loc.directory);
+    const probe = probeDirectoryWriteSafety(loc.directory);
+    if (!probe.writable) {
+      return {
+        success: false,
+        writeProtected: Boolean(probe.writeProtected),
+        error: probe.writeError || '대상 폴더가 쓰기 금지 상태이므로 백업을 복원할 수 없습니다.',
+      };
+    }
+
+    const entries = readBackupEntriesSorted(backupDir);
+    const needle = String(backupIdOrFileName || '').trim();
+    const matched = entries.find(
+      (e) => e.summary.backupId === needle || e.summary.fileName === needle
+    );
+    if (!matched) {
+      return {
+        success: false,
+        error: '선택한 백업 스냅샷 파일을 찾을 수 없습니다.',
+      };
+    }
+
+    const targetSummary = matched.summary;
+    const rawPortable = matched.parsed?.portableDocument;
+    const rawLocations = Array.isArray(matched.parsed?.locationProfiles)
+      ? matched.parsed.locationProfiles
+      : [];
+
+    let preparedPortable;
+    let preparedLocations;
+    try {
+      preparedPortable = prepareDiskDocument(hydrateRuntimeDocument(rawPortable || emptyDocument()));
+      preparedLocations = rawLocations.map((lp) => prepareLocationProfileForDisk(hydrateLocationProfile(lp)));
+    } catch (parseErr) {
+      return {
+        success: false,
+        error: `백업 스냅샷 데이터 검증 실패: ${parseErr && parseErr.message ? parseErr.message : '형식 오류'}`,
+      };
+    }
+
+    let safetyBackup = null;
+    if (!options.skipSafetyBackup) {
+      const preRes = createBackupSnapshot({
+        trigger: 'auto_before_restore',
+        reason: `백업('${targetSummary.reason || targetSummary.fileName}') 복원 직전 자동 안전 백업`,
+        hostName: options.hostName || '',
+      });
+      if (preRes.success && preRes.snapshot) {
+        safetyBackup = preRes.snapshot;
+      }
+    }
+
+    // 1. Atomically restore AhBiShare_OneClick.portable.json
+    const portableLockPath = path.join(loc.directory, `.${PORTABLE_FILE_NAME}.lock`);
+    const portableRestoreRes = withFileLockSync(portableLockPath, () => {
+      const writeRes = atomicWriteJson(loc.filePath, preparedPortable);
+      if (!writeRes.success) {
+        return {
+          success: false,
+          writeProtected: Boolean(writeRes.writeProtected),
+          error: writeRes.error || '포터블 설정 복원 쓰기에 실패했습니다.',
+        };
+      }
+      const verifiedRaw = fs.readFileSync(loc.filePath, 'utf8').replace(/^\uFEFF/, '');
+      return {
+        success: true,
+        document: hydrateRuntimeDocument(JSON.parse(verifiedRaw)),
+      };
+    });
+
+    if (!portableRestoreRes.success) {
+      return portableRestoreRes;
+    }
+
+    // 2. Atomically restore locations/*.location.json
+    const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
+    try {
+      fs.mkdirSync(locDir, { recursive: true });
+    } catch (err) {
+      const classified = classifyUsbWriteError(err, '사용장소 폴더 생성');
+      return {
+        success: false,
+        writeProtected: classified.writeProtected,
+        error: classified.message,
+      };
+    }
+
+    const locLockPath = path.join(locDir, '.locations.lock');
+    const restoredLocationSummaries = withFileLockSync(locLockPath, () => {
+      if (fs.existsSync(locDir)) {
+        for (const entry of fs.readdirSync(locDir)) {
+          if (!entry.toLowerCase().endsWith(LOCATION_FILE_EXT)) continue;
+          const full = path.resolve(locDir, entry);
+          if (!full.startsWith(locDir + path.sep)) continue;
+          try {
+            fs.unlinkSync(full);
+          } catch {}
+        }
+      }
+
+      const summaries = [];
+      for (const diskLoc of preparedLocations) {
+        const { fileName, filePath } = resolveSafeLocationFilePath(
+          loc.directory,
+          diskLoc.profileId,
+          diskLoc.locationName
+        );
+        const wRes = atomicWriteJson(filePath, diskLoc);
+        if (wRes.success) {
+          const hydratedLoc = hydrateLocationProfile(diskLoc);
+          summaries.push(toLocationProfileSummary(hydratedLoc, fileName));
+        }
+      }
+      summaries.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      return summaries;
+    });
+
+    return {
+      success: true,
+      restoredSnapshot: targetSummary,
+      safetyBackup,
+      portableDocument: portableRestoreRes.document,
+      portableStatus: {
+        ...loc,
+        writable: true,
+        hasExistingFile: fs.existsSync(loc.filePath),
+        lastSyncedAt: preparedPortable.updatedAt,
+      },
+      locationProfiles: restoredLocationSummaries,
+    };
+  };
+
+  const deleteBackupSnapshot = (backupIdOrFileName) => {
+    const loc = getLocation();
+    const backupDir = resolveSafeBackupDir(loc.directory);
+    const lockPath = path.join(backupDir, '.backup.lock');
+    if (!fs.existsSync(backupDir)) {
+      return { success: false, error: '백업 폴더가 존재하지 않습니다.' };
+    }
+    return withFileLockSync(lockPath, () => {
+      const entries = readBackupEntriesSorted(backupDir);
+      const needle = String(backupIdOrFileName || '').trim();
+      const matched = entries.find(
+        (e) => e.summary.backupId === needle || e.summary.fileName === needle
+      );
+      if (!matched) {
+        return { success: false, error: '삭제할 백업 스냅샷을 찾을 수 없습니다.' };
+      }
+      try {
+        if (fs.existsSync(matched.summary.filePath)) {
+          fs.unlinkSync(matched.summary.filePath);
+        }
+        return { success: true, deletedBackupId: matched.summary.backupId };
+      } catch (err) {
+        const classified = classifyUsbWriteError(err, '백업 파일 삭제');
+        return {
+          success: false,
+          writeProtected: classified.writeProtected,
+          error: classified.message,
+        };
+      }
+    });
+  };
+
   return {
     getStatus: () => {
       const loc = getLocation();
@@ -1558,6 +2092,11 @@ function createPortableStore(options = {}) {
     deleteLocationProfile,
     appendAppLog,
     getAppLogInfo,
+    ensureBackupDirectory,
+    listBackupSnapshots,
+    createBackupSnapshot,
+    restoreBackupSnapshot,
+    deleteBackupSnapshot,
   };
 }
 
@@ -1566,7 +2105,12 @@ module.exports = {
   LOCATIONS_DIR_NAME,
   LOCATION_FILE_EXT,
   LOG_DIR_NAME: 'log',
+  BACKUP_DIR_NAME,
+  BACKUP_FILE_EXT,
+  BACKUP_MAX_SNAPSHOTS,
   sanitizeLocationId,
+  resolveSafeBackupDir,
+  resolveSafeBackupFilePath,
   encryptCredentials,
   decryptCredentials,
   classifyUsbWriteError,

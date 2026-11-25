@@ -9,7 +9,7 @@ for /f "usebackq delims=" %%v in (`node -p "String(require('./package.json').ver
 if not "%APP_VER%"=="" goto :ver_ready
 for /f "usebackq delims=" %%v in (`node -p "String(require('./public/config.json').version || '').replace(/^v/i,'')" 2^>nul`) do set "APP_VER=%%v"
 :ver_ready
-if "%APP_VER%"=="" set "APP_VER=1.2.1"
+if "%APP_VER%"=="" set "APP_VER=1.3.0"
 
 echo ========================================================================
 echo   AhBiShare OneClick v%APP_VER% - Root Build Script

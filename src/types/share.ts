@@ -796,4 +796,63 @@ export interface TroubleshootSyncSummary {
   resolvedTicketIds: string[];
 }
 
+export type BackupTriggerType =
+  | 'manual'
+  | 'auto_before_delete'
+  | 'auto_before_modify'
+  | 'auto_before_reset'
+  | 'auto_before_restore';
+
+export interface BackupSnapshotCounts {
+  shareCount: number;
+  hostPolicyCount: number;
+  pendingTaskCount: number;
+  ticketCount: number;
+  locationCount: number;
+}
+
+export interface BackupSnapshotSummary {
+  backupId: string;
+  fileName: string;
+  filePath: string;
+  createdAt: string;
+  trigger: BackupTriggerType;
+  reason: string;
+  createdByHostName: string;
+  contentHash: string;
+  sizeBytes: number;
+  counts: BackupSnapshotCounts;
+}
+
+export interface BackupStoreStatus {
+  success: boolean;
+  directory: string;
+  writable: boolean;
+  writeProtected?: boolean;
+  writeError?: string;
+  maxSnapshots: number;
+  snapshots: BackupSnapshotSummary[];
+}
+
+export interface CreateBackupResult {
+  success: boolean;
+  skippedDuplicate?: boolean;
+  skippedEmpty?: boolean;
+  directory: string;
+  snapshot?: BackupSnapshotSummary;
+  prunedCount?: number;
+  writeProtected?: boolean;
+  error?: string;
+}
+
+export interface RestoreBackupResult {
+  success: boolean;
+  restoredSnapshot?: BackupSnapshotSummary;
+  safetyBackup?: BackupSnapshotSummary | null;
+  portableDocument?: PortableShareDocument;
+  portableStatus?: PortableStorageStatus;
+  locationProfiles?: LocationProfileSummary[];
+  writeProtected?: boolean;
+  error?: string;
+}
 

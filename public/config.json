@@ -1,6 +1,6 @@
 {
   "appName": "AhBiShare OneClick",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "architecture": "standalone",
   "executable": "AhBiShare_OneClick.exe",
   "description": "Windows SMB 1-Click Host/Client LAN Sharing & Legacy OS Bridge Utility"
