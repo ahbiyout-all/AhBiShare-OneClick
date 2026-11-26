@@ -1,25 +1,34 @@
-# 🚀 AhBiShare OneClick v1.3.0 — GitHub 릴리즈 & 저장소 소개 문서
+# 🚀 AhBiShare OneClick v1.3.1 — GitHub 릴리즈 & 저장소 소개 문서
 
 > **Windows 7 SP1 ~ Windows 11 26H2** 환경에서 클릭 한 번으로 공유폴더 개설, 네트워크 드라이브 연결, 사용장소별 프로필(`.location.json`) 일괄 적용, 구형 OS(SMB) 호환 브릿지 구성을 지원하는 **독립형 오픈소스 유틸리티**입니다.
 
 ---
 
-## 📦 배포 파일 안내 (`v1.2.1` · GitHub Releases)
+## 📦 배포 파일 안내 (`v1.3.1` · GitHub Releases)
 
 | 파일명 | 권장 대상 | 특징 |
 | :--- | :--- | :--- |
-| **`AhBiShare_OneClick_v1.3.0.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
-| **`AhBiShare_OneClick-Lite_v1.3.0.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블 버전 |
-| **`AhBiShare_OneClick_Win7_v1.3.0.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
-| **`AhBiShare_OneClick-Setup_v1.3.0.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (시작 메뉴·바탕 화면·방화벽 자동 등록) |
+| **`AhBiShare_OneClick_v1.3.1.exe`** | Windows 10 / 11 (x64) | 표준 단일 포터블 실행 파일 (무설치 USB 휴대 실행) |
+| **`AhBiShare_OneClick-Lite_v1.3.1.exe`** | Windows 10 / 11 (x64) | 불필요한 로케일·WebGPU·Vulkan 제거 경량 포터블 버전 |
+| **`AhBiShare_OneClick_Win7_v1.3.1.exe`** | Windows 7 SP1 / 8 / 8.1 (x64) | 레거시 OS 전용 Electron 21 기반 호환 포터블 빌드 |
+| **`AhBiShare_OneClick-Setup_v1.3.1.exe`** | Windows 7 ~ 11 (x64) | Inno Setup 설치형 (바로가기·바탕 화면·방화벽 자동 등록) |
 
-👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.2.1`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
+👉 **최신 릴리즈 다운로드**: [GitHub Releases (`v1.3.1`)](https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest)
 
 ---
 
-## ✨ v1.2.x 주요 변경 내역 (최신 `v1.2.1` · Semantic Versioning: `MINOR` + `PATCH`)
+## ✨ v1.3.x 주요 변경 내역 (최신 `v1.3.1` · Semantic Versioning: `MINOR` + `PATCH`)
 
-### 🟢 신규 기능 및 고도화 (`v1.2.0` ~ `v1.2.1`)
+### 🟢 신규 기능 및 고도화 (`v1.2.0` ~ `v1.3.1`)
+- **패치노트·블로거 HTML·동적 SemVer 검증 및 GitHub Core Tree 자동화 정비 (`v1.3.1` · `PATCH`)**:
+  - `docs/PATCH_NOTES.md`에 `## 📌 최신 변경 내역` 섹션을 신설하고 `scripts/bump_version.js`가 해당 섹션 하단에 패치 이력을 자동 누적 기록하며 `docs/README.md`·`docs/blogger_post.html`·`docs/github_release_post.md`까지 일괄 동기화하도록 확장했습니다.
+  - `docs/blogger_post.html`을 신설하고 `.gitignore`·`docs/github_release_guide.md`에 런타임 백업/로그 제외 규칙을 반영했으며, `scripts/verify_portable_release.js` Check 1을 동적 SemVer 교차 검증(`package.json`, `public/config.json`, `src/version.ts`, `main.js`, `installer/setup.iss`, `build.bat`)으로 개선했습니다.
+- **자료 자동 백업 및 시점 복원 시스템 (`<appDir>/backup` · `BackupRestoreModal`) (`v1.3.0`)**:
+  - 앱 실행 폴더 하위 `backup` 폴더에 포터블 설정(`.portable.json`), 사용장소 프로필(`.location.json`), USB 오류 티켓(`troubleshootTickets`) 전체를 기존 AES-256-GCM 암호화 상태로 자동 및 수동 백업합니다.
+  - 삭제·변경·초기화·복원 직전 자동 안전 백업(동일 해시 중복 스킵)을 생성하며, 최근 20개 스냅샷(`BACKUP_MAX_SNAPSHOTS = 20`) 회전 보관을 유지합니다.
+  - 전용 **백업·복원 모달(`BackupRestoreModal`)**에서 백업 목록 조회, 필터/검색, 수동 백업 생성, 원클릭 시점 복원(복원 전 안전 백업 선행), 개별 삭제 및 백업 폴더 열기를 지원하며, 상단 바(`TopBar`) 및 실행 이력(`logs`) 단축 버튼과 연동됩니다.
+- **OS 호환성 매트릭스 ↔ USB 해결 마법사 양방향 실시간 동기화 (`SyncAwarePolicyBadge`) (`v1.3.0`)**:
+  - `TroubleshootWizardModal` 렌더링 시 로컬 `policyStatus`와 각 단계를 실시간 비교하여 이미 시스템 패치로 충족된 단계를 자동으로 완료·건너뛰기(`Policy Matched`) 처리하고, 매트릭스와 마법사 간 재부팅/대기 작업을 일관 동기화합니다.
 - **10대 보안 원복 심층 감사 보고서 · 호스트 불일치 색상 배지 · 전문가 레지스트리 원시 값 비교 뷰 (`v1.2.1`)**:
   - 보안 원복 직후 SMB 서명·게스트 차단·NTLM·LSA 등 10개 핵심 항목의 기본값 복구 상태를 정밀 검증하는 **보안 원복 심층 감사 보고서(`SecurityRollbackReport`)** 와 대상 호스트 기대 정책과의 **항목별 색상 배지(`일치`·`주의`·`충돌`)** 를 제공합니다.
   - **전문가 비교 뷰(`ExpertComparisonView`)** 를 통해 로컬 PC와 대상 호스트의 10대 보안 정책 원시 레지스트리 경로·키·실측 값을 좌우 나란히 비교할 수 있습니다.
@@ -100,26 +109,30 @@
 ---
 
 ## 🔒 보안 및 무결성 아키텍처
-- **AES-256-GCM 암호화**: 포터블 저장소(`.portable.json`)와 장소 프로필(`.location.json`)의 계정 자격증명은 디스크에 평문 저장되지 않습니다.
+- **AES-256-GCM 암호화 & `<appDir>/backup` 자동·수동 시점 백업**: 포터블 저장소(`.portable.json`), 장소 프로필(`.location.json`), 백업 스냅샷(`backup/*.backup.json`)의 계정 자격증명은 디스크에 평문 저장되지 않습니다. 삭제·변경·초기화·복원 직전 자동 안전 백업(`auto_before_*`)과 최근 20개 회전 보관(`BACKUP_MAX_SNAPSHOTS = 20`), `resolveSafeBackupFilePath` 경로 이탈 차단을 적용합니다.
+- **`<appDir>/log` 일일 UTF-8 BOM 로깅 & 자격증명 자동 마스킹**: 실행 이력을 앱 실행 폴더 하위 `log/`에 기록하며 `password=`, `cmdkey /pass:`, `ABSHARE://` 토큰 평문을 저장 전 자동 제거합니다.
 - **업데이트 다운로드 검증**: `github.com/ahbiyout-all/AhBiShare-OneClick` 및 GitHub CDN(`*.githubusercontent.com`) HTTPS 주소만 허용하며 PE 헤더(`MZ`)와 다운로드 바이트 무결성을 사전 검증합니다.
 - **관리자 권한 및 스냅샷 원복**: Windows 방화벽·SMB 레지스트리 정책 변경 전 사전 스냅샷(`Backup_Before_Apply`)을 보관하여 안전한 원복을 지원합니다.
 
 ---
 
-## 🛠️ 로컬 빌드 및 문서·버전 관리
+## 🛠️ 로컬 빌드 · GitHub 선별 추적 · 문서/버전 관리
 ```bash
 npm install
 npm run lint                 # TypeScript 정적 타입 검증
-npm run verify               # 11개 독립 무결성·보안·업데이터·SemVer 검증 스위트
+npm run verify               # 15개 독립 무결성·보안·백업·양방향 동기화·업데이터·SemVer 검증 스위트
 npm run build                # Windows 7 Chromium 106 호환 프로덕션 번들 (dist/)
 npm run version:bump -- patch --summary "패치 요약" --note "세부 기록"
 ```
 - Windows 환경에서는 루트 `build.bat`으로 표준·Lite·Win7·Setup 4종 버전별 EXE를 일괄 빌드합니다.
-- GitHub 저장소 추적 규칙 및 CI 배포 절차는 [`docs/github_release_guide.md`](github_release_guide.md), 전체 버전 관리 원칙은 [`docs/VERSIONING.md`](VERSIONING.md)를 참고하세요.
+- GitHub 저장소에는 핵심 소스코드·공식 문서(`docs/README.md`, `docs/PATCH_NOTES.md`, `docs/VERSIONING.md`, `docs/github_release_post.md`, `docs/github_release_guide.md`, `docs/google_blogger_post.md`, `docs/blogger_post.html`)·빌드 설정만 선별 추적하며, 로컬 푸시 스크립트(`push_github*.bat`) 및 런타임 사용자 데이터(`/backup/`, `/locations/`, `/log/`, `*.portable.json`, `*.location.json`, `*.backup.json`)는 `.gitignore`로 엄격히 제외됩니다.
+- 상세 추적 규칙 및 CI 배포 절차는 [`docs/github_release_guide.md`](github_release_guide.md), 전체 버전 관리 원칙은 [`docs/VERSIONING.md`](VERSIONING.md)를 참고하세요.
 
 ---
 
 ## 📜 릴리즈 이력 요약
+- **`v1.3.1` (2026-11-26 · `PATCH`)**: `docs/PATCH_NOTES.md` `최신 변경 내역` 섹션·`scripts/bump_version.js` 자동 누적 및 문서 동기화 확장, `docs/blogger_post.html` 신설·`.gitignore` 백업/로그 제외 규칙 반영, `scripts/verify_portable_release.js` 동적 SemVer 일치 검증 및 15대 무결성 스위트 정비
+- **`v1.3.0` (2026-11-25 · `MINOR`)**: 앱 실행 폴더 하위 `backup` 폴더 자동 생성 및 포터블 설정·사용장소 프로필·USB 오류 티켓 AES-256-GCM 암호화 자동/수동 백업, 삭제·변경·초기화·복원 직전 안전 백업 및 최근 20개 회전 보관, 전용 `BackupRestoreModal`·상단 바/실행 이력 단축 버튼 및 OS 호환성 매트릭스 ↔ USB 해결 마법사 양방향 실시간 동기화(`SyncAwarePolicyBadge`) 추가
 - **`v1.2.1` (2026-11-22 · `PATCH`)**: 10대 보안 원복 심층 감사 보고서·호스트 불일치 색상 배지·전문가 레지스트리 원시 값 비교 뷰(`ExpertComparisonView`)·저장된 `.location.json` 프로필 내용 직접 수정 에디터·사용장소 일괄 적용 사전 검증(`LocationPreflightModal`)·클라이언트 비밀번호 가시성 토글·5종 숫자 암호 프리셋(`PresetPasswordGrid`)·전 탭 통합 새로고침 버튼·**수동 NAS/공유폴더 스마트 SMB 인증 감지(`detectSmartShareAuth` · `probeSmbTarget` · IPv4 자동 탐지 `useEffect`)**·**`ActiveShare` `'탐색기에서 열기'`(UNC)**·**USB 쓰기 안전성 강화**·**USB 양방향 오류 전달(`.portable.json` 통합 `troubleshootTickets`) & 3단계 해결 마법사(`TroubleshootHandoffBanner` · `TroubleshootWizardModal`)** 추가 및 7~17차 자아성찰·구형 OS 전수 검증 심층 점검 반영
 - **`v1.2.0` (2026-11-19 · `MINOR`)**: 실시간 작업 진행 모션창(`WorkProgressModal`: 듀얼 링 모션·실시간 단계 목록·경과 시간·1.5초 자동 닫힘/오류 유지·포커스/스크롤 잠금) 주요 작업 11종 도입 및 6차 자아성찰 심층 점검(`handleExpirySecurityRollback`·`handleApplyOsPatch` 오류 검증, `applyLocationProfileBatch` `validShares` 인덱스 정렬, `prefers-reduced-motion` 개선)
 - **`v1.1.5` (2026-11-19 · `PATCH`)**: 5차 자아성찰 심층 점검 — `secedit` INF `[System.Text.Encoding]::Unicode` 명시 & `SeDenyNetworkLogonRight` 비게스트 따옴표 보존, `c_mount` `/`·`*` 암호 `net.exe` 충돌 회피 및 Guest Win32 Null 세션(`''`/`''`) 폴백 추가, `syncLiveState` 공유 `folderPath`·드라이브 UNC 변경 감지 강화

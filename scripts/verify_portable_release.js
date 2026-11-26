@@ -48,12 +48,21 @@ assert.deepStrictEqual(
   'package-lock.json root devDependencies must match package.json'
 );
 assert(/^\d+\.\d+\.\d+$/.test(rootPkg.version), `package.json version must strictly follow SemVer MAJOR.MINOR.PATCH (got "${rootPkg.version}")`);
-assert.strictEqual(rootPkg.version, '1.3.0');
 assert.strictEqual(rootConfig.version, rootPkg.version, `public/config.json version (${rootConfig.version}) !== package.json (${rootPkg.version})`);
 const srcVersionTs = fs.readFileSync(path.join(rootDir, 'src', 'version.ts'), 'utf8');
 assert(
   srcVersionTs.includes(`APP_VERSION = '${rootPkg.version}'`),
   `src/version.ts must match package.json version (${rootPkg.version})`
+);
+const rootSetupIss = fs.readFileSync(path.join(rootDir, 'installer', 'setup.iss'), 'utf8');
+assert(
+  rootSetupIss.includes(`#define AppVersion "${rootPkg.version}"`),
+  `installer/setup.iss AppVersion must match package.json version (${rootPkg.version})`
+);
+const rootBuildBatVer = fs.readFileSync(path.join(rootDir, 'build.bat'), 'utf8');
+assert(
+  rootBuildBatVer.includes(`set "APP_VER=${rootPkg.version}"`),
+  `build.bat fallback APP_VER must match package.json version (${rootPkg.version})`
 );
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'bump_version.js')), 'Missing scripts/bump_version.js');
 assert.strictEqual(rootPkg.build?.win?.requestedExecutionLevel, 'requireAdministrator');
@@ -824,23 +833,54 @@ for (const docFile of [
   'PATCH_NOTES.md',
   'VERSIONING.md',
   'google_blogger_post.md',
+  'blogger_post.html',
   'github_release_post.md',
   'github_release_guide.md',
 ]) {
   assert(fs.existsSync(path.join(rootDir, 'docs', docFile)), `Missing docs/${docFile}`);
 }
-for (const verDoc of ['PATCH_NOTES.md', 'google_blogger_post.md', 'github_release_post.md']) {
+for (const verDoc of ['PATCH_NOTES.md', 'google_blogger_post.md', 'blogger_post.html', 'github_release_post.md']) {
   const docBody = fs.readFileSync(path.join(rootDir, 'docs', verDoc), 'utf8');
   assert(
     docBody.includes(`v${rootPkg.version}`),
     `docs/${verDoc} must record the current release version v${rootPkg.version}`
   );
 }
+const patchNotesBody = fs.readFileSync(path.join(rootDir, 'docs', 'PATCH_NOTES.md'), 'utf8');
+assert(
+  patchNotesBody.includes('## 📌 최신 변경 내역') &&
+    patchNotesBody.indexOf('## 📌 최신 변경 내역') < patchNotesBody.indexOf(`v${rootPkg.version}`),
+  `docs/PATCH_NOTES.md must contain a '최신 변경 내역' section above v${rootPkg.version}`
+);
 const bloggerDoc = fs.readFileSync(path.join(rootDir, 'docs', 'google_blogger_post.md'), 'utf8');
 assert(
   bloggerDoc.includes('[작성 모드 (서식 있는 텍스트)]') && bloggerDoc.includes('[HTML 편집 모드]'),
   'docs/google_blogger_post.md must provide both Compose Mode (Rich Text) and HTML Edit Mode sections'
 );
+const bloggerHtml = fs.readFileSync(path.join(rootDir, 'docs', 'blogger_post.html'), 'utf8');
+for (const marker of [
+  '프로그램 소개',
+  '이번 업데이트 주요 내용',
+  '앱 미리보기',
+  '다운로드',
+  '버전정보',
+  '시스템 요구 사항',
+  '제작자 및 공식 채널 안내',
+  '전체 업데이트',
+  '추천 태그',
+  'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases/latest',
+  'https://ahbiyoutvibe.blogspot.com/',
+  'https://www.cisnet.co.kr',
+]) {
+  assert(bloggerHtml.includes(marker), `docs/blogger_post.html missing required section/link: ${marker}`);
+}
+const tagLineMatch = bloggerHtml.match(/<strong>추천 태그<\/strong>:\s*([^<\r\n]+)/);
+assert(tagLineMatch, 'docs/blogger_post.html missing recommended tags line');
+const tagText = tagLineMatch[1].trim();
+const tagList = tagText.split(',').map((t) => t.trim()).filter(Boolean);
+assert(tagList.length > 0 && tagList.length <= 20, `docs/blogger_post.html tag count must be <= 20 (got ${tagList.length})`);
+assert(tagText.length <= 200, `docs/blogger_post.html tag string length must be <= 200 chars (got ${tagText.length})`);
+assert(/[가-힣]/.test(tagText) && /[A-Za-z]/.test(tagText), 'docs/blogger_post.html tags must include both Korean and English');
 
 const workflowSrc = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'release.yml'), 'utf8');
 assert(workflowSrc.includes('release-github/*_v*.exe'), '.github/workflows/release.yml must upload only version-numbered executables');

@@ -25,9 +25,9 @@ const {
 } = require('./portableUpdater');
 const APP_PKG_VERSION = (() => {
   try {
-    return require('./package.json').version || '1.3.0';
+    return require('./package.json').version || '1.3.1';
   } catch {
-    return '1.3.0';
+    return '1.3.1';
   }
 })();
 

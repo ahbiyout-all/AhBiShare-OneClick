@@ -1,15 +1,43 @@
 # 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)
 
-## 📅 v1.3.0 (2026-11-25) — [MINOR] 자료 자동 백업 및 시점 복원 시스템 추가
+## 📌 최신 변경 내역
+
+## 📅 v1.3.1 (2026-11-26) — [PATCH] 문서·블로거 HTML 게시물·GitHub 제외 규칙 및 SemVer 동적 검증·패치노트 자동화 정비
+- **변경 구분**: `PATCH` (버그 수정 · 보안 및 호환성 패치 (PATCH))
+- **개발자 · 저작권**: AhBiYout · (주)청운정보시스템 (cisnet.co.kr)
+- **배포 파일**: `AhBiShare_OneClick_v1.3.1.exe`, `AhBiShare_OneClick-Lite_v1.3.1.exe`, `AhBiShare_OneClick_Win7_v1.3.1.exe`, `AhBiShare_OneClick-Setup_v1.3.1.exe`
+
+### 주요 변경 및 특이점 기록
+1. `docs/PATCH_NOTES.md` · `scripts/bump_version.js`: `## 📌 최신 변경 내역` 섹션을 신설하고 `prependPatchNoteEntry`가 이후 버전 승격 시 해당 섹션 하단에 패치 노트를 자동 누적 삽입하도록 개선했으며, Step 8 자동 동기화 대상에 `docs/README.md`·`docs/blogger_post.html`·`docs/github_release_post.md`(릴리즈 배지/다운로드 링크)·블로거 릴리즈 일자를 추가했습니다.
+2. `docs/blogger_post.html` · `docs/*` · `.gitignore` · `README.md`/`README.en.md`: Google Blogger HTML 편집 모드 전용 문서(`docs/blogger_post.html`: 10단 인라인 레이아웃·3종 앱 미리보기·20개/200자 이내 한/영 태그)를 신설하고, `.gitignore`·`docs/github_release_guide.md`에 런타임 백업·로그 제외 규칙(`*.backup.json`, `/backup/`, `log/`, `logs/`, `*.log`)을 반영했으며, 전체 공식 문서에 `<appDir>/backup` 암호화 백업·`SyncAwarePolicyBadge` 양방향 동기화 및 최신 소스 코드 기반 기술 내역을 동기화했습니다.
+3. `scripts/verify_portable_release.js`: Check 1의 고정 버전 문자열(`'1.3.0'`) 비교를 `package.json`·`public/config.json`·`src/version.ts`·`main.js`·`installer/setup.iss`(`AppVersion`)·`build.bat`(`APP_VER`) 간 동적 SemVer 일치 검증 및 `docs/PATCH_NOTES.md` `최신 변경 내역` 구조 검증으로 개선하고, Check 7(`docs/blogger_post.html` 섹션·링크·태그 제한)을 포함한 15대 무결성 검증 스위트(`README.en.md` `15-suite` 교정)를 정립했습니다.
+
+## 📅 v1.3.0 (2026-11-25) — [MINOR] `<appDir>/backup` 암호화 자동 백업·시점 복원 시스템 & OS 매트릭스·마법사 양방향 동기화
 - **변경 구분**: `MINOR` (하위 호환 신규 기능 추가 (MINOR))
 - **개발자 · 저작권**: AhBiYout · (주)청운정보시스템 (cisnet.co.kr)
 - **배포 파일**: `AhBiShare_OneClick_v1.3.0.exe`, `AhBiShare_OneClick-Lite_v1.3.0.exe`, `AhBiShare_OneClick_Win7_v1.3.0.exe`, `AhBiShare_OneClick-Setup_v1.3.0.exe`
 
 ### 주요 변경 및 특이점 기록
-1. 앱 실행 폴더 하위 backup 폴더에 포터블 설정, 위치 프로필, 오류 티켓 전체를 AES-256-GCM 암호화 상태로 자동 및 수동 백업
-2. 삭제·변경·초기화·복원 직전 자동 안전 백업 및 최근 20개 스냅샷 회전 보관(BACKUP_MAX_SNAPSHOTS = 20)
-3. 전용 백업 복원 모달(BackupRestoreModal)을 통해 백업 목록 조회, 필터/검색, 수동 백업 생성, 원클릭 시점 복원, 개별 삭제 및 백업 폴더 열기 지원
-4. 상단 바(TopBar) 백업·복원 트리거 버튼 및 실행 이력(logs) 화면 백업 관리 단축 버튼 와이어링
+1. **`<appDir>/backup` AES-256-GCM 자동·수동 백업 및 20개 회전 보관 (`portableStore.js` · `shareBridge.ts` · `src/types/share.ts`)**:
+   - `BACKUP_DIR_NAME = 'backup'`, `BACKUP_FILE_EXT = '.backup.json'`, `BACKUP_MAX_SNAPSHOTS = 20` 기반으로 앱 실행 폴더 하위 `backup/` 디렉터리를 자동 생성·검증(`ensureBackupDirectory` · `probeDirectoryWriteSafety`)하고, `resolveSafeBackupDir` · `resolveSafeBackupFilePath`로 상위 경로 이탈(`..`), 비표준 확장자 및 제어문자 삽입을 차단합니다.
+   - `collectEncryptedBundleFromDisk`가 `AhBiShare_OneClick.portable.json`(`shares`, `hostPolicies`, `pendingHostActions`, `troubleshootTickets`, `lastClientTarget`)과 `locations/*.location.json` 전체를 기존 AES-256-GCM `encryptedCredentials` 암호문 상태로 통합 수집해 `AhBiShare_Backup_YYYYMMDD_HHMMSS_<hex>.backup.json`(`kind: 'ahbishare-data-backup'`)으로 `.backup.lock` 파일 락 하에 `atomicWriteJson` 원자적 저장합니다.
+   - `computeBackupContentHash`(SHA-256 앞 16자리)를 비교해 자동 백업 시 직전 스냅샷과 내용이 동일하면 `skippedDuplicate: true`로 중복 생성을 생략하고, 저장 후 최신 20개를 초과하는 오래된 스냅샷을 자동 삭제(`prunedCount`)합니다. 웹 프리뷰 환경에서도 `STORAGE_BACKUPS_SIM_KEY` 기반 동일 회전·복원 시뮬레이션을 지원합니다.
+2. **삭제·변경·초기화·복원 직전 자동 안전 백업 트리거 (`BackupTriggerType` 5종)**:
+   - `portableStore.js`(`saveLocationProfile` 기존 프로필 덮어쓰기 직전 `auto_before_modify`, `deleteLocationProfile` 삭제 직전 `auto_before_delete`, `restoreBackupSnapshot` 복원 직전 `auto_before_restore`) 및 `shareBridge.ts`(`deletePendingHostAction`, `deleteHostPolicySnapshot`, `deletePortableHostShare`, `deleteTroubleshootTicket` → `auto_before_delete`, `clearAllHostPolicySnapshots`, `clearResolvedTroubleshootTickets` → `auto_before_reset`, `saveEditedLocationProfile` → `auto_before_modify`) 전 경로에 자동 보호 백업을 연동했습니다.
+   - `restoreBackupSnapshot` 실행 시 쓰기 안전성 검증 및 `hydrateRuntimeDocument` · `hydrateLocationProfile` 무결성 파싱을 먼저 검증한 뒤 `auto_before_restore` 안전 스냅샷을 생성하고, `.portable.json`과 `locations/*.location.json` 전체를 원자적으로 복원합니다.
+3. **전용 백업·복원 모달(`BackupRestoreModal.tsx`) · Electron IPC(`main.js` · `preload.js`) · UI 단축 진입점(`TopBar.tsx` · `App.tsx`)**:
+   - `main.js`에 `enqueuePortableStoreOp` 직렬 큐 기반 IPC 채널 5종(`list-data-backups`, `create-data-backup`, `restore-data-backup`, `delete-data-backup`, `open-backup-folder`)과 `preload.js` `contextBridge` API 5종을 추가했습니다.
+   - `BackupRestoreModal`은 `role="dialog"`, `aria-modal="true"`, 작업 중 닫기/`Escape` 잠금, 읽기 전용 폴더 경고(`isWriteProtected`), 스냅샷 개수·최근 시각·총 용량 요약, 수동 백업 사유 입력(`input-backup-reason`), 트리거 필터(`all`/`auto`/`manual`)·키워드 검색(`input-backup-search`), 2단계 확인 복원(`btn-restore-backup-*` → `btn-confirm-restore-*`) 및 삭제(`btn-delete-backup-*` → `btn-confirm-delete-*`), 탐색기 백업 폴더 열기(`btn-open-backup-folder`)를 제공합니다.
+   - `TopBar.tsx`(`btn-topbar-backup-restore`)와 `App.tsx` 실행 이력(`logs`) 화면(`btn-logs-open-backup`)에서 모달을 즉시 열 수 있으며, `handleRestoreBackup` 성공 시 상태(`portableShares`, `hostPolicySnapshots`, `pendingHostActions`, `troubleshootTickets`, `locationProfiles`, `activeLocationProfile`)와 `syncAllMatrixAndWizardState`를 일괄 재동기화합니다.
+4. **OS 호환성 매트릭스 ↔ USB 문제 해결 마법사 양방향 실시간 동기화 (`SyncAwarePolicyBadge.tsx` · `troubleshootPlaybook.ts` · `TroubleshootWizardModal.tsx` · `App.tsx`)**:
+   - `src/types/share.ts`에 `TroubleshootStepResolvedSource`(`matrix`, `host_panel`, `live_inspect`, `share_retry`, `mount_retry`, `rollback`, `wizard`), `TroubleshootSyncSummary`, `resolvedSource`, `requiresReboot` 타입을 신설했습니다.
+   - `troubleshootPlaybook.ts`의 `isPolicyStepSatisfiedOnLocalPc`, `getPolicyStepMatchedExplanation`, `getSatisfiedPolicyModesFromStatus`, `formatStepResolvedSourceLabel`, `reconcileTroubleshootTicketsWithLocalState`와 `shareBridge.ts`의 `syncTroubleshootTicketsWithLocalState` · `reconcilePendingHostActionsWithLocalPolicy`를 통해 로컬 `OsNetworkPolicyStatus` 변화에 따라 티켓 단계와 `pendingHostActions` 대기 작업을 양방향 자동 완료·재개방합니다.
+   - `SyncAwarePolicyBadge`(`evaluateStepPolicyMatch`)와 `TroubleshootWizardModal`의 `effectiveHostSteps`/`effectiveClientSteps`/`effectiveTicketStatus`로 이미 정책이 충족된 단계를 렌더링 시 `Policy Matched` 배지·`completed`·자동 건너뜀(`autoSkippedByPolicy`)으로 표시하고 실행 버튼을 잠그며(`isExecuteDisabled = isBusy || isPolicyMatched`), `App.tsx`의 `syncAllMatrixAndWizardState`를 공유 개설·연결·매트릭스 패치·보안 원복·빈 암호 차단 토글·탭 새로고침 전 흐름에 연결했습니다.
+5. **빈 암호 계정 차단 토글 · Win 11 24H2~26H2 공존 & `<appDir>/log` 로깅 연계**:
+   - `EmptyPasswordPolicyToggle.tsx`(`btn-toggle-block-empty-password`), `shareBridge.toggleBlockEmptyPasswordAccounts`, `buildHostEmptyPasswordBlockPsScript`(`LimitBlankPasswordUse=1`), `upgradedHostGuestUnblock.bat`(`forceguest=0`, `accounts /minpwlen:0`, `BlockNTLM`/`RequireEncryption` 해제, `KIR 1517186191=0` 중복 SID 우회)를 유지·연동하고, 백업·복원·동기화 결과를 `<appDir>/log/AhBiShare_YYYY-MM-DD.log`(UTF-8 BOM, 자격증명 마스킹)에 자동 기록합니다.
+6. **공식 문서 체계(`docs/*`) 및 15대 무결성 검증 자동화 최신화 (`scripts/bump_version.js` · `scripts/verify_portable_release.js`)**:
+   - Google Blogger HTML 보기 전용 문서(`docs/blogger_post.html`) 신설 및 `docs/README.md`, `docs/google_blogger_post.md`, `docs/github_release_post.md`, `docs/github_release_guide.md`, `docs/VERSIONING.md`를 `v1.3.0` 최신 구조에 맞춰 동기화했습니다.
+   - `scripts/bump_version.js` 동기화 대상에 `docs/blogger_post.html`을 편입하고, `scripts/verify_portable_release.js` 검증 스위트를 15개 독립 검증(Check 1~15: `<appDir>/backup` 암호화 스냅샷·20개 회전·경로 이탈 차단·복원, `SyncAwarePolicyBadge` 양방향 동기화, `docs/blogger_post.html` 필수 섹션·태그 20개/200자 제한 검증 포함)으로 확장했습니다.
 
 ## 📅 v1.2.1 (2026-11-22) — [PATCH] 10대 보안 원복 심층 감사 · 전문가 레지스트리 비교 · 사용장소 프로필 내용 수정 · 사전 검증 · 스마트 인증 감지 · 탐색기 UNC 열기 · USB 쓰기 안전성 · USB 양방향 오류 전달 마법사 & 7~17차 자아성찰 오류 수정
 - **변경 구분**: `PATCH` (버그 수정 · 보안 및 호환성 패치 (PATCH))

@@ -72,14 +72,21 @@ function formatPatchNoteSection({ version, level, dateStr, summary, notes }) {
 
 function prependPatchNoteEntry(patchNotesContent, sectionMarkdown) {
   const headerMarker = '# 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)';
+  const latestSectionMarker = '## 📌 최신 변경 내역';
   const raw = String(patchNotesContent || '');
+  if (raw.includes(latestSectionMarker)) {
+    const idx = raw.indexOf(latestSectionMarker) + latestSectionMarker.length;
+    const before = raw.slice(0, idx);
+    const after = raw.slice(idx).replace(/^\r?\n+/, '');
+    return `${before}\n\n${sectionMarkdown}\n${after}`;
+  }
   if (raw.includes(headerMarker)) {
     const idx = raw.indexOf(headerMarker) + headerMarker.length;
     const before = raw.slice(0, idx);
     const after = raw.slice(idx).replace(/^\r?\n+/, '');
     return `${before}\n\n${sectionMarkdown}\n${after}`;
   }
-  return `${headerMarker}\n\n${sectionMarkdown}\n${raw}`;
+  return `${headerMarker}\n\n${latestSectionMarker}\n\n${sectionMarkdown}\n${raw}`;
 }
 
 function parseCliArgs(argv) {
@@ -214,18 +221,26 @@ function runBump({ level, summary, notes, dryRun = false, targetRoot = rootDir }
     updatedFiles.push('docs/PATCH_NOTES.md');
   }
 
-  // 8. docs/google_blogger_post.md & docs/github_release_post.md latest version tag sync
-  for (const docRel of ['docs/google_blogger_post.md', 'docs/github_release_post.md']) {
+  // 8. docs/README.md, docs/google_blogger_post.md, docs/blogger_post.html & docs/github_release_post.md latest version tag sync
+  for (const docRel of ['docs/README.md', 'docs/google_blogger_post.md', 'docs/blogger_post.html', 'docs/github_release_post.md']) {
     const docPath = path.join(targetRoot, docRel);
     if (fs.existsSync(docPath)) {
       const docSrc = fs.readFileSync(docPath, 'utf8');
       const curEsc = currentVersion.replace(/\./g, '\\.');
       const nextDoc = docSrc
         .replace(new RegExp(`(AhBiShare OneClick )v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(AhBiShare OneClick\\*\\* \\()v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(AhBiShare_OneClick(?:_Win7|-Lite|-Setup)?_)v${curEsc}`, 'g'), `$1v${nextVersion}`)
-        .replace(new RegExp(`(최신 버전</strong>: )v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(최신 버전</strong>: (?:<code>)?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(현재 버전\\*\\*: )v${curEsc}`, 'g'), `$1v${nextVersion}`)
-        .replace(new RegExp(`(이번 업데이트 주요 내용 \\()v${curEsc}`, 'g'), `$1v${nextVersion}`);
+        .replace(new RegExp(`(최신 문서 갱신일\\*\\*: )\\d{4}-\\d{2}-\\d{2} \\(\`v${curEsc}\`\\)`, 'g'), `$1${dateStr} (\`v${nextVersion}\`)`)
+        .replace(new RegExp(`(배포 파일 안내 \\(\`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(\\[GitHub Releases \\(\`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(주요 변경 내역 \\(최신 \`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(이번 업데이트 주요 내용 \\()v${curEsc}(?: · \\d{4}-\\d{2}-\\d{2})?`, 'g'), `$1v${nextVersion} · ${dateStr}`)
+        .replace(new RegExp(`(Google Blogger HTML 편집 모드 전용 문서 \\()v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(<!-- 3\\. 업데이트 \\(최신 )v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(/(<strong>릴리즈 일자<\/strong>:\s*)\d{4}-\d{2}-\d{2}/g, `$1${dateStr}`);
       if (!dryRun) {
         fs.writeFileSync(docPath, nextDoc, 'utf8');
       }
