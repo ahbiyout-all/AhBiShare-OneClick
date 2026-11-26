@@ -47,7 +47,7 @@
   "build": {
     "appId": "com.ahbiyout.ahbishare.oneclick",
     "productName": "AhBiShare_OneClick",
-    "copyright": "Copyright © 1998-2026 AhBiYout. All rights reserved.",
+    "copyright": "Copyright © 2026 AhBiYout. All rights reserved.",
     "compression": "maximum",
     "asar": true,
     "files": [

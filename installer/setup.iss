@@ -6,7 +6,7 @@
   #define AppVersion "1.3.1"
 #endif
 #define AppPublisher "AhBiYout"
-#define AppCopyright "Copyright (c) 1998-2026 AhBiYout. All rights reserved."
+#define AppCopyright "Copyright (c) 2026 AhBiYout. All rights reserved."
 #define AppURL "https://github.com/ahbiyout-all/AhBiShare-OneClick"
 #define AppExeName "AhBiShare_OneClick.exe"
 

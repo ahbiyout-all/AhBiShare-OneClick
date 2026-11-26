@@ -4053,7 +4053,7 @@ export const App: React.FC = () => {
         <div className="max-w-6xl mx-auto flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <span className="tabular-data font-medium text-slate-700 dark:text-slate-300">
-              AhBiShare OneClick v{APP_VERSION} · Copyright © 1998-2026 AhBiYout. All rights reserved.
+              AhBiShare OneClick v{APP_VERSION} · Copyright © 2026 AhBiYout. All rights reserved.
             </span>
             <div className="flex flex-wrap items-center gap-4">
               <button

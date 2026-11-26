@@ -115,7 +115,7 @@ Windows 환경에서 루트 `build.bat`을 실행하면 의존성 확인, `lint`
 ---
 
 ## 👨‍💻 제작자 및 공식 채널 안내
-- **개발자 · 저작권**: **AhBiYout** (`Copyright © 1998-2026 AhBiYout. All rights reserved.`)
+- **개발자 · 저작권**: **AhBiYout** (`Copyright © 2026 AhBiYout. All rights reserved.`)
 - **소속회사**: [(주)청운정보시스템 (cisnet.co.kr)](https://www.cisnet.co.kr)
 - **GitHub 저장소**: https://github.com/ahbiyout-all/AhBiShare-OneClick
 - **공식 구글 블로그**: https://ahbiyoutvibe.blogspot.com/

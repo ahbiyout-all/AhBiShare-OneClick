@@ -113,7 +113,7 @@ On Windows, running root `build.bat` verifies dependencies, executes `lint` and 
 ---
 
 ## 👨‍💻 Author & Official Links
-- **Developer & Copyright**: **AhBiYout** (`Copyright © 1998-2026 AhBiYout. All rights reserved.`)
+- **Developer & Copyright**: **AhBiYout** (`Copyright © 2026 AhBiYout. All rights reserved.`)
 - **Organization**: [Cheongwoon Information System Co., Ltd. / (주)청운정보시스템 (cisnet.co.kr)](https://www.cisnet.co.kr)
 - **GitHub Repository**: https://github.com/ahbiyout-all/AhBiShare-OneClick
 - **Official Blog**: https://ahbiyoutvibe.blogspot.com/

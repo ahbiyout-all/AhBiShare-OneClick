@@ -88,7 +88,7 @@ for (const [cfgName, c] of [
   ['build-config-lite.json', liteCfg.copyright],
   ['build-config-win7.json', win7Cfg.copyright],
 ]) {
-  assert.strictEqual(c, 'Copyright © 1998-2026 AhBiYout. All rights reserved.', `${cfgName} copyright must be AhBiYout`);
+  assert.strictEqual(c, 'Copyright © 2026 AhBiYout. All rights reserved.', `${cfgName} copyright must be AhBiYout`);
 }
 
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'prune_electron_pack.js')), 'Missing scripts/prune_electron_pack.js');
@@ -770,7 +770,7 @@ pass('Legacy OS (Win 7/8/8.1 <-> Win 10/11) 2-step Main/Client 1-click, .bat/.re
 
 // 7. Verify MIT LICENSE, CRLF English batch scripts, Inno Setup, Docs, Update Checker & GitHub Actions versioned-only release
 const licenseTxt = fs.readFileSync(path.join(rootDir, 'LICENSE'), 'utf8');
-assert(licenseTxt.includes('MIT License') && licenseTxt.includes('1998-2026 AhBiYout'), 'LICENSE missing MIT 1998-2026 AhBiYout');
+assert(licenseTxt.includes('MIT License') && licenseTxt.includes('2026 AhBiYout'), 'LICENSE missing MIT 2026 AhBiYout');
 
 assert(fs.existsSync(path.join(rootDir, 'build.bat')), 'Missing root build.bat');
 assert(fs.existsSync(path.join(rootDir, 'scripts', 'upgradedHostGuestUnblock.bat')), 'Missing scripts/upgradedHostGuestUnblock.bat');
@@ -1192,7 +1192,7 @@ assert(
     appSrc.includes('handleUpdateLocationProfile') &&
     appSrc.includes("firstShare.authMode === 'account' ? firstShare.password || '' : ''") &&
     appSrc.includes("preset.authMode === 'account' ? preset.password || '' : ''") &&
-    appSrc.includes('Copyright © 1998-2026 AhBiYout. All rights reserved.'),
+    appSrc.includes('Copyright © 2026 AhBiYout. All rights reserved.'),
   'App.tsx missing LocationProfileBar / LocationManagerModal / WorkProgressModal wiring, profile edit handlers, cross-profile password isolation, or AhBiYout copyright'
 );
   const validSharesBridgeCheck =

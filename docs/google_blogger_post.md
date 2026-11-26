@@ -84,7 +84,7 @@
 ---
 
 ## 👨‍💻 제작자 및 공식 채널 안내
-- **개발자 · 저작권**: AhBiYout (`Copyright © 1998-2026 AhBiYout. All rights reserved.`)
+- **개발자 · 저작권**: AhBiYout (`Copyright © 2026 AhBiYout. All rights reserved.`)
 - **소속회사**: [(주)청운정보시스템 (cisnet.co.kr)](https://www.cisnet.co.kr)
 - **GitHub 저장소**: [https://github.com/ahbiyout-all/AhBiShare-OneClick](https://github.com/ahbiyout-all/AhBiShare-OneClick)
 - **공식 구글 블로그**: [https://ahbiyoutvibe.blogspot.com/](https://ahbiyoutvibe.blogspot.com/)
@@ -218,7 +218,7 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, �
 
   <h3 style="color: #312e81; margin-top: 24px; font-size: 17px;">👨‍💻 제작자 및 공식 채널 안내</h3>
   <ul style="padding-left: 20px;">
-    <li><strong>개발자 · 저작권</strong>: AhBiYout (Copyright © 1998-2026 AhBiYout. All rights reserved.)</li>
+    <li><strong>개발자 · 저작권</strong>: AhBiYout (Copyright © 2026 AhBiYout. All rights reserved.)</li>
     <li><strong>소속회사</strong>: <a href="https://www.cisnet.co.kr" target="_blank" rel="noopener noreferrer">(주)청운정보시스템 (cisnet.co.kr)</a></li>
     <li><strong>GitHub 저장소</strong>: <a href="https://github.com/ahbiyout-all/AhBiShare-OneClick" target="_blank" rel="noopener noreferrer">https://github.com/ahbiyout-all/AhBiShare-OneClick</a></li>
     <li><strong>공식 구글 블로그</strong>: <a href="https://ahbiyoutvibe.blogspot.com/" target="_blank" rel="noopener noreferrer">https://ahbiyoutvibe.blogspot.com/</a></li>
