@@ -1,5 +1,7 @@
 # AhBiShare OneClick — GitHub 저장소 및 릴리즈 운영 가이드
 
+[⬅️ 문서 허브 (`docs/README.md`)](README.md) · [패치 노트 (`docs/PATCH_NOTES.md`)](PATCH_NOTES.md) · [GitHub 릴리즈 소개 (`docs/github_release_post.md`)](github_release_post.md)
+
 ## 저장소 및 공식 채널
 - **개발자 · 저작권**: AhBiYout (`Copyright © 1998-2026 AhBiYout. All rights reserved.`)
 - **GitHub 저장소**: https://github.com/ahbiyout-all/AhBiShare-OneClick
@@ -31,17 +33,17 @@ GitHub 저장소에는 앱 빌드·실행·배포·문서화에 꼭 필요한 **
 
 - **MAJOR (`X.0.0`)**: 호환되지 않는 구조·데이터 스키마 개편 또는 아키텍처 전면 전환
 - **MINOR (`1.X.0`)**: 하위 호환성을 유지하는 신규 기능 추가 (`npm run version:bump -- minor ...`)
-- **PATCH (`1.1.X`)**: 버그 수정, 보안 정책 보완, PowerShell/OS 호환성 개선 (`npm run version:bump -- patch ...`)
+- **PATCH (`1.X.Y`)**: 버그 수정, 보안 정책 보완, PowerShell/OS 호환성 개선 및 문서·검증 정비 (`npm run version:bump -- patch ...`)
 
 ---
 
 ## GitHub Actions 릴리즈 자산 규칙 (빌드 버전 번호 파일 전용)
-- 워크플로 위치: `.github/workflows/release.yml`
-- 사전 검증 게이트: `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (`scripts/verify_portable_release.js` 15개 무결성·보안·백업·양방향 동기화·업데이터·SemVer 검증 스위트 통과 필수)
-- 지원 플랫폼: **Windows x64 전용** (APK/iOS 모바일 빌드 제외)
-- 릴리즈 본문은 `docs/PATCH_NOTES.md` 내용을 자동 추출하여 반영합니다.
-- 버전 승격 시 `npm run version:bump`가 `package.json`, `public/config.json`, `src/version.ts`, `main.js`, `installer/setup.iss`, `build.bat`, `build_release.bat`, `push_github.bat`, `README.md`, `README.en.md`, `docs/*`를 일괄 동기화합니다.
-- GitHub Releases에는 **버전 번호(`_vX.Y.Z`)가 붙은 실행 파일만** 생성·첨부됩니다:
+- **워크플로 위치**: [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+- **사전 검증 게이트**: `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (`scripts/verify_portable_release.js` 15개 무결성·보안·백업·양방향 동기화·업데이터·SemVer 검증 스위트 통과 필수)
+- **지원 플랫폼**: **Windows x64 전용** (APK/iOS 모바일 빌드 제외)
+- **릴리즈 본문**: `docs/PATCH_NOTES.md`(`## 📌 최신 변경 내역` 포함)를 자동 추출하여 릴리즈 노트에 반영합니다.
+- **버전 동기화**: 버전 승격 시 `npm run version:bump`가 `package.json`, `public/config.json`, `src/version.ts`, `main.js`, `installer/setup.iss`, `build.bat`, `build_release.bat`, `push_github.bat`, `README.md`, `README.en.md`, `docs/*`를 일괄 동기화합니다.
+- **릴리즈 첨부 파일 규칙**: GitHub Releases에는 **버전 번호(`_vX.Y.Z`)가 붙은 실행 파일만** 생성·첨부되며 구버전/비버전 자산은 자동 정리(`gh release delete-asset`)됩니다:
   - `AhBiShare_OneClick_v<version>.exe` (표준 포터블)
   - `AhBiShare_OneClick-Lite_v<version>.exe` (용량 감소 경량 포터블)
   - `AhBiShare_OneClick_Win7_v<version>.exe` (Windows 7 SP1 ~ 8.1 전용 포터블)

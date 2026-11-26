@@ -1,5 +1,7 @@
 # 🛠 AhBiShare OneClick 패치 노트 (Patch Notes)
 
+[⬅️ 루트 `README.md`](../README.md) · [문서 허브 (`docs/README.md`)](README.md) · [버전 관리 규약 (`docs/VERSIONING.md`)](VERSIONING.md) · [GitHub 릴리즈 소개 (`docs/github_release_post.md`)](github_release_post.md)
+
 ## 📌 최신 변경 내역
 
 ## 📅 v1.3.1 (2026-11-26) — [PATCH] 문서·블로거 HTML 게시물·GitHub 제외 규칙 및 SemVer 동적 검증·패치노트 자동화 정비
@@ -11,6 +13,10 @@
 1. `docs/PATCH_NOTES.md` · `scripts/bump_version.js`: `## 📌 최신 변경 내역` 섹션을 신설하고 `prependPatchNoteEntry`가 이후 버전 승격 시 해당 섹션 하단에 패치 노트를 자동 누적 삽입하도록 개선했으며, Step 8 자동 동기화 대상에 `docs/README.md`·`docs/blogger_post.html`·`docs/github_release_post.md`(릴리즈 배지/다운로드 링크)·블로거 릴리즈 일자를 추가했습니다.
 2. `docs/blogger_post.html` · `docs/*` · `.gitignore` · `README.md`/`README.en.md`: Google Blogger HTML 편집 모드 전용 문서(`docs/blogger_post.html`: 10단 인라인 레이아웃·3종 앱 미리보기·20개/200자 이내 한/영 태그)를 신설하고, `.gitignore`·`docs/github_release_guide.md`에 런타임 백업·로그 제외 규칙(`*.backup.json`, `/backup/`, `log/`, `logs/`, `*.log`)을 반영했으며, 전체 공식 문서에 `<appDir>/backup` 암호화 백업·`SyncAwarePolicyBadge` 양방향 동기화 및 최신 소스 코드 기반 기술 내역을 동기화했습니다.
 3. `scripts/verify_portable_release.js`: Check 1의 고정 버전 문자열(`'1.3.0'`) 비교를 `package.json`·`public/config.json`·`src/version.ts`·`main.js`·`installer/setup.iss`(`AppVersion`)·`build.bat`(`APP_VER`) 간 동적 SemVer 일치 검증 및 `docs/PATCH_NOTES.md` `최신 변경 내역` 구조 검증으로 개선하고, Check 7(`docs/blogger_post.html` 섹션·링크·태그 제한)을 포함한 15대 무결성 검증 스위트(`README.en.md` `15-suite` 교정)를 정립했습니다.
+
+---
+
+## 📜 누적 릴리즈 기록 (`v1.0.0` ~ `v1.3.0`)
 
 ## 📅 v1.3.0 (2026-11-25) — [MINOR] `<appDir>/backup` 암호화 자동 백업·시점 복원 시스템 & OS 매트릭스·마법사 양방향 동기화
 - **변경 구분**: `MINOR` (하위 호환 신규 기능 추가 (MINOR))

@@ -7,7 +7,7 @@
 
 ## 1️⃣ [작성 모드 (서식 있는 텍스트)]
 
-# AhBiShare OneClick v1.3.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
+# AhBiShare OneClick v1.3.1 — Windows 7~11 원클릭 공유폴더 · 자료 자동 백업 · 사용장소 프로필 유틸리티
 
 ## 프로그램 소개
 **AhBiShare OneClick**은 Windows PC 간 폴더 공유 개설(메인 PC), 네트워크 드라이브 연결(클라이언트 PC), 사용장소별(사무실·집·현장) 설정 파일 저장 및 원클릭 일괄 적용, Windows 10·11 정책 불일치 자동 정렬, 그리고 Windows 7·8·8.1 구형 OS 호환 브릿지 및 오프라인 스크립트 생성을 클릭 한 번으로 해결하는 **무료 오픈소스 유틸리티**입니다.
@@ -141,7 +141,7 @@ AhBiShare, 폴더공유, 윈도우공유, SMB공유, 네트워크드라이브, �
 ```html
 <div style="font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: #1e293b; line-height: 1.75; max-width: 840px; margin: 0 auto; font-size: 15px;">
   <h2 style="color: #4338ca; border-bottom: 2px solid #4f46e5; padding-bottom: 12px; margin-bottom: 18px; line-height: 1.4;">
-    AhBiShare OneClick v1.3.1 — Windows 7~11 원클릭 공유폴더 · 사용장소 프로필 · 포터블 자동 교체 유틸리티
+    AhBiShare OneClick v1.3.1 — Windows 7~11 원클릭 공유폴더 · 자료 자동 백업 · 사용장소 프로필 유틸리티
   </h2>
 
   <p style="margin-bottom: 18px;">

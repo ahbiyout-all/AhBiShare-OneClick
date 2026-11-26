@@ -1,6 +1,8 @@
 # 🚀 AhBiShare OneClick v1.3.1 — GitHub 릴리즈 & 저장소 소개 문서
 
-> **Windows 7 SP1 ~ Windows 11 26H2** 환경에서 클릭 한 번으로 공유폴더 개설, 네트워크 드라이브 연결, 사용장소별 프로필(`.location.json`) 일괄 적용, 구형 OS(SMB) 호환 브릿지 구성을 지원하는 **독립형 오픈소스 유틸리티**입니다.
+[⬅️ 루트 `README.md`](../README.md) · [패치 노트 (`docs/PATCH_NOTES.md`)](PATCH_NOTES.md) · [문서 허브 (`docs/README.md`)](README.md) · [GitHub 운영 가이드 (`docs/github_release_guide.md`)](github_release_guide.md)
+
+> **Windows 7 SP1 ~ Windows 11 26H2** 환경에서 클릭 한 번으로 공유폴더 개설, 네트워크 드라이브 연결, 사용장소별 프로필(`.location.json`) 일괄 적용, `<appDir>/backup` 암호화 자동 백업·시점 복원, 구형 OS(SMB) 호환 브릿지 구성을 지원하는 **독립형 오픈소스 유틸리티**입니다.
 
 ---
 
@@ -104,7 +106,7 @@
   - Tailwind CSS v4 `oklch()` 색상을 `chrome106`/`chrome100` 타깃으로 컴파일 변환해 Win 7(Electron 21) 검은 화면 문제를 해결하고, PowerShell 2.0 `$PSDefaultParameterValues`·`[Console]` 핸들 예외·`$null` NetBT 루프를 가드했습니다.
 - **GitHub 저장소 Core Tree 정비 & 무결성 검증 체계**:
   - `.gitignore` 전면 개편을 통해 로컬 전용 스크립트(`push_github*.bat`, `build_release.bat`), 플랫폼 메타/첨부 이미지(`.aistudio/`, `metadata.json`, `/public/assets/aistudio/`), 업데이터 임시 파일(`_ahbishare_update/`, `*.part`, `*apply_portable_update.ps1`), 런타임 프로필·생성 키트(`*.portable.json`, `*.location.json`, `locations/`, `AhBiShare_*.bat`/`.reg`)를 업로드 대상에서 엄격히 분리했습니다.
-  - CI 및 로컬 빌드 전 `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (11대 포터블·암호화·업데이터·SemVer·오류전달 무결성 스위트) 통과를 의무화했습니다.
+  - CI 및 로컬 빌드 전 `npm run lint` (`tsc --noEmit`) 및 `npm run verify` (초기 11대 → 현행 15대 포터블·암호화·백업·양방향 동기화·업데이터·SemVer 무결성 스위트) 통과를 의무화했습니다.
 
 ---
 

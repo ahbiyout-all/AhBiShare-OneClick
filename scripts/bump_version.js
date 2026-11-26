@@ -229,12 +229,13 @@ function runBump({ level, summary, notes, dryRun = false, targetRoot = rootDir }
       const curEsc = currentVersion.replace(/\./g, '\\.');
       const nextDoc = docSrc
         .replace(new RegExp(`(AhBiShare OneClick )v${curEsc}`, 'g'), `$1v${nextVersion}`)
-        .replace(new RegExp(`(AhBiShare OneClick\\*\\* \\()v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(AhBiShare OneClick\\*\\* \\(\`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(AhBiShare_OneClick(?:_Win7|-Lite|-Setup)?_)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(최신 버전</strong>: (?:<code>)?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(현재 버전\\*\\*: )v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(최신 문서 갱신일\\*\\*: )\\d{4}-\\d{2}-\\d{2} \\(\`v${curEsc}\`\\)`, 'g'), `$1${dateStr} (\`v${nextVersion}\`)`)
         .replace(new RegExp(`(배포 파일 안내 \\(\`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
+        .replace(new RegExp(`(\\[최신 GitHub Releases \\(\`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(\\[GitHub Releases \\(\`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(주요 변경 내역 \\(최신 \`?)v${curEsc}`, 'g'), `$1v${nextVersion}`)
         .replace(new RegExp(`(이번 업데이트 주요 내용 \\()v${curEsc}(?: · \\d{4}-\\d{2}-\\d{2})?`, 'g'), `$1v${nextVersion} · ${dateStr}`)
