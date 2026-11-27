@@ -1,4 +1,5 @@
 import { APP_VERSION } from '@/version';
+import { tx } from '@/i18n/localeState';
 
 export interface ReleaseAsset {
   name: string;
@@ -182,7 +183,13 @@ export async function installPortableUpdate(asset: ReleaseAsset): Promise<{
   error?: string;
 }> {
   if (!window.ahbiShareElectron?.installPortableUpdate) {
-    return { success: false, error: 'Electron 데스크톱 앱에서만 포터블 자동 교체를 지원합니다.' };
+    return {
+      success: false,
+      error: tx(
+        'Electron 데스크톱 앱에서만 포터블 자동 교체를 지원합니다.',
+        'Portable auto-replacement is only supported in the Electron desktop app.'
+      ),
+    };
   }
   return await window.ahbiShareElectron.installPortableUpdate({
     downloadUrl: asset.browserDownloadUrl,
@@ -247,7 +254,7 @@ export async function checkForUpdates(currentVersion: string = APP_VERSION): Pro
           hasUpdate: false,
           checkedAt,
           source: 'electron-ipc',
-          error: ipcRes.error || 'GitHub 릴리즈 조회 실패',
+          error: ipcRes.error || tx('GitHub 릴리즈 조회 실패', 'Failed to query GitHub releases'),
         };
       }
     } catch (err) {
@@ -283,7 +290,7 @@ export async function checkForUpdates(currentVersion: string = APP_VERSION): Pro
         release: {
           tagName,
           name: String(data.name || tagName),
-          body: String(data.body || '새로운 업데이트가 출시되었습니다.'),
+          body: String(data.body || tx('새로운 업데이트가 출시되었습니다.', 'A new update is available.')),
           htmlUrl: String(data.html_url || GITHUB_RELEASES_URL),
           publishedAt: String(data.published_at || ''),
           assets,
@@ -299,7 +306,7 @@ export async function checkForUpdates(currentVersion: string = APP_VERSION): Pro
       hasUpdate: false,
       checkedAt,
       source: 'web-fetch',
-      error: err instanceof Error ? err.message : 'GitHub 릴리즈 조회 실패',
+      error: err instanceof Error ? err.message : tx('GitHub 릴리즈 조회 실패', 'Failed to query GitHub releases'),
     };
   }
 }

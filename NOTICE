@@ -1,0 +1,19 @@
+AhBiShare OneClick
+Copyright (c) 2026 AhBiYout. All rights reserved.
+
+This product is licensed under the MIT License (see LICENSE).
+
+This product includes or is built upon open-source software components
+provided by their respective copyright holders, including:
+- Electron (MIT License) - Copyright (c) Electron contributors & GitHub Inc.
+- Chromium & V8 (BSD-3-Clause and other open-source licenses) - Copyright The Chromium Authors
+- Node.js (MIT License) - Copyright Node.js contributors
+- React & React DOM (MIT License) - Copyright (c) Meta Platforms, Inc. and affiliates.
+- Lucide Icons / lucide-react (ISC License) - Copyright (c) 2026 Lucide Icons and Contributors
+- qrcode.react (ISC License) - Copyright (c) 2015, Paul O'Shannessy
+- Tailwind CSS (MIT License) - Copyright (c) Tailwind Labs, Inc.
+- Vite (MIT License) - Copyright (c) VoidZero Inc. and Vite contributors
+- TypeScript (Apache-2.0 License) - Copyright (c) Microsoft Corporation
+
+See THIRD-PARTY-NOTICES.md (and the in-app License & Open-Source Notices viewer)
+for complete attribution details and verbatim license texts.

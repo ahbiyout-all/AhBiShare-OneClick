@@ -11,6 +11,8 @@ import {
   getPolicyStepMatchedExplanation,
   isPolicyStepSatisfiedOnLocalPc,
 } from '@/services/troubleshootPlaybook';
+import { tx } from '@/i18n/localeState';
+import { useI18n } from '@/i18n/I18nContext';
 
 export interface StepPolicyMatchEvaluation {
   isPolicyMatched: boolean;
@@ -64,7 +66,7 @@ export function evaluateStepPolicyMatch(
 
   const criteriaText = getPolicyStepMatchedExplanation(step, ticket, policyStatus);
   const explanation = persistedSourceLabel
-    ? `${criteriaText} (적용 출처: ${persistedSourceLabel})`
+    ? tx(`${criteriaText} (적용 출처: ${persistedSourceLabel})`, `${criteriaText} (Source: ${persistedSourceLabel})`)
     : criteriaText;
 
   return {
@@ -93,6 +95,7 @@ export const SyncAwarePolicyBadge: React.FC<SyncAwarePolicyBadgeProps> = ({
   pcMatchesSide = true,
   mode = 'badge',
 }) => {
+  const { tx: txLocal } = useI18n();
   const { isPolicyMatched, explanation } = evaluateStepPolicyMatch(
     step,
     ticket,
@@ -111,7 +114,7 @@ export const SyncAwarePolicyBadge: React.FC<SyncAwarePolicyBadgeProps> = ({
       >
         <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
         <span>
-          조건 이미 충족됨: {explanation}
+          {txLocal('조건 이미 충족됨:', 'Condition already met:')} {explanation}
         </span>
       </p>
     );
@@ -125,7 +128,7 @@ export const SyncAwarePolicyBadge: React.FC<SyncAwarePolicyBadgeProps> = ({
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-emerald-500/35 bg-emerald-500/12 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 whitespace-nowrap shrink-0"
     >
       <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
-      <span>Policy Matched</span>
+      <span>{txLocal('정책 충족', 'Policy Matched')}</span>
     </span>
   );
 };

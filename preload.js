@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('ahbiShareElectron', {
   restoreDataBackup: (payload) => ipcRenderer.invoke('restore-data-backup', payload),
   deleteDataBackup: (payload) => ipcRenderer.invoke('delete-data-backup', payload),
   openBackupFolder: () => ipcRenderer.invoke('open-backup-folder'),
+  openLicenseFolder: () => ipcRenderer.invoke('open-license-folder'),
   triggerSystemReboot: () => ipcRenderer.invoke('trigger-system-reboot'),
   saveLegacyScripts: (payload) => ipcRenderer.invoke('save-legacy-scripts', payload),
   listLocationProfiles: () => ipcRenderer.invoke('list-location-profiles'),
@@ -31,6 +32,8 @@ contextBridge.exposeInMainWorld('ahbiShareElectron', {
   getUpdateRuntimeInfo: () => ipcRenderer.invoke('get-update-runtime-info'),
   installPortableUpdate: (payload) => ipcRenderer.invoke('install-portable-update', payload),
   cancelPortableUpdate: () => ipcRenderer.invoke('cancel-portable-update'),
+  getAppLocaleInfo: () => ipcRenderer.invoke('get-app-locale-info'),
+  setAppLocale: (locale) => ipcRenderer.invoke('set-app-locale', { locale }),
   onUpdateProgress: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const handler = (_event, data) => callback(data);

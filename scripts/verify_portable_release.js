@@ -1059,7 +1059,8 @@ assert(
 assert(
   legacyPanelSrc.includes('onBridgeImported') &&
     legacyPanelSrc.includes('importCrossOsBridgeData(content, netInfo)') &&
-    legacyPanelSrc.includes('aria-label={`${share.shareName} 공유 해제`}') &&
+    (legacyPanelSrc.includes('aria-label={`${share.shareName} 공유 해제`}') ||
+      legacyPanelSrc.includes('aria-label={tx(`${share.shareName} 공유 해제`')) &&
     !legacyPanelSrc.includes('window.location.reload()'),
   'LegacySharingPanel.tsx must pass netInfo, provide accessible icon labels, and refresh state cleanly via onBridgeImported'
 );
@@ -1173,7 +1174,7 @@ assert(
   rollbackPanelSrc.includes('const res = await onFullSecurityRollback();') &&
     rollbackPanelSrc.includes("setFeedback({ scope: 'full', ...res });") &&
     appSrc.includes('return { success: allOk, message: msg };') &&
-    /if \(!jobKey\) \{\r?\n\s+return \{ success: false, message: '다른 작업이 진행 중입니다\.' \};/.test(appSrc),
+    /if \(!jobKey\) \{\r?\n\s+return \{ success: false, message: (?:tx\()?'다른 작업이 진행 중입니다\.'/.test(appSrc),
   'App.tsx handleFullSecurityRollback & RollbackPanel.tsx must propagate exact full rollback success/failure state instead of hardcoding success: true'
 );
 assert(
@@ -1555,9 +1556,9 @@ try {
 
   // Verify USB write-safety: ZERO write-protection injection patterns anywhere in app runtime/scripts, and atomic USB saves in main.js
   assert(
-    mainJsSrc.includes('probeDirectoryWriteSafety(targetDir)') &&
-      mainJsSrc.includes('atomicWriteBuffer(outPath, fileBuf)') &&
-      mainJsSrc.includes('probeDirectoryWriteSafety(runtime.portableDir)'),
+    mainJsSrc.includes('probeDirectoryWriteSafety(targetDir') &&
+      mainJsSrc.includes('atomicWriteBuffer(outPath, fileBuf') &&
+      mainJsSrc.includes('probeDirectoryWriteSafety(runtime.portableDir'),
     'main.js must verify target directory write safety and use atomicWriteBuffer in save-legacy-scripts and check portableDir write safety before portable self-update'
   );
   const issSrc = fs.readFileSync(path.join(rootDir, 'installer', 'setup.iss'), 'utf8');
@@ -2271,6 +2272,140 @@ try {
   pass('App-directory <appDir>/backup encrypted snapshots, 20-file rotation, auto triggers, restore roundtrip & BackupRestoreModal UI verified');
 } finally {
   fs.rmSync(tmpBackupAppDir, { recursive: true, force: true });
+}
+
+// 16. Verify Korean/English (ko/en) i18n localization, OS locale auto-detection, switcher UI & backend locale propagation
+{
+  const localeHelper = require(path.join(rootDir, 'localeHelper.js'));
+  assert.strictEqual(localeHelper.normalizeAppLocale('ko-KR'), 'ko');
+  assert.strictEqual(localeHelper.normalizeAppLocale('ko_KR.UTF-8'), 'ko');
+  assert.strictEqual(localeHelper.normalizeAppLocale('en-US'), 'en');
+  assert.strictEqual(localeHelper.normalizeAppLocale('ja-JP'), 'en');
+  assert.strictEqual(
+    localeHelper.detectSystemOsLocale({ getPreferredSystemLanguages: () => ['ko-KR', 'en-US'], getLocale: () => 'en' }).detectedLocale,
+    'ko'
+  );
+  assert.strictEqual(
+    localeHelper.detectSystemOsLocale({ getPreferredSystemLanguages: () => ['en-US'], getLocale: () => 'en' }).detectedLocale,
+    'en'
+  );
+  assert.strictEqual(localeHelper.pickLocaleText('ko', '한국어', 'English'), '한국어');
+  assert.strictEqual(localeHelper.pickLocaleText('en', '한국어', 'English'), 'English');
+
+  const i18nCtxSrc = fs.readFileSync(path.join(rootDir, 'src', 'i18n', 'I18nContext.tsx'), 'utf8');
+  const localeStateSrc = fs.readFileSync(path.join(rootDir, 'src', 'i18n', 'localeState.ts'), 'utf8');
+  const topBarLangSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'TopBar.tsx'), 'utf8');
+  assert(
+    i18nCtxSrc.includes('I18nProvider') &&
+      i18nCtxSrc.includes('useI18n') &&
+      i18nCtxSrc.includes('getActiveLocale') &&
+      localeStateSrc.includes('setActiveLocaleState') &&
+      localeStateSrc.includes('tx(') &&
+      topBarLangSrc.includes('id="lang-switcher"') &&
+      topBarLangSrc.includes('id="btn-lang-ko"') &&
+      topBarLangSrc.includes('id="btn-lang-en"') &&
+      modPreload.includes('getAppLocaleInfo:') &&
+      modPreload.includes('setAppLocale:') &&
+      modMain.includes("'get-app-locale-info'") &&
+      modMain.includes("'set-app-locale'") &&
+      portableStoreSrc.includes('const getLocale = () =>'),
+    'i18n architecture missing localeHelper, I18nContext, localeState, TopBar KO/EN switcher, preload/main IPC, or portableStore locale hooks'
+  );
+
+  // Verify English localized portableStore messages work end-to-end
+  const tmpEnDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ahbishare-i18n-verify-'));
+  try {
+    const enStore = portableStore.createPortableStore({
+      env: { PORTABLE_EXECUTABLE_DIR: tmpEnDir },
+      app: { isPackaged: true, getPath: () => tmpEnDir },
+      locale: 'en',
+    });
+    const enErr = enStore.deleteLocationProfile('');
+    assert.strictEqual(enErr.success, false);
+    assert(enErr.error && !/[가-힣]/.test(enErr.error), `portableStore English mode emitted Korean message: ${enErr.error}`);
+  } finally {
+    fs.rmSync(tmpEnDir, { recursive: true, force: true });
+  }
+
+  pass('Korean/English (ko/en) i18n, OS locale auto-detection, TopBar switcher & backend locale propagation verified');
+}
+
+// 17. Verify MIT License declaration, NOTICE, THIRD-PARTY-NOTICES.md, build/installer bundling & in-app LicenseNoticesModal
+{
+  const rootNotice = fs.readFileSync(path.join(rootDir, 'NOTICE'), 'utf8');
+  const rootThirdParty = fs.readFileSync(path.join(rootDir, 'THIRD-PARTY-NOTICES.md'), 'utf8');
+  assert(
+    rootNotice.includes('Copyright (c) 2026 AhBiYout. All rights reserved.') &&
+      rootNotice.includes('MIT License') &&
+      rootNotice.includes('THIRD-PARTY-NOTICES.md'),
+    'NOTICE file must declare AhBiYout copyright, MIT License, and reference THIRD-PARTY-NOTICES.md'
+  );
+  assert(
+    rootThirdParty.includes('Copyright (c) 2026 AhBiYout. All rights reserved.') &&
+      rootThirdParty.includes('Electron') &&
+      rootThirdParty.includes('Chromium') &&
+      rootThirdParty.includes('React') &&
+      rootThirdParty.includes('lucide-react') &&
+      rootThirdParty.includes('qrcode.react') &&
+      rootThirdParty.includes('Tailwind CSS') &&
+      rootThirdParty.includes('TypeScript'),
+    'THIRD-PARTY-NOTICES.md must cover Electron, Chromium, React, lucide-react, qrcode.react, Tailwind CSS, and TypeScript'
+  );
+
+  assert.strictEqual(rootPkg.license, 'MIT', 'package.json must declare SPDX license: MIT');
+  assert.strictEqual(rootPkg.author?.name, 'AhBiYout', 'package.json author.name must be AhBiYout');
+
+  const noticeFiles = ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md'];
+  for (const [cfgName, cfg] of [
+    ['package.json build', rootPkg.build],
+    ['build-config-lite.json', liteCfg],
+    ['build-config-win7.json', win7Cfg],
+  ]) {
+    for (const f of noticeFiles) {
+      assert(Array.isArray(cfg?.files) && cfg.files.includes(f), `${cfgName} files must include ${f}`);
+      const hasExtra =
+        Array.isArray(cfg?.extraResources) &&
+        cfg.extraResources.some((r) => r && (r.from === f || r.to === f));
+      assert(hasExtra, `${cfgName} extraResources must bundle ${f}`);
+    }
+  }
+  assert(
+    issSrc.includes('LicenseFile=..\\LICENSE') &&
+      issSrc.includes('Source: "..\\LICENSE"; DestDir: "{app}"') &&
+      issSrc.includes('Source: "..\\NOTICE"; DestDir: "{app}"') &&
+      issSrc.includes('Source: "..\\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"'),
+    'installer/setup.iss must install LICENSE, NOTICE, and THIRD-PARTY-NOTICES.md alongside LicenseFile'
+  );
+  assert(
+    readmeSrc.includes('NOTICE') &&
+      readmeSrc.includes('THIRD-PARTY-NOTICES.md') &&
+      readmeEnSrc.includes('NOTICE') &&
+      readmeEnSrc.includes('THIRD-PARTY-NOTICES.md'),
+    'README.md and README.en.md must link NOTICE and THIRD-PARTY-NOTICES.md'
+  );
+
+  const licenseDataSrc = fs.readFileSync(path.join(rootDir, 'src', 'data', 'licenseNotices.ts'), 'utf8');
+  const licenseModalSrc = fs.readFileSync(path.join(rootDir, 'src', 'components', 'LicenseNoticesModal.tsx'), 'utf8');
+  assert(
+    licenseDataSrc.includes('PROJECT_LICENSE_INFO') &&
+      licenseDataSrc.includes('THIRD_PARTY_NOTICES') &&
+      licenseDataSrc.includes('formatCombinedNoticesText') &&
+      licenseModalSrc.includes('id="license-notices-modal"') &&
+      licenseModalSrc.includes('role="dialog"') &&
+      licenseModalSrc.includes('aria-modal="true"') &&
+      licenseModalSrc.includes('tab-license-mit') &&
+      licenseModalSrc.includes('tab-license-third-party') &&
+      licenseModalSrc.includes('btn-copy-mit-license') &&
+      licenseModalSrc.includes('btn-copy-all-notices') &&
+      modMain.includes("'open-license-folder'") &&
+      modPreload.includes('openLicenseFolder:') &&
+      bridgeSrc.includes('async openLicenseFolder(') &&
+      appTsxSrc.includes('LicenseNoticesModal') &&
+      appTsxSrc.includes('btn-footer-license-notices'),
+    'In-app LicenseNoticesModal, licenseNotices data registry, open-license-folder IPC, or App.tsx footer trigger missing'
+  );
+
+  pass('MIT License declaration, NOTICE, THIRD-PARTY-NOTICES.md, build/installer bundling & offline LicenseNoticesModal verified');
 }
 
 console.log('=======================================================');

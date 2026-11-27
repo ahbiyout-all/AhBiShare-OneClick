@@ -23,6 +23,7 @@ import {
   LocationProfileSummary,
   MountedDrive,
 } from '@/types/share';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface LocationManagerModalProps {
   isOpen: boolean;
@@ -88,6 +89,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
   onImportJsonFile,
   onDeleteProfile,
 }) => {
+  const { tx } = useI18n();
   const [locationName, setLocationName] = useState('');
   const [description, setDescription] = useState('');
   const [includeHost, setIncludeHost] = useState(true);
@@ -169,11 +171,21 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
   const handleSave = async (overwriteExisting: boolean) => {
     const clean = locationName.trim();
     if (!clean) {
-      setSaveError('저장할 사용장소 이름(예: 사무실, 집, 고객사 A)을 입력하세요.');
+      setSaveError(
+        tx(
+          '저장할 사용장소 이름(예: 사무실, 집, 고객사 A)을 입력하세요.',
+          'Enter a location name to save (e.g., Office, Home, Client A).'
+        )
+      );
       return;
     }
     if (!includeHost && !includeClient) {
-      setSaveError('호스트 공유 설정 또는 클라이언트 연결 설정 중 최소 하나를 포함해야 합니다.');
+      setSaveError(
+        tx(
+          '호스트 공유 설정 또는 클라이언트 연결 설정 중 최소 하나를 포함해야 합니다.',
+          'Include at least Host share settings or Client connection settings.'
+        )
+      );
       return;
     }
     setSaveError(null);
@@ -223,10 +235,10 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
               className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2"
             >
               <MapPin className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
-              사용장소별 프로필 파일 관리 (.location.json)
+              {tx('사용장소별 프로필 파일 관리 (.location.json)', 'Location Profile File Manager (.location.json)')}
             </h2>
             <p className="mt-0.5 tabular-data text-xs text-slate-500 dark:text-slate-400 truncate">
-              보관 경로: {storageDirectory} · 저장된 장소 {profiles.length}곳
+              {tx('보관 경로', 'Storage')}: {storageDirectory} · {tx(`저장된 장소 ${profiles.length}곳`, `${profiles.length} saved locations`)}
             </p>
           </div>
 
@@ -240,14 +252,14 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                 className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Upload className="w-3.5 h-3.5" />
-                .json 가져오기
+                {tx('.json 가져오기', 'Import .json')}
               </button>
             )}
             <button
               type="button"
               disabled={isSaving || isBatchApplying || Boolean(loadingEditId)}
               onClick={onClose}
-              aria-label="사용장소 관리 창 닫기"
+              aria-label={tx('사용장소 관리 창 닫기', 'Close location manager')}
               className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <X className="w-4 h-4" />
@@ -282,7 +294,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
           <div className="flex-1 flex flex-col items-center justify-center p-12 text-center gap-3">
             <RefreshCw className="w-6 h-6 text-indigo-500 animate-spin" />
             <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-              사용장소 프로필(.location.json) 내용을 불러오는 중입니다...
+              {tx('사용장소 프로필(.location.json) 내용을 불러오는 중입니다...', 'Loading location profile (.location.json)...')}
             </p>
           </div>
         ) : (
@@ -290,10 +302,10 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
           <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/70 dark:bg-slate-950/50 p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                현재 작업 설정을 사용장소 파일로 저장
+                {tx('현재 작업 설정을 사용장소 파일로 저장', 'Save Current Workspace as Location File')}
               </h3>
               <span className="tabular-data text-xs text-slate-500 dark:text-slate-400">
-                현재 네트워크 {netInfo.primaryIp} ({netInfo.subnetPrefix}.x)
+                {tx('현재 네트워크', 'Current network')} {netInfo.primaryIp} ({netInfo.subnetPrefix}.x)
               </span>
             </div>
 
@@ -303,7 +315,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                   htmlFor="location-name-input"
                   className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
-                  사용장소 이름
+                  {tx('사용장소 이름', 'Location Name')}
                 </label>
                 <input
                   id="location-name-input"
@@ -313,7 +325,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                     setLocationName(e.target.value);
                     setSaveError(null);
                   }}
-                  placeholder="예: 청운 본사 사무실, 자택, 고객사 A"
+                  placeholder={tx('예: 청운 본사 사무실, 자택, 고객사 A', 'e.g., HQ Office, Home, Client A')}
                   className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -322,14 +334,14 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                   htmlFor="location-desc-input"
                   className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
-                  메모 (선택)
+                  {tx('메모 (선택)', 'Notes (Optional)')}
                 </label>
                 <input
                   id="location-desc-input"
                   type="text"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="예: 디자인실 공유폴더 + NAS Z드라이브"
+                  placeholder={tx('예: 디자인실 공유폴더 + NAS Z드라이브', 'e.g., Design folder + NAS Z: drive')}
                   className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -344,7 +356,10 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                   className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                 />
                 <span>
-                  호스트 폼({hostDraft.shareName}) 및 활성 공유 {activeShares.length}건 포함
+                  {tx(
+                    `호스트 폼(${hostDraft.shareName}) 및 활성 공유 ${activeShares.length}건 포함`,
+                    `Include host form (${hostDraft.shareName}) & ${activeShares.length} active share(s)`
+                  )}
                 </span>
               </label>
 
@@ -355,7 +370,12 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                   onChange={(e) => setIncludeClient(e.target.checked)}
                   className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                 />
-                <span>클라이언트 연결 대상 {capturedClientCount}건 포함</span>
+                <span>
+                  {tx(
+                    `클라이언트 연결 대상 ${capturedClientCount}건 포함`,
+                    `Include ${capturedClientCount} client target(s)`
+                  )}
+                </span>
               </label>
 
               <label className="inline-flex items-center gap-2 cursor-pointer">
@@ -365,7 +385,12 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                   onChange={(e) => setIncludeNetworkHint(e.target.checked)}
                   className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                 />
-                <span>참고 네트워크 대역 ({netInfo.subnetPrefix}.x) 기록</span>
+                <span>
+                  {tx(
+                    `참고 네트워크 대역 (${netInfo.subnetPrefix}.x) 기록`,
+                    `Record reference subnet (${netInfo.subnetPrefix}.x)`
+                  )}
+                </span>
               </label>
             </div>
 
@@ -382,7 +407,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                 className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
               >
                 <Save className="w-3.5 h-3.5" />
-                새 장소 파일로 저장
+                {tx('새 장소 파일로 저장', 'Save as New Location File')}
               </button>
 
               {activeProfile && (
@@ -394,7 +419,10 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                   className="px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                  선택된 &lsquo;{activeProfile.locationName}&rsquo; 덮어쓰기 업데이트
+                  {tx(
+                    `선택된 ‘${activeProfile.locationName}’ 덮어쓰기 업데이트`,
+                    `Overwrite '${activeProfile.locationName}'`
+                  )}
                 </button>
               )}
             </div>
@@ -403,7 +431,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
           <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                저장된 사용장소 파일 목록 ({profiles.length})
+                {tx(`저장된 사용장소 파일 목록 (${profiles.length})`, `Saved Location Files (${profiles.length})`)}
               </h3>
               {profiles.length > 0 && (
                 <div className="relative w-full sm:w-64">
@@ -413,8 +441,8 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    aria-label="저장된 사용장소 검색"
-                    placeholder="장소명, 서브넷, 메모 검색..."
+                    aria-label={tx('저장된 사용장소 검색', 'Search saved locations')}
+                    placeholder={tx('장소명, 서브넷, 메모 검색...', 'Search name, subnet, notes...')}
                     className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
@@ -425,15 +453,18 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
               <div className="py-10 px-4 text-center border border-dashed border-slate-300 dark:border-slate-700 rounded-xl space-y-2">
                 <FolderOpen className="w-6 h-6 text-slate-400 mx-auto" />
                 <p className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                  아직 저장된 사용장소 프로필 파일이 없습니다.
+                  {tx('아직 저장된 사용장소 프로필 파일이 없습니다.', 'No saved location profile files yet.')}
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  위 입력란에서 첫 장소 이름을 입력해 저장하거나 기존 `.location.json` 파일을 가져오세요.
+                  {tx(
+                    '위 입력란에서 첫 장소 이름을 입력해 저장하거나 기존 `.location.json` 파일을 가져오세요.',
+                    'Enter a location name above to save your first profile, or import an existing `.location.json` file.'
+                  )}
                 </p>
               </div>
             ) : filteredProfiles.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl">
-                검색어와 일치하는 사용장소가 없습니다.
+                {tx('검색어와 일치하는 사용장소가 없습니다.', 'No locations match your search.')}
               </div>
             ) : (
               <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
@@ -453,7 +484,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                           </span>
                           {isActive && (
                             <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400">
-                              · 현재 선택됨
+                              · {tx('현재 선택됨', 'Active')}
                             </span>
                           )}
                         </div>
@@ -461,8 +492,8 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                           <p className="text-xs text-slate-600 dark:text-slate-300">{item.description}</p>
                         )}
                         <p className="tabular-data text-xs text-slate-500 dark:text-slate-400 break-all">
-                          {item.networkHint?.subnetPrefix ? `대역 ${item.networkHint.subnetPrefix}.x · ` : ''}
-                          공유 {item.shareCount}건 · 드라이브 {item.clientTargetCount}건 · {item.fileName} ·{' '}
+                          {item.networkHint?.subnetPrefix ? `${tx('대역', 'Subnet')} ${item.networkHint.subnetPrefix}.x · ` : ''}
+                          {tx(`공유 ${item.shareCount}건 · 드라이브 ${item.clientTargetCount}건`, `${item.shareCount} shares · ${item.clientTargetCount} drives`)} · {item.fileName} ·{' '}
                           {formatUpdatedDate(item.updatedAt)}
                         </p>
                       </div>
@@ -474,7 +505,7 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                           disabled={isBatchApplying || Boolean(loadingEditId)}
                           className="px-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
-                          불러오기
+                          {tx('불러오기', 'Load')}
                         </button>
                         <button
                           type="button"
@@ -493,17 +524,17 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                           className="px-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
                           <Pencil className="w-3 h-3" />
-                          {loadingEditId === item.profileId ? '열기 중...' : '수정'}
+                          {loadingEditId === item.profileId ? tx('열기 중...', 'Opening...') : tx('수정', 'Edit')}
                         </button>
                         <button
                           type="button"
                           onClick={() => void onBatchApplyProfile(item.profileId)}
                           disabled={isBatchApplying || Boolean(loadingEditId) || (item.shareCount === 0 && item.clientTargetCount === 0)}
-                          title="사전 검증(경로·권한·포트 445) 후 일괄 적용을 실행합니다"
+                          title={tx('사전 검증(경로·권한·포트 445) 후 일괄 적용을 실행합니다', 'Run pre-flight check (paths, permissions, port 445) then batch apply')}
                           className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
                           <Play className="w-3 h-3" />
-                          일괄 적용
+                          {tx('일괄 적용', 'Batch Apply')}
                         </button>
                         <button
                           type="button"
@@ -512,14 +543,14 @@ export const LocationManagerModal: React.FC<LocationManagerModalProps> = ({
                           className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
                         >
                           <Download className="w-3 h-3" />
-                          내보내기
+                          {tx('내보내기', 'Export')}
                         </button>
                         <button
                           type="button"
                           onClick={() => void onDeleteProfile(item.profileId, item.locationName)}
                           disabled={isBatchApplying || Boolean(loadingEditId)}
-                          aria-label={`${item.locationName} 사용장소 파일 삭제`}
-                          title="사용장소 파일 삭제"
+                          aria-label={tx(`${item.locationName} 사용장소 파일 삭제`, `Delete ${item.locationName} profile`)}
+                          title={tx('사용장소 파일 삭제', 'Delete location file')}
                           className="p-1.5 text-slate-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 rounded-lg cursor-pointer disabled:opacity-50"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

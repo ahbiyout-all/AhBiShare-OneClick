@@ -52,7 +52,10 @@ import {
   BackupStoreStatus,
   CreateBackupResult,
   RestoreBackupResult,
+  AppLocale,
+  AppLocaleInfo,
 } from '@/types/share';
+import { formatLocaleTime, tx } from '@/i18n/localeState';
 import {
   decodeConnectionCode,
   encodeConnectionCode,
@@ -151,6 +154,12 @@ declare global {
         directory: string;
         message: string;
       }>;
+      openLicenseFolder?: () => Promise<{
+        success: boolean;
+        directory: string;
+        filesFound: string[];
+        message: string;
+      }>;
       triggerSystemReboot?: () => Promise<{ success: boolean; message: string }>;
       saveLegacyScripts?: (payload: {
         folderName: string;
@@ -238,6 +247,8 @@ declare global {
           message: string;
         }) => void
       ) => () => void;
+      getAppLocaleInfo?: () => Promise<AppLocaleInfo>;
+      setAppLocale?: (locale: AppLocale) => Promise<{ success: boolean; currentLocale: AppLocale }>;
     };
   }
 }
@@ -311,7 +322,7 @@ let latestPortableDoc: PortableShareDocument = { schemaVersion: 1, updatedAt: ''
 let latestPortableStatus: PortableStorageStatus = {
   supported: true,
   mode: 'web-preview',
-  directory: '웹 브라우저 시뮬레이션 저장소',
+  directory: 'Web Preview Storage',
   fileName: PORTABLE_FILE_NAME,
   filePath: PORTABLE_FILE_NAME,
   writable: true,
@@ -473,7 +484,7 @@ function resolveKnownSmartAuthHint(
       if (decoded) {
         return {
           hintAuthMode: decoded.authMode,
-          hintSource: '탐색된 피어 연결 코드',
+          hintSource: tx('탐색된 피어 연결 코드', 'Discovered peer connection code'),
           username: username || decoded.username,
           password: password || decoded.password,
           credentialSource: credentialSource || 'peer_code',
@@ -483,7 +494,7 @@ function resolveKnownSmartAuthHint(
     if (matchedPeer?.authModeHint === 'account' || matchedPeer?.authModeHint === 'guest') {
       return {
         hintAuthMode: matchedPeer.authModeHint,
-        hintSource: 'LAN 피어 탐색 이력',
+        hintSource: tx('LAN 피어 탐색 이력', 'LAN peer discovery history'),
         ...(username ? { username } : {}),
         ...(password ? { password } : {}),
         ...(credentialSource ? { credentialSource } : {}),
@@ -498,7 +509,7 @@ function resolveKnownSmartAuthHint(
   if (savedTarget) {
     return {
       hintAuthMode: savedTarget.authMode,
-      hintSource: '저장된 사용장소 연결 대상',
+      hintSource: tx('저장된 사용장소 연결 대상', 'Saved location connection target'),
       username: username || savedTarget.username,
       password: password || savedTarget.password,
       credentialSource: credentialSource || 'location_target',
@@ -513,7 +524,7 @@ function resolveKnownSmartAuthHint(
   if (knownShare) {
     return {
       hintAuthMode: knownShare.authMode,
-      hintSource: '저장된 호스트 공유 메타데이터',
+      hintSource: tx('저장된 호스트 공유 메타데이터', 'Saved host share metadata'),
       username: username || knownShare.username,
       password: password || ('restoredPassword' in knownShare ? knownShare.restoredPassword : undefined),
       credentialSource: credentialSource || 'saved_share',
@@ -529,26 +540,29 @@ function resolveKnownSmartAuthHint(
   };
 }
 
-const DEFAULT_MOCK_PEERS: DiscoveredPeer[] = [
-  {
-    hostName: 'OFFICE-MAIN-01',
-    ipAddress: '192.168.0.10',
-    latencyMs: 2,
-    smbPortOpen: true,
-    availableShares: ['WorkDocs', 'MediaPool'],
-    authModeHint: 'guest',
-    lastSeen: '방금 전',
-  },
-  {
-    hostName: 'DESIGN-WS-04',
-    ipAddress: '192.168.0.24',
-    latencyMs: 4,
-    smbPortOpen: true,
-    availableShares: ['RenderOutput'],
-    authModeHint: 'account',
-    lastSeen: '방금 전',
-  },
-];
+function getDefaultMockPeers(): DiscoveredPeer[] {
+  const justNow = tx('방금 전', 'Just now');
+  return [
+    {
+      hostName: 'OFFICE-MAIN-01',
+      ipAddress: '192.168.0.10',
+      latencyMs: 2,
+      smbPortOpen: true,
+      availableShares: ['WorkDocs', 'MediaPool'],
+      authModeHint: 'guest',
+      lastSeen: justNow,
+    },
+    {
+      hostName: 'DESIGN-WS-04',
+      ipAddress: '192.168.0.24',
+      latencyMs: 4,
+      smbPortOpen: true,
+      availableShares: ['RenderOutput'],
+      authModeHint: 'account',
+      lastSeen: justNow,
+    },
+  ];
+}
 
 function readStore<T>(key: string, fallback: T): T {
   try {
@@ -710,7 +724,7 @@ async function loadWebPreviewPortable(): Promise<PortableLoadResult> {
       status: {
         supported: true,
         mode: 'web-preview',
-        directory: '웹 프리뷰 시뮬레이션 USB 폴더',
+        directory: tx('웹 프리뷰 시뮬레이션 USB 폴더', 'Web Preview Simulated USB Folder'),
         fileName: PORTABLE_FILE_NAME,
         filePath: PORTABLE_FILE_NAME,
         writable: true,
@@ -760,7 +774,7 @@ async function loadWebPreviewPortable(): Promise<PortableLoadResult> {
       status: {
         supported: true,
         mode: 'web-preview',
-        directory: '웹 프리뷰 시뮬레이션 USB 폴더',
+        directory: tx('웹 프리뷰 시뮬레이션 USB 폴더', 'Web Preview Simulated USB Folder'),
         fileName: PORTABLE_FILE_NAME,
         filePath: PORTABLE_FILE_NAME,
         writable: true,
@@ -775,7 +789,7 @@ async function loadWebPreviewPortable(): Promise<PortableLoadResult> {
       status: {
         supported: true,
         mode: 'web-preview',
-        directory: '웹 프리뷰 시뮬레이션 USB 폴더',
+        directory: tx('웹 프리뷰 시뮬레이션 USB 폴더', 'Web Preview Simulated USB Folder'),
         fileName: PORTABLE_FILE_NAME,
         filePath: PORTABLE_FILE_NAME,
         writable: true,
@@ -864,7 +878,7 @@ async function saveWebPreviewPortable(doc: PortableShareDocument): Promise<Porta
     status: {
       supported: true,
       mode: 'web-preview',
-      directory: '웹 프리뷰 시뮬레이션 USB 폴더',
+      directory: tx('웹 프리뷰 시뮬레이션 USB 폴더', 'Web Preview Simulated USB Folder'),
       fileName: PORTABLE_FILE_NAME,
       filePath: PORTABLE_FILE_NAME,
       writable: true,
@@ -1014,7 +1028,7 @@ function sanitizeLocationShareForSim(entry: PortableHostShareEntry): PortableHos
 }
 
 function normalizeLocationProfileId(rawId: string | undefined, locationName: string): string {
-  const source = String(rawId || locationName || '').trim() || '새 사용장소';
+  const source = String(rawId || locationName || '').trim() || tx('새 사용장소', 'New Location');
   const fallbackSlug = source
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '-')
@@ -1188,7 +1202,10 @@ export const shareBridge = {
     if (hadTarget) {
       await this.createDataBackup({
         trigger: 'auto_before_delete',
-        reason: `호스트 '${targetHostName}' 대기 작업 삭제 직전 자동 백업`,
+        reason: tx(
+          `호스트 '${targetHostName}' 대기 작업 삭제 직전 자동 백업`,
+          `Auto backup before deleting pending task for host '${targetHostName}'`
+        ),
       });
     }
     const nextMap: Record<string, PendingHostPolicyTask> = {};
@@ -1352,7 +1369,10 @@ export const shareBridge = {
     if (hadMatch) {
       await this.createDataBackup({
         trigger: 'auto_before_delete',
-        reason: `호스트 '${hostName}' 정책 스냅샷 삭제 직전 자동 백업`,
+        reason: tx(
+          `호스트 '${hostName}' 정책 스냅샷 삭제 직전 자동 백업`,
+          `Auto backup before deleting policy snapshot for host '${hostName}'`
+        ),
       });
     }
     const curMap: Record<string, HostPolicySnapshot> = {};
@@ -1384,7 +1404,10 @@ export const shareBridge = {
     if (Object.keys(latestPortableDoc.hostPolicies || {}).length > 0) {
       await this.createDataBackup({
         trigger: 'auto_before_reset',
-        reason: '호스트 정책 스냅샷 전체 초기화 직전 자동 백업',
+        reason: tx(
+          '호스트 정책 스냅샷 전체 초기화 직전 자동 백업',
+          'Auto backup before resetting all host policy snapshots'
+        ),
       });
     }
     const nextDoc: PortableShareDocument = {
@@ -1420,7 +1443,10 @@ export const shareBridge = {
     if (filteredShares.length < (latestPortableDoc.shares || []).length) {
       await this.createDataBackup({
         trigger: 'auto_before_delete',
-        reason: `USB 저장 공유 설정 '${shareName}' (${sourceHostName}) 삭제 직전 자동 백업`,
+        reason: tx(
+          `USB 저장 공유 설정 '${shareName}' (${sourceHostName}) 삭제 직전 자동 백업`,
+          `Auto backup before deleting USB share '${shareName}' (${sourceHostName})`
+        ),
       });
     }
     const nextDoc: PortableShareDocument = {
@@ -1575,7 +1601,10 @@ export const shareBridge = {
     if (target) {
       await this.createDataBackup({
         trigger: 'auto_before_delete',
-        reason: `USB 오류 티켓(${target.errorCode} · ${target.shareName}) 삭제 직전 자동 백업`,
+        reason: tx(
+          `USB 오류 티켓(${target.errorCode} · ${target.shareName}) 삭제 직전 자동 백업`,
+          `Auto backup before deleting USB error ticket (${target.errorCode} · ${target.shareName})`
+        ),
       });
     }
     const nextList = current.filter((t) => t.ticketId !== ticketId);
@@ -1594,7 +1623,10 @@ export const shareBridge = {
     if (removedCount > 0) {
       await this.createDataBackup({
         trigger: 'auto_before_reset',
-        reason: `해결 완료된 오류 티켓 ${removedCount}건 일괄 정리 직전 자동 백업`,
+        reason: tx(
+          `해결 완료된 오류 티켓 ${removedCount}건 일괄 정리 직전 자동 백업`,
+          `Auto backup before clearing ${removedCount} resolved ticket(s)`
+        ),
       });
     }
     const saved = await this.persistTroubleshootTicketList(nextList);
@@ -1684,7 +1716,7 @@ export const shareBridge = {
           success: false,
           directory: '',
           filePath: '',
-          error: err instanceof Error ? err.message : '로그 기록 IPC 실패',
+          error: err instanceof Error ? err.message : tx('로그 기록 IPC 실패', 'Log write IPC failed'),
         };
       }
     }
@@ -1726,7 +1758,7 @@ export const shareBridge = {
     const snapshots: BackupSnapshotSummary[] = rawList.map(({ portableRaw: _p, locationsRaw: _l, ...summary }) => summary);
     return {
       success: true,
-      directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+      directory: tx('웹 프리뷰 시뮬레이션 backup 폴더', 'Web Preview Simulated backup Folder'),
       writable: true,
       writeProtected: false,
       maxSnapshots: BACKUP_MAX_SNAPSHOTS,
@@ -1747,7 +1779,7 @@ export const shareBridge = {
         return {
           success: false,
           directory: '',
-          error: err instanceof Error ? err.message : '백업 생성 IPC 호출 실패',
+          error: err instanceof Error ? err.message : tx('백업 생성 IPC 호출 실패', 'Create backup IPC failed'),
         };
       }
     }
@@ -1756,14 +1788,14 @@ export const shareBridge = {
     const reason = (
       options?.reason ||
       (trigger === 'auto_before_delete'
-        ? '삭제 직전 자동 보호 백업'
+        ? tx('삭제 직전 자동 보호 백업', 'Auto protection backup before delete')
         : trigger === 'auto_before_modify'
-          ? '설정 변경 직전 자동 보호 백업'
+          ? tx('설정 변경 직전 자동 보호 백업', 'Auto protection backup before modification')
           : trigger === 'auto_before_reset'
-            ? '일괄 정리·초기화 직전 자동 보호 백업'
+            ? tx('일괄 정리·초기화 직전 자동 보호 백업', 'Auto protection backup before batch reset')
             : trigger === 'auto_before_restore'
-              ? '백업 복원 직전 자동 안전 백업'
-              : '사용자 수동 백업')
+              ? tx('백업 복원 직전 자동 안전 백업', 'Auto safety backup before restore')
+              : tx('사용자 수동 백업', 'Manual user backup'))
     ).trim();
 
     const portableRaw =
@@ -1789,7 +1821,7 @@ export const shareBridge = {
       return {
         success: true,
         skippedEmpty: true,
-        directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+        directory: tx('웹 프리뷰 시뮬레이션 backup 폴더', 'Web Preview Simulated backup Folder'),
         prunedCount: 0,
       };
     }
@@ -1818,7 +1850,7 @@ export const shareBridge = {
       return {
         success: true,
         skippedDuplicate: true,
-        directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+        directory: tx('웹 프리뷰 시뮬레이션 backup 폴더', 'Web Preview Simulated backup Folder'),
         snapshot: summary,
         prunedCount: 0,
       };
@@ -1857,7 +1889,7 @@ export const shareBridge = {
     return {
       success: true,
       skippedDuplicate: false,
-      directory: '웹 프리뷰 시뮬레이션 backup 폴더',
+      directory: tx('웹 프리뷰 시뮬레이션 backup 폴더', 'Web Preview Simulated backup Folder'),
       snapshot: summary,
       prunedCount,
     };
@@ -1886,14 +1918,17 @@ export const shareBridge = {
     >(STORAGE_BACKUPS_SIM_KEY, []);
     const matched = existing.find((e) => e.backupId === backupId || e.fileName === backupId);
     if (!matched) {
-      return { success: false, error: '선택한 백업 스냅샷을 찾을 수 없습니다.' };
+      return { success: false, error: tx('선택한 백업 스냅샷을 찾을 수 없습니다.', 'Selected backup snapshot could not be found.') };
     }
 
     let safetyBackup: BackupSnapshotSummary | null = null;
     if (!options?.skipSafetyBackup) {
       const pre = await this.createDataBackup({
         trigger: 'auto_before_restore',
-        reason: `백업('${matched.reason}') 복원 직전 자동 안전 백업`,
+        reason: tx(
+          `백업('${matched.reason}') 복원 직전 자동 안전 백업`,
+          `Auto safety backup before restoring '${matched.reason}'`
+        ),
         hostName: options?.hostName,
       });
       if (pre.success && pre.snapshot) safetyBackup = pre.snapshot;
@@ -1938,7 +1973,7 @@ export const shareBridge = {
     >(STORAGE_BACKUPS_SIM_KEY, []);
     const filtered = existing.filter((e) => e.backupId !== backupId && e.fileName !== backupId);
     if (filtered.length === existing.length) {
-      return { success: false, error: '삭제할 백업을 찾을 수 없습니다.' };
+      return { success: false, error: tx('삭제할 백업을 찾을 수 없습니다.', 'Backup snapshot to delete was not found.') };
     }
     writeStore(STORAGE_BACKUPS_SIM_KEY, filtered);
     return { success: true, deletedBackupId: backupId };
@@ -1950,8 +1985,31 @@ export const shareBridge = {
     }
     return {
       success: true,
-      directory: '웹 프리뷰 시뮬레이션 backup 폴더',
-      message: '웹 미리보기 모드: Windows 실행 환경에서는 앱 실행 폴더 하위 backup 폴더가 즉시 열립니다.',
+      directory: tx('웹 프리뷰 시뮬레이션 backup 폴더', 'Web Preview Simulated backup Folder'),
+      message: tx(
+        '웹 미리보기 모드: Windows 실행 환경에서는 앱 실행 폴더 하위 backup 폴더가 즉시 열립니다.',
+        'Web preview mode: on Windows desktop, the backup folder inside the app directory opens directly.'
+      ),
+    };
+  },
+
+  async openLicenseFolder(): Promise<{
+    success: boolean;
+    directory: string;
+    filesFound: string[];
+    message: string;
+  }> {
+    if (window.ahbiShareElectron?.openLicenseFolder) {
+      return await window.ahbiShareElectron.openLicenseFolder();
+    }
+    return {
+      success: true,
+      directory: tx('웹 프리뷰 환경 (저장소 루트)', 'Web Preview Environment (Repository Root)'),
+      filesFound: ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md'],
+      message: tx(
+        '데스크톱 실행 환경에서는 패키징된 LICENSE, NOTICE, THIRD-PARTY-NOTICES.md 폴더가 즉시 열립니다.',
+        'On Windows desktop builds, the folder containing packaged LICENSE, NOTICE, and THIRD-PARTY-NOTICES.md opens directly.'
+      ),
     };
   },
 
@@ -1981,14 +2039,22 @@ export const shareBridge = {
       if (!res.success) {
         return {
           success: false,
-          message: res.error || 'Guest 무비밀번호 정책 개방에 실패했습니다. 관리자 권한 상태를 확인하세요.',
+          message:
+            res.error ||
+            tx(
+              'Guest 무비밀번호 정책 개방에 실패했습니다. 관리자 권한 상태를 확인하세요.',
+              'Failed to open passwordless Guest policy. Check administrator privileges.'
+            ),
         };
       }
       const updatedPolicy = await this.inspectOsNetworkPolicy(resolvedNet);
       await this.persistHostPolicySnapshot(resolvedNet.hostname, updatedPolicy, resolvedNet.primaryIp);
       return {
         success: true,
-        message: '호스트 Guest(SID *-501) 무비밀번호 개방·LSA 빈 암호 해제·TCP 445 방화벽 정렬 완료',
+        message: tx(
+          '호스트 Guest(SID *-501) 무비밀번호 개방·LSA 빈 암호 해제·TCP 445 방화벽 정렬 완료',
+          'Host Guest (SID *-501) passwordless unlock, LSA blank password release, and TCP 445 firewall alignment complete'
+        ),
         updatedPolicy,
       };
     }
@@ -2010,7 +2076,10 @@ export const shareBridge = {
     await this.persistHostPolicySnapshot(resolvedNet.hostname, updatedPolicy, resolvedNet.primaryIp);
     return {
       success: true,
-      message: '[웹 프리뷰] 호스트 Guest 무비밀번호·SeDenyNetworkLogonRight·TCP 445 개방 시뮬레이션 적용 완료',
+      message: tx(
+        '[웹 프리뷰] 호스트 Guest 무비밀번호·SeDenyNetworkLogonRight·TCP 445 개방 시뮬레이션 적용 완료',
+        '[Web Preview] Simulated host Guest passwordless, SeDenyNetworkLogonRight & TCP 445 unlock applied'
+      ),
       updatedPolicy,
     };
   },
@@ -2026,7 +2095,10 @@ export const shareBridge = {
         success: unlockRes.success,
         blocked: false,
         message: unlockRes.success
-          ? '빈 암호 계정 차단을 해제하고 upgradedHostGuestUnblock.bat 정책(LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · TCP 445)을 적용했습니다.'
+          ? tx(
+              '빈 암호 계정 차단을 해제하고 upgradedHostGuestUnblock.bat 정책(LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · TCP 445)을 적용했습니다.',
+              'Unblocked empty-password accounts and applied upgradedHostGuestUnblock.bat policy (LimitBlankPasswordUse=0, Guest enabled, SeDenyNetworkLogonRight cleared, TCP 445).'
+            )
           : unlockRes.message,
         updatedPolicy: unlockRes.updatedPolicy,
       };
@@ -2040,7 +2112,12 @@ export const shareBridge = {
         return {
           success: false,
           blocked: false,
-          message: res.error || '빈 암호 계정 네트워크 차단(LimitBlankPasswordUse=1) 적용에 실패했습니다.',
+          message:
+            res.error ||
+            tx(
+              '빈 암호 계정 네트워크 차단(LimitBlankPasswordUse=1) 적용에 실패했습니다.',
+              'Failed to apply empty-password account network block (LimitBlankPasswordUse=1).'
+            ),
         };
       }
       const updatedPolicy = await this.inspectOsNetworkPolicy(resolvedNet);
@@ -2048,7 +2125,10 @@ export const shareBridge = {
       return {
         success: true,
         blocked: true,
-        message: '빈 암호 계정(Guest 및 로컬 계정) 차단을 활성화했습니다. (LimitBlankPasswordUse=1 · Guest 비활성화)',
+        message: tx(
+          '빈 암호 계정(Guest 및 로컬 계정) 차단을 활성화했습니다. (LimitBlankPasswordUse=1 · Guest 비활성화)',
+          'Enabled empty-password account blocking for Guest and local accounts (LimitBlankPasswordUse=1, Guest disabled).'
+        ),
         updatedPolicy,
       };
     }
@@ -2069,7 +2149,10 @@ export const shareBridge = {
     return {
       success: true,
       blocked: true,
-      message: '[웹 프리뷰] 빈 암호 계정 차단 활성화 시뮬레이션 완료 (LimitBlankPasswordUse=1 · Guest 비활성화)',
+      message: tx(
+        '[웹 프리뷰] 빈 암호 계정 차단 활성화 시뮬레이션 완료 (LimitBlankPasswordUse=1 · Guest 비활성화)',
+        '[Web Preview] Simulated empty-password account block enabled (LimitBlankPasswordUse=1, Guest disabled)'
+      ),
       updatedPolicy,
     };
   },
@@ -2104,21 +2187,38 @@ Write-Output 'SMB_SESSION_CLEANED'
       if (!res.success && !/SMB_SESSION_CLEANED/i.test(res.output || '')) {
         return {
           success: false,
-          message: res.error || 'SMB 충돌 세션/자격 증명 정리에 실패했습니다.',
+          message:
+            res.error ||
+            tx(
+              'SMB 충돌 세션/자격 증명 정리에 실패했습니다.',
+              'Failed to clear conflicting SMB sessions or credentials.'
+            ),
         };
       }
       return {
         success: true,
         message: cleanHost
-          ? `'${cleanHost}' 대상의 기존 SMB 세션 및 cmdkey 자격 증명 캐시를 정리했습니다.`
-          : '기존 충돌 SMB 세션 및 자격 증명 캐시를 정리했습니다.',
+          ? tx(
+              `'${cleanHost}' 대상의 기존 SMB 세션 및 cmdkey 자격 증명 캐시를 정리했습니다.`,
+              `Cleared existing SMB sessions and cmdkey credential cache for '${cleanHost}'.`
+            )
+          : tx(
+              '기존 충돌 SMB 세션 및 자격 증명 캐시를 정리했습니다.',
+              'Cleared existing conflicting SMB sessions and credential cache.'
+            ),
       };
     }
     return {
       success: true,
       message: cleanHost
-        ? `[웹 프리뷰] '${cleanHost}' 대상 충돌 SMB 세션·cmdkey 캐시 정리 시뮬레이션 완료`
-        : '[웹 프리뷰] 충돌 SMB 세션·cmdkey 캐시 정리 시뮬레이션 완료',
+        ? tx(
+            `[웹 프리뷰] '${cleanHost}' 대상 충돌 SMB 세션·cmdkey 캐시 정리 시뮬레이션 완료`,
+            `[Web Preview] Simulated clearing SMB sessions and cmdkey cache for '${cleanHost}'`
+          )
+        : tx(
+            '[웹 프리뷰] 충돌 SMB 세션·cmdkey 캐시 정리 시뮬레이션 완료',
+            '[Web Preview] Simulated clearing conflicting SMB sessions and cmdkey cache'
+          ),
     };
   },
 
@@ -2133,20 +2233,23 @@ Write-Output 'SMB_SESSION_CLEANED'
   async openLocalOrUncPath(pathToOpen: string): Promise<{ success: boolean; message: string }> {
     const target = String(pathToOpen || '').trim();
     if (!target) {
-      return { success: false, message: '열 경로가 비어 있습니다.' };
+      return { success: false, message: tx('열 경로가 비어 있습니다.', 'The path to open is empty.') };
     }
     if (window.ahbiShareElectron?.openPath) {
       const res = await window.ahbiShareElectron.openPath(target);
       return {
         success: res.success,
         message: res.success
-          ? `Windows 탐색기에서 열었습니다: ${target}`
-          : res.error || `경로를 열지 못했습니다: ${target}`,
+          ? tx(`Windows 탐색기에서 열었습니다: ${target}`, `Opened in Windows Explorer: ${target}`)
+          : res.error || tx(`경로를 열지 못했습니다: ${target}`, `Could not open path: ${target}`),
       };
     }
     return {
       success: true,
-      message: `웹 미리보기 모드: Windows 실행 환경에서는 탐색기(${target})가 즉시 열립니다.`,
+      message: tx(
+        `웹 미리보기 모드: Windows 실행 환경에서는 탐색기(${target})가 즉시 열립니다.`,
+        `Web preview mode: on Windows desktop, Explorer opens (${target}) directly.`
+      ),
     };
   },
 
@@ -2238,7 +2341,7 @@ Write-Output 'SMB_SESSION_CLEANED'
           uncPath: expectedUnc,
           authMode: 'guest',
           permission: 'full',
-          createdAt: '기존 공유',
+          createdAt: tx('기존 공유', 'Existing Share'),
           sourceHostName: netInfo.hostname,
           sourceIp: netInfo.primaryIp,
           connectionCode: code,
@@ -2262,7 +2365,7 @@ Write-Output 'SMB_SESSION_CLEANED'
           targetHost: uncParts[0] || '',
           shareName: uncParts[1] || '',
           authMode: 'guest',
-          mountedAt: '기존 연결',
+          mountedAt: tx('기존 연결', 'Existing Mount'),
           status: liveStatus,
         };
       });
@@ -2322,12 +2425,12 @@ Write-Output 'SMB_SESSION_CLEANED'
           return { success: false, steps };
         }
         steps[i].status = 'success';
-        steps[i].output = res.output || '완료';
+        steps[i].output = res.output || tx('완료', 'Done');
       } else {
         await new Promise((r) => setTimeout(r, 170));
         steps[i].durationMs = Math.round(performance.now() - t0);
         steps[i].status = 'success';
-        steps[i].output = `[시뮬레이션 완료] ${definitions[i].title}`;
+        steps[i].output = tx(`[시뮬레이션 완료] ${definitions[i].title}`, `[Simulation Done] ${definitions[i].title}`);
         if (i === definitions.length - 1) {
           webSimPolicyBase = {
             ...webSimPolicyBase,
@@ -2380,7 +2483,7 @@ Write-Output 'SMB_SESSION_CLEANED'
       authMode: config.authMode,
       permission: config.permission,
       username: config.authMode === 'account' ? config.username.trim() : undefined,
-      createdAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      createdAt: formatLocaleTime(),
       connectionCode: code,
       sourceHostName: netInfo.hostname,
       sourceIp: netInfo.primaryIp,
@@ -2405,6 +2508,7 @@ Write-Output 'SMB_SESSION_CLEANED'
   async removeHostShare(shareName: string, netInfo?: LocalNetworkInfo): Promise<ActiveShare[]> {
     if (window.ahbiShareElectron?.runPowerShell) {
       const safe = shareName.replace(/'/g, "''");
+      const psErrPrefix = tx('공유 해제 실패', 'Failed to remove share').replace(/'/g, "''");
       const res = await window.ahbiShareElectron.runPowerShell(`
         $p_share = '${safe}'
         if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
@@ -2418,13 +2522,13 @@ Write-Output 'SMB_SESSION_CLEANED'
           try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
           if ($rmCode -ne 0) {
             $stillShared = (& net.exe share 2>$null | Where-Object { $_ -match ('^' + [regex]::Escape($p_share) + '\\s+') })
-            if ($stillShared) { throw ("공유 해제 실패 (" + $p_share + "): " + $script:__rmOut) }
+            if ($stillShared) { throw ("${psErrPrefix} (" + $p_share + "): " + $script:__rmOut) }
           }
         }
         Write-Output "Removed share"
       `.trim());
       if (!res.success) {
-        throw new Error(res.error || `'${shareName}' 공유 해제 실패`);
+        throw new Error(res.error || tx(`'${shareName}' 공유 해제 실패`, `Failed to remove share '${shareName}'`));
       }
     }
     const targetLower = shareName.toLowerCase();
@@ -2451,7 +2555,7 @@ Write-Output 'SMB_SESSION_CLEANED'
 
     await new Promise((r) => setTimeout(r, 450));
     const localShares = this.getSavedShares();
-    const peers: DiscoveredPeer[] = [...DEFAULT_MOCK_PEERS];
+    const peers: DiscoveredPeer[] = [...getDefaultMockPeers()];
 
     if (localShares.length > 0) {
       const shareCodes: Record<string, string> = {};
@@ -2466,7 +2570,7 @@ Write-Output 'SMB_SESSION_CLEANED'
         availableShares: localShares.map((s) => s.shareName),
         authModeHint: localShares[0].authMode,
         shareCodes,
-        lastSeen: '방금 전',
+        lastSeen: tx('방금 전', 'Just now'),
       });
     }
     return peers;
@@ -2528,12 +2632,12 @@ Write-Output 'SMB_SESSION_CLEANED'
           return { success: false, steps };
         }
         steps[i].status = 'success';
-        steps[i].output = res.output || '완료';
+        steps[i].output = res.output || tx('완료', 'Done');
       } else {
         await new Promise((r) => setTimeout(r, 170));
         steps[i].durationMs = Math.round(performance.now() - t0);
         steps[i].status = 'success';
-        steps[i].output = `[시뮬레이션 완료] ${definitions[i].title}`;
+        steps[i].output = tx(`[시뮬레이션 완료] ${definitions[i].title}`, `[Simulation Done] ${definitions[i].title}`);
       }
       onProgress([...steps]);
     }
@@ -2552,7 +2656,7 @@ Write-Output 'SMB_SESSION_CLEANED'
       shareName: trimmedShare,
       authMode: config.authMode,
       ...(trimmedUser ? { username: trimmedUser } : {}),
-      mountedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      mountedAt: formatLocaleTime(),
       status: 'connected',
     };
 
@@ -2570,6 +2674,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     const clean = driveLetter.trim().replace(/:?$/, ':').toUpperCase();
     if (window.ahbiShareElectron?.runPowerShell) {
       const safeDrive = clean.replace(/'/g, "''");
+      const psUnmountErr = tx('드라이브 연결 해제 실패', 'Failed to disconnect drive').replace(/'/g, "''");
       const res = await window.ahbiShareElectron.runPowerShell(`
         $p_drive = '${safeDrive}'
         if (Get-Command Remove-SmbMapping -ErrorAction SilentlyContinue) {
@@ -2586,12 +2691,12 @@ Write-Output 'SMB_SESSION_CLEANED'
           } else {
             $stillExists = Test-Path ($p_drive + '\\')
           }
-          if ($stillExists) { throw ("드라이브 연결 해제 실패 (" + $p_drive + "): " + $script:__netDelOut) }
+          if ($stillExists) { throw ("${psUnmountErr} (" + $p_drive + "): " + $script:__netDelOut) }
         }
         Write-Output "Disconnected drive"
       `.trim());
       if (!res.success) {
-        throw new Error(res.error || `${clean} 드라이브 연결 해제 실패`);
+        throw new Error(res.error || tx(`${clean} 드라이브 연결 해제 실패`, `Failed to disconnect drive ${clean}`));
       }
     }
     const updated = readStore<MountedDrive[]>(STORAGE_MOUNTS_KEY, []).filter((m) => m.driveLetter.toUpperCase() !== clean);
@@ -2604,14 +2709,22 @@ Write-Output 'SMB_SESSION_CLEANED'
     this.clearSmartAuthCache();
     if (window.ahbiShareElectron?.runPowerShell) {
       const res = await window.ahbiShareElectron.runPowerShell(buildRollbackScript(scope));
-      if (!res.success) return { success: false, message: res.error || '원복 명령 실행 실패' };
+      if (!res.success) {
+        return {
+          success: false,
+          message: res.error || tx('원복 명령 실행 실패', 'Failed to execute rollback command'),
+        };
+      }
       if (scope === 'host') {
         writeStore(STORAGE_SHARES_KEY, []);
         if (netInfo) await this.persistPortableHostShares([], netInfo);
       } else {
         writeStore(STORAGE_MOUNTS_KEY, []);
       }
-      return { success: true, message: res.output || '보안 기본값으로 원상복구되었습니다.' };
+      return {
+        success: true,
+        message: res.output || tx('보안 기본값으로 원상복구되었습니다.', 'Restored to security defaults.'),
+      };
     }
     await new Promise((r) => setTimeout(r, 300));
     if (scope === 'host') {
@@ -2643,8 +2756,14 @@ Write-Output 'SMB_SESSION_CLEANED'
     return {
       success: true,
       message: scope === 'host'
-        ? '호스트 공유폴더 해제, 방화벽 폐쇄 및 LSA 익명 차단 정책을 기본값으로 원복했습니다.'
-        : '클라이언트 네트워크 드라이브 해제 및 비인증 게스트 접속 차단을 기본값으로 원복했습니다.',
+        ? tx(
+            '호스트 공유폴더 해제, 방화벽 폐쇄 및 LSA 익명 차단 정책을 기본값으로 원복했습니다.',
+            'Removed host shares, closed firewall rule, and restored LSA anonymous block defaults.'
+          )
+        : tx(
+            '클라이언트 네트워크 드라이브 해제 및 비인증 게스트 접속 차단을 기본값으로 원복했습니다.',
+            'Disconnected client network drives and restored insecure guest logon blocking defaults.'
+          ),
     };
   },
 
@@ -2655,20 +2774,60 @@ Write-Output 'SMB_SESSION_CLEANED'
         const d = parseLastJsonObject<{ LanmanWorkstation?: string; LanmanServer?: string; FDResPub?: string }>(res.output);
         if (d) {
           return [
-            { id: 'ws', label: 'LanmanWorkstation (클라이언트)', status: d.LanmanWorkstation === 'Running' ? 'pass' : 'warn', detail: `서비스 상태: ${d.LanmanWorkstation || 'Unknown'}` },
-            { id: 'srv', label: 'LanmanServer (호스트)', status: d.LanmanServer === 'Running' ? 'pass' : 'warn', detail: `서비스 상태: ${d.LanmanServer || 'Unknown'}` },
-            { id: 'fd', label: 'FDResPub (네트워크 탐색 게시)', status: d.FDResPub === 'Running' ? 'pass' : 'warn', detail: `서비스 상태: ${d.FDResPub || 'Unknown'}` },
-            { id: 'dns', label: 'DNS & ARP 테이블 캐시 초기화', status: 'pass', detail: 'ipconfig /flushdns 및 arp -d * 완료' },
+            {
+              id: 'ws',
+              label: tx('LanmanWorkstation (클라이언트)', 'LanmanWorkstation (Client)'),
+              status: d.LanmanWorkstation === 'Running' ? 'pass' : 'warn',
+              detail: tx(`서비스 상태: ${d.LanmanWorkstation || 'Unknown'}`, `Service status: ${d.LanmanWorkstation || 'Unknown'}`),
+            },
+            {
+              id: 'srv',
+              label: tx('LanmanServer (호스트)', 'LanmanServer (Host)'),
+              status: d.LanmanServer === 'Running' ? 'pass' : 'warn',
+              detail: tx(`서비스 상태: ${d.LanmanServer || 'Unknown'}`, `Service status: ${d.LanmanServer || 'Unknown'}`),
+            },
+            {
+              id: 'fd',
+              label: tx('FDResPub (네트워크 탐색 게시)', 'FDResPub (Network Discovery)'),
+              status: d.FDResPub === 'Running' ? 'pass' : 'warn',
+              detail: tx(`서비스 상태: ${d.FDResPub || 'Unknown'}`, `Service status: ${d.FDResPub || 'Unknown'}`),
+            },
+            {
+              id: 'dns',
+              label: tx('DNS & ARP 테이블 캐시 초기화', 'DNS & ARP Cache Flush'),
+              status: 'pass',
+              detail: tx('ipconfig /flushdns 및 arp -d * 완료', 'Completed ipconfig /flushdns and arp -d *'),
+            },
           ];
         }
       }
     }
     await new Promise((r) => setTimeout(r, 420));
     return [
-      { id: 'ws', label: 'LanmanWorkstation (SMB 클라이언트)', status: 'pass', detail: 'Running · SMB 2.0/3.1.1 협상 활성' },
-      { id: 'srv', label: 'LanmanServer (SMB 파일 서버)', status: 'pass', detail: 'Running · TCP 445 리스닝 정상' },
-      { id: 'fd', label: 'FDResPub / fdPHost (네트워크 탐색)', status: 'pass', detail: 'Running · WS-Discovery 브로드캐스트 활성' },
-      { id: 'dns', label: 'DNS & ARP 캐시 리프레시', status: 'pass', detail: '이름 해석 및 ARP 캐시 초기화 완료' },
+      {
+        id: 'ws',
+        label: tx('LanmanWorkstation (SMB 클라이언트)', 'LanmanWorkstation (SMB Client)'),
+        status: 'pass',
+        detail: tx('Running · SMB 2.0/3.1.1 협상 활성', 'Running · SMB 2.0/3.1.1 negotiation active'),
+      },
+      {
+        id: 'srv',
+        label: tx('LanmanServer (SMB 파일 서버)', 'LanmanServer (SMB File Server)'),
+        status: 'pass',
+        detail: tx('Running · TCP 445 리스닝 정상', 'Running · TCP 445 listening normally'),
+      },
+      {
+        id: 'fd',
+        label: tx('FDResPub / fdPHost (네트워크 탐색)', 'FDResPub / fdPHost (Network Discovery)'),
+        status: 'pass',
+        detail: tx('Running · WS-Discovery 브로드캐스트 활성', 'Running · WS-Discovery broadcast active'),
+      },
+      {
+        id: 'dns',
+        label: tx('DNS & ARP 캐시 리프레시', 'DNS & ARP Cache Refresh'),
+        status: 'pass',
+        detail: tx('이름 해석 및 ARP 캐시 초기화 완료', 'Name resolution and ARP cache flushed'),
+      },
     ];
   },
 
@@ -2722,8 +2881,14 @@ Write-Output 'SMB_SESSION_CLEANED'
       packetLossPct: sameSubnet ? 0 : 100,
       smbPortOpen: sameSubnet && (matchedPeer ? matchedPeer.smbPortOpen : true),
       detail: sameSubnet
-        ? `웹 프리뷰 시뮬레이션: ${cleanTarget} 응답(${baseLatency}ms) 및 SMB 포트 445 개방 확인.`
-        : `웹 프리뷰 시뮬레이션: ${cleanTarget}은 현재 서브넷(${netInfo?.subnetPrefix || '192.168.0'}.x) 외부이거나 응답이 없습니다.`,
+        ? tx(
+            `웹 프리뷰 시뮬레이션: ${cleanTarget} 응답(${baseLatency}ms) 및 SMB 포트 445 개방 확인.`,
+            `Web preview simulation: ${cleanTarget} replied (${baseLatency}ms) and SMB port 445 is open.`
+          )
+        : tx(
+            `웹 프리뷰 시뮬레이션: ${cleanTarget}은 현재 서브넷(${netInfo?.subnetPrefix || '192.168.0'}.x) 외부이거나 응답이 없습니다.`,
+            `Web preview simulation: ${cleanTarget} is outside the current subnet (${netInfo?.subnetPrefix || '192.168.0'}.x) or unreachable.`
+          ),
       checkedAt: formatSnapshotTimestamp(new Date().toISOString()),
     };
   },
@@ -2828,7 +2993,7 @@ Write-Output 'SMB_SESSION_CLEANED'
                 netInfo?.hostname || 'LOCAL-PC',
                 parsedRawReg,
                 'local_live',
-                '로컬 레지스트리 실시간 조회',
+                tx('로컬 레지스트리 실시간 조회', 'Local Registry Live Query'),
                 base.checkedAt
               )
             : undefined;
@@ -2883,7 +3048,7 @@ Write-Output 'SMB_SESSION_CLEANED'
         kirSidOverride: simBaseWithTime.kirOverride1517186191 ?? null,
       },
       'local_live',
-      '로컬 레지스트리 조회 (시뮬레이션)',
+      tx('로컬 레지스트리 조회 (시뮬레이션)', 'Local Registry Query (Simulation)'),
       checkedAtSim
     );
     const { compatibilityScore, detectedIssues } = computeCompatibilityScoreAndIssues(simBaseWithTime);
@@ -2941,7 +3106,7 @@ Write-Output 'SMB_SESSION_CLEANED'
               netInfo.hostname,
               parsed.localRaw,
               'local_live',
-              '로컬 레지스트리 실시간 조회',
+              tx('로컬 레지스트리 실시간 조회', 'Local Registry Live Query'),
               fetchedAt
             );
           }
@@ -2962,7 +3127,7 @@ Write-Output 'SMB_SESSION_CLEANED'
               (typeof targetHostSnapshot.guestNetworkLogonDenied === 'boolean'
                 ? targetHostSnapshot.guestNetworkLogonDenied
                   ? '*S-1-5-32-546,*S-1-5-7'
-                  : '(Guest 제외됨)'
+                  : tx('(Guest 제외됨)', '(Guest excluded)')
                 : null);
             const usbAhbiFw =
               usbCapturedEntries?.audit_rpc_fw_smb1?.find((e) => e.valueName === 'AhBiShare-SMB-445')?.rawValue ??
@@ -2981,19 +3146,30 @@ Write-Output 'SMB_SESSION_CLEANED'
                 ahbiFw445: typeof usbAhbiFw === 'number' ? usbAhbiFw : null,
               },
               'remote_live_rpc',
-              '원격 RPC 레지스트리 실시간 조회',
+              tx('원격 RPC 레지스트리 실시간 조회', 'Remote RPC Registry Live Query'),
               fetchedAt,
               {
                 targetIp: remoteCandidate || targetHostSnapshot.sourceIp,
-                remoteRpcNote: `연결된 호스트(${remoteCandidate})의 HKLM 원격 레지스트리를 실시간으로 직접 조회했습니다.`,
+                remoteRpcNote: tx(
+                  `연결된 호스트(${remoteCandidate})의 HKLM 원격 레지스트리를 실시간으로 직접 조회했습니다.`,
+                  `Queried live HKLM remote registry directly from connected host (${remoteCandidate}).`
+                ),
               }
             );
             remoteRpcNote = hostSnapshot.remoteRpcNote;
           } else if (parsed?.remoteAttempted) {
-            const errReason = parsed.remoteError || 'RemoteRegistry 서비스 비활성 또는 방화벽 차단';
+            const errReason =
+              parsed.remoteError ||
+              tx('RemoteRegistry 서비스 비활성 또는 방화벽 차단', 'RemoteRegistry service disabled or blocked by firewall');
             remoteRpcNote = targetHostSnapshot?.rawRegistrySnapshot
-              ? `원격 RPC 직접 조회(${remoteCandidate}) 불가(${errReason}) → 호스트 실행 시 USB에 실측 캡처된 원시 레지스트리 값을 표시합니다.`
-              : `원격 RPC 직접 조회(${remoteCandidate}) 불가(${errReason}) → USB 호스트 정책 스냅샷에서 역산한 레지스트리 기대값을 표시합니다.`;
+              ? tx(
+                  `원격 RPC 직접 조회(${remoteCandidate}) 불가(${errReason}) → 호스트 실행 시 USB에 실측 캡처된 원시 레지스트리 값을 표시합니다.`,
+                  `Remote RPC direct query (${remoteCandidate}) unavailable (${errReason}) -> Showing raw registry values measured on host USB.`
+                )
+              : tx(
+                  `원격 RPC 직접 조회(${remoteCandidate}) 불가(${errReason}) → USB 호스트 정책 스냅샷에서 역산한 레지스트리 기대값을 표시합니다.`,
+                  `Remote RPC direct query (${remoteCandidate}) unavailable (${errReason}) -> Showing expected registry values derived from USB host snapshot.`
+                );
           }
         }
       } catch {
@@ -3018,9 +3194,9 @@ Write-Output 'SMB_SESSION_CLEANED'
         }
       } else {
         hostSnapshot = {
-          hostName: '선택된 호스트 없음',
+          hostName: tx('선택된 호스트 없음', 'No Host Selected'),
           sourceType: 'preset_reference',
-          sourceLabel: '대상 호스트 미선택',
+          sourceLabel: tx('대상 호스트 미선택', 'Target Host Not Selected'),
           fetchedAt,
           entries: {},
         };
@@ -3043,7 +3219,7 @@ Write-Output 'SMB_SESSION_CLEANED'
       const current = await this.inspectOsNetworkPolicy(netInfo);
       if (!this.getLegacyRollbackSnapshot()) {
         this.saveLegacyRollbackSnapshot({
-          capturedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+          capturedAt: formatLocaleTime(),
           hostName: netInfo?.hostname || 'LOCAL-PC',
           smbServerSigningRequired: current.smbServerSigningRequired,
           smbClientSigningRequired: current.smbClientSigningRequired,
@@ -3116,33 +3292,69 @@ Write-Output 'SMB_SESSION_CLEANED'
 
       const summary =
         mode === 'deep_stack_reset'
-          ? 'Winsock · TCP/IP 네트워크 스택 초기화를 실행했습니다.'
+          ? tx(
+              'Winsock · TCP/IP 네트워크 스택 초기화를 실행했습니다.',
+              'Executed Winsock & TCP/IP network stack reset.'
+            )
           : mode === 'strict_26h2_default'
-            ? 'Windows 11 24H2~26H2 표준 보안 정책(서명 강제 · 게스트 차단)으로 복원했습니다.'
+            ? tx(
+                'Windows 11 24H2~26H2 표준 보안 정책(서명 강제 · 게스트 차단)으로 복원했습니다.',
+                'Restored Windows 11 24H2-26H2 standard security policy (SMB signing required, guest blocked).'
+              )
             : mode === 'legacy_bridge_compat'
-              ? 'Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환 브릿지(비암호화 허용·서명 완화·NTLMv2)를 적용했습니다.'
+              ? tx(
+                  'Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환 브릿지(비암호화 허용·서명 완화·NTLMv2)를 적용했습니다.',
+                  'Applied Win 7 (SMB 2.1) & Win 8 (SMB 3.0) compatibility bridge (unencrypted allowed, signing relaxed, NTLMv2).'
+                )
               : mode === 'legacy_smb1_enable'
-                ? '구형 Win 7·XP 호환용 SMB 1.0/CIFS 프로토콜 기능을 활성화했습니다.'
+                ? tx(
+                    '구형 Win 7·XP 호환용 SMB 1.0/CIFS 프로토콜 기능을 활성화했습니다.',
+                    'Enabled SMB 1.0/CIFS protocol feature for legacy Win 7/XP compatibility.'
+                  )
                 : mode === 'legacy_bridge_rollback'
-                  ? '구형 OS 공유 호환 설정을 표준 보안 상태로 원복했습니다.'
+                  ? tx(
+                      '구형 OS 공유 호환 설정을 표준 보안 상태로 원복했습니다.',
+                      'Rolled back legacy OS sharing compatibility settings to standard security state.'
+                    )
                   : mode === 'rpc_printer_compat'
-                    ? 'Win 11 24H2~26H2 프린터 RPC · Named Pipe · PointAndPrint 호환 패치를 적용했습니다.'
+                    ? tx(
+                        'Win 11 24H2~26H2 프린터 RPC · Named Pipe · PointAndPrint 호환 패치를 적용했습니다.',
+                        'Applied Win 11 24H2-26H2 printer RPC, Named Pipe, and PointAndPrint compatibility patch.'
+                      )
                     : mode === 'rpc_printer_default'
-                      ? '프린터 RPC 개인정보 인증 강제 및 PointAndPrint 기본 보안 정책으로 복원했습니다.'
+                      ? tx(
+                          '프린터 RPC 개인정보 인증 강제 및 PointAndPrint 기본 보안 정책으로 복원했습니다.',
+                          'Restored printer RPC privacy enforcement and PointAndPrint default security policy.'
+                        )
                       : mode === 'enable_uac_token_filter'
-                        ? 'UAC 원격 토큰 필터(LocalAccountTokenFilterPolicy=1)를 활성화했습니다.'
+                        ? tx(
+                            'UAC 원격 토큰 필터(LocalAccountTokenFilterPolicy=1)를 활성화했습니다.',
+                            'Enabled UAC remote token filter bypass (LocalAccountTokenFilterPolicy=1).'
+                          )
                         : mode === 'disable_uac_token_filter'
-                          ? 'UAC 원격 토큰 필터를 기본 보안 상태로 복원했습니다.'
+                          ? tx(
+                              'UAC 원격 토큰 필터를 기본 보안 상태로 복원했습니다.',
+                              'Restored UAC remote token filter to default security state.'
+                            )
                           : mode === 'enable_smbv1_client'
-                            ? '구형 NAS · 복합기용 SMB 1.0/CIFS 클라이언트 기능을 활성화했습니다.'
+                            ? tx(
+                                '구형 NAS · 복합기용 SMB 1.0/CIFS 클라이언트 기능을 활성화했습니다.',
+                                'Enabled SMB 1.0/CIFS client feature for legacy NAS & MFP devices.'
+                              )
                             : mode === 'kir_duplicate_sid_compat'
-                              ? '복제 PC 중복 Machine SID 차단 해제 KIR(1517186191=0)을 적용했습니다 (재부팅 필수).'
-                              : 'OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침을 완료했습니다.';
+                              ? tx(
+                                  '복제 PC 중복 Machine SID 차단 해제 KIR(1517186191=0)을 적용했습니다 (재부팅 필수).',
+                                  'Applied Duplicate Machine SID bypass KIR (1517186191=0) for cloned PCs (reboot required).'
+                                )
+                              : tx(
+                                  'OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침을 완료했습니다.',
+                                  'Completed OS-aware safe compatibility patch and SMB service refresh.'
+                                );
 
       return {
         success: res.success,
         mode,
-        summary: res.success ? summary : res.error || '정책 적용 중 오류가 발생했습니다.',
+        summary: res.success ? summary : res.error || tx('정책 적용 중 오류가 발생했습니다.', 'An error occurred while applying policy.'),
         appliedActions,
         rebootJudgment,
         updatedPolicy,
@@ -3180,10 +3392,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         fdResPubRunning: true,
       };
       appliedActions = [
-        'TCP 445 인바운드 및 파일 공유 방화벽 규칙 정렬',
-        'Win 11 24H2~26H2 SMB 서명 강제 완화 및 게스트 로그온 호환 허용',
-        'NTLMv2 인증 협상 수준(LmCompatibilityLevel=3) 정렬',
-        'LanmanWorkstation · LanmanServer 즉시 재시작 및 DNS 캐시 플러시',
+        tx('TCP 445 인바운드 및 파일 공유 방화벽 규칙 정렬', 'Aligned TCP 445 inbound and file sharing firewall rules'),
+        tx('Win 11 24H2~26H2 SMB 서명 강제 완화 및 게스트 로그온 호환 허용', 'Relaxed Win 11 24H2-26H2 SMB signing & allowed compatible guest logons'),
+        tx('NTLMv2 인증 협상 수준(LmCompatibilityLevel=3) 정렬', 'Aligned NTLMv2 negotiation level (LmCompatibilityLevel=3)'),
+        tx('LanmanWorkstation · LanmanServer 즉시 재시작 및 DNS 캐시 플러시', 'Restarted LanmanWorkstation & LanmanServer immediately and flushed DNS cache'),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else if (mode === 'rpc_printer_compat') {
@@ -3196,10 +3408,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         printSpoolerRunning: true,
       };
       appliedActions = [
-        '프린터 RPC 개인정보 인증 완화 (RpcAuthnLevelPrivacyEnabled=0 · 0x0000011b 해결)',
-        'RPC over Named Pipes 활성화 (RpcUseNamedPipeProtocol=1, RpcProtocols=7 · 0x00000709 해결)',
-        'Point and Print LAN 공유 프린터 드라이버 자동 설치 허용 정렬',
-        'Print Spooler(Spooler) 서비스 즉시 재시작 및 RPC 정책 반영 완료',
+        tx('프린터 RPC 개인정보 인증 완화 (RpcAuthnLevelPrivacyEnabled=0 · 0x0000011b 해결)', 'Relaxed printer RPC privacy level (RpcAuthnLevelPrivacyEnabled=0 · fixes 0x0000011b)'),
+        tx('RPC over Named Pipes 활성화 (RpcUseNamedPipeProtocol=1, RpcProtocols=7 · 0x00000709 해결)', 'Enabled RPC over Named Pipes (RpcUseNamedPipeProtocol=1, RpcProtocols=7 · fixes 0x00000709)'),
+        tx('Point and Print LAN 공유 프린터 드라이버 자동 설치 허용 정렬', 'Allowed Point and Print automatic LAN shared printer driver installation'),
+        tx('Print Spooler(Spooler) 서비스 즉시 재시작 및 RPC 정책 반영 완료', 'Restarted Print Spooler (Spooler) service immediately and applied RPC policy'),
       ];
       restartedServices = ['Spooler'];
     } else if (mode === 'rpc_printer_default') {
@@ -3212,9 +3424,9 @@ Write-Output 'SMB_SESSION_CLEANED'
         printSpoolerRunning: true,
       };
       appliedActions = [
-        '프린터 RPC 개인정보 인증 강제(RpcAuthnLevelPrivacyEnabled=1) 복원',
-        'RPC over TCP 기본 보안 전송 정책으로 복원',
-        'Point and Print 관리자 드라이버 설치 제한 복원',
+        tx('프린터 RPC 개인정보 인증 강제(RpcAuthnLevelPrivacyEnabled=1) 복원', 'Restored printer RPC privacy enforcement (RpcAuthnLevelPrivacyEnabled=1)'),
+        tx('RPC over TCP 기본 보안 전송 정책으로 복원', 'Restored default secure RPC over TCP transport policy'),
+        tx('Point and Print 관리자 드라이버 설치 제한 복원', 'Restored Point and Print administrator driver installation restriction'),
       ];
       restartedServices = ['Spooler'];
     } else if (mode === 'enable_uac_token_filter') {
@@ -3223,15 +3435,15 @@ Write-Output 'SMB_SESSION_CLEANED'
         localAccountTokenFilterEnabled: true,
       };
       appliedActions = [
-        'UAC 원격 토큰 필터 완화 활성화 (LocalAccountTokenFilterPolicy=1 · 오류 5 방지)',
-        '관리자/일반 토큰 간 네트워크 드라이브 공유(EnableLinkedConnections=1) 확인 완료',
+        tx('UAC 원격 토큰 필터 완화 활성화 (LocalAccountTokenFilterPolicy=1 · 오류 5 방지)', 'Enabled UAC remote token filter relaxation (LocalAccountTokenFilterPolicy=1 · prevents Error 5)'),
+        tx('관리자/일반 토큰 간 네트워크 드라이브 공유(EnableLinkedConnections=1) 확인 완료', 'Verified shared network drives across elevated/standard tokens (EnableLinkedConnections=1)'),
       ];
     } else if (mode === 'disable_uac_token_filter') {
       webSimPolicyBase = {
         ...webSimPolicyBase,
         localAccountTokenFilterEnabled: false,
       };
-      appliedActions = ['UAC 원격 토큰 필터 기본 보안 복원 (LocalAccountTokenFilterPolicy=0)'];
+      appliedActions = [tx('UAC 원격 토큰 필터 기본 보안 복원 (LocalAccountTokenFilterPolicy=0)', 'Restored default UAC remote token filter protection (LocalAccountTokenFilterPolicy=0)')];
     } else if (mode === 'enable_smbv1_client') {
       smb1Changed = webSimPolicyBase.smb1ClientFeatureState !== 'Enabled';
       webSimPolicyBase = {
@@ -3240,7 +3452,7 @@ Write-Output 'SMB_SESSION_CLEANED'
         pendingRebootFlag: true,
       };
       appliedActions = [
-        '구형 NAS·복합기용 SMB 1.0/CIFS 클라이언트 선택적 기능(SMB1Protocol-Client) 설치 완료',
+        tx('구형 NAS·복합기용 SMB 1.0/CIFS 클라이언트 선택적 기능(SMB1Protocol-Client) 설치 완료', 'Installed SMB 1.0/CIFS Client optional feature (SMB1Protocol-Client) for legacy NAS/MFP'),
       ];
     } else if (mode === 'legacy_bridge_compat') {
       webSimPolicyBase = {
@@ -3272,10 +3484,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         fdResPubRunning: true,
       };
       appliedActions = [
-        'TCP 445 및 파일·프린터 공유 방화벽 규칙 개방 정렬',
-        'Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환을 위해 SMB 암호화·서명 강제 해제 및 비암호화 접근 허용',
-        'NTLM 인증 협상 수준 NTLMv2 고정(LmCompatibilityLevel=3) 정렬',
-        'WS-Discovery 탐색 · LanmanServer · LanmanWorkstation 즉시 재시작 완료',
+        tx('TCP 445 및 파일·프린터 공유 방화벽 규칙 개방 정렬', 'Aligned TCP 445 & File and Printer Sharing firewall rules'),
+        tx('Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환을 위해 SMB 암호화·서명 강제 해제 및 비암호화 접근 허용', 'Disabled mandatory SMB encryption/signing & allowed unencrypted access for Win 7/8 compatibility'),
+        tx('NTLM 인증 협상 수준 NTLMv2 고정(LmCompatibilityLevel=3) 정렬', 'Pinned NTLM negotiation level to NTLMv2 (LmCompatibilityLevel=3)'),
+        tx('WS-Discovery 탐색 · LanmanServer · LanmanWorkstation 즉시 재시작 완료', 'Restarted WS-Discovery, LanmanServer & LanmanWorkstation immediately'),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else if (mode === 'legacy_smb1_enable') {
@@ -3290,8 +3502,8 @@ Write-Output 'SMB_SESSION_CLEANED'
         pendingRebootFlag: true,
       };
       appliedActions = [
-        '구형 Win 7·XP 호환용 SMB 1.0/CIFS 서버·클라이언트 기능(SMB1Protocol) 활성화 완료',
-        'SMB 1.0 레지스트리 활성화 및 서비스 갱신 (커널 적재를 위해 재부팅 필수)',
+        tx('구형 Win 7·XP 호환용 SMB 1.0/CIFS 서버·클라이언트 기능(SMB1Protocol) 활성화 완료', 'Enabled SMB 1.0/CIFS Server & Client feature (SMB1Protocol) for legacy Win 7/XP'),
+        tx('SMB 1.0 레지스트리 활성화 및 서비스 갱신 (커널 적재를 위해 재부팅 필수)', 'Enabled SMB 1.0 registry & refreshed services (reboot required to load kernel driver)'),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else if (mode === 'legacy_bridge_rollback') {
@@ -3329,9 +3541,17 @@ Write-Output 'SMB_SESSION_CLEANED'
       this.clearLegacyRollbackSnapshot();
       appliedActions = [
         rollbackSnapshot
-          ? `사전 캡처 스냅샷(${rollbackSnapshot.capturedAt}) 기준 SMB 서명·암호화·게스트·UAC 상태 복원 완료`
-          : 'SMB 서명 강제 · 비인증 게스트 차단 · UAC 원격 토큰 보호 원복 완료',
-        ...(smb1Changed ? ['레거시 SMB 1.0 프로토콜 비활성화(Disable-WindowsOptionalFeature SMB1Protocol) 완료'] : []),
+          ? tx(
+              `사전 캡처 스냅샷(${rollbackSnapshot.capturedAt}) 기준 SMB 서명·암호화·게스트·UAC 상태 복원 완료`,
+              `Restored SMB signing, encryption, guest & UAC states from pre-patch snapshot (${rollbackSnapshot.capturedAt})`
+            )
+          : tx(
+              'SMB 서명 강제 · 비인증 게스트 차단 · UAC 원격 토큰 보호 원복 완료',
+              'Restored mandatory SMB signing, insecure guest blocking, and UAC remote token protection'
+            ),
+        ...(smb1Changed
+          ? [tx('레거시 SMB 1.0 프로토콜 비활성화(Disable-WindowsOptionalFeature SMB1Protocol) 완료', 'Disabled legacy SMB 1.0 protocol (Disable-WindowsOptionalFeature SMB1Protocol)')]
+          : []),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else if (mode === 'strict_26h2_default') {
@@ -3355,10 +3575,12 @@ Write-Output 'SMB_SESSION_CLEANED'
         ...(lmUpdated ? { lmCompatibilityLevel: 3 } : {}),
       };
       appliedActions = [
-        'Server/Client SMB 보안 서명 강제(RequireSecuritySignature=$true) 복원',
-        '비인증 게스트 로그온·UAC 원격 토큰 필터 차단 복원',
-        'LSA 익명 접근 차단 및 빈 암호 제한 복원',
-        ...(lmUpdated ? ['NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원'] : []),
+        tx('Server/Client SMB 보안 서명 강제(RequireSecuritySignature=$true) 복원', 'Restored mandatory Server/Client SMB signing (RequireSecuritySignature=$true)'),
+        tx('비인증 게스트 로그온·UAC 원격 토큰 필터 차단 복원', 'Restored insecure guest logon & UAC remote token filter blocking'),
+        tx('LSA 익명 접근 차단 및 빈 암호 제한 복원', 'Restored LSA anonymous access restriction and blank password limit'),
+        ...(lmUpdated
+          ? [tx('NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원', 'Restored NTLM negotiation level to NTLMv2-only (LmCompatibilityLevel=3)')]
+          : []),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else if (mode === 'kir_duplicate_sid_compat') {
@@ -3368,8 +3590,11 @@ Write-Output 'SMB_SESSION_CLEANED'
         pendingRebootFlag: true,
       };
       appliedActions = [
-        'FeatureManagement\\Overrides\\1517186191=0 (KB5064081/KB5065426 중복 Machine SID 차단 KIR 비활성화) 적용',
-        '정책 반영을 위해 시스템 재부팅 필수',
+        tx(
+          'FeatureManagement\\Overrides\\1517186191=0 (KB5064081/KB5065426 중복 Machine SID 차단 KIR 비활성화) 적용',
+          'Applied FeatureManagement\\Overrides\\1517186191=0 (KB5064081/KB5065426 Duplicate Machine SID KIR bypass)'
+        ),
+        tx('정책 반영을 위해 시스템 재부팅 필수', 'System reboot required for kernel policy enforcement'),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer'];
     } else {
@@ -3378,9 +3603,9 @@ Write-Output 'SMB_SESSION_CLEANED'
         pendingRebootFlag: true,
       };
       appliedActions = [
-        'Winsock 카탈로그 초기화 (netsh winsock reset)',
-        'TCP/IP 프로토콜 스택 초기화 (netsh int ip reset)',
-        'DNS & ARP 테이블 캐시 플러시 완료',
+        tx('Winsock 카탈로그 초기화 (netsh winsock reset)', 'Reset Winsock catalog (netsh winsock reset)'),
+        tx('TCP/IP 프로토콜 스택 초기화 (netsh int ip reset)', 'Reset TCP/IP protocol stack (netsh int ip reset)'),
+        tx('DNS & ARP 테이블 캐시 플러시 완료', 'Flushed DNS & ARP table cache'),
       ];
       restartedServices = ['LanmanWorkstation', 'LanmanServer', 'FDResPub'];
     }
@@ -3400,28 +3625,28 @@ Write-Output 'SMB_SESSION_CLEANED'
       mode,
       summary:
         mode === 'deep_stack_reset'
-          ? '[시뮬레이션] Winsock · TCP/IP 네트워크 스택 초기화 완료'
+          ? tx('[시뮬레이션] Winsock · TCP/IP 네트워크 스택 초기화 완료', '[Simulation] Winsock & TCP/IP network stack reset complete')
           : mode === 'strict_26h2_default'
-            ? '[시뮬레이션] Win 11 26H2 표준 보안 정책 복원 완료'
+            ? tx('[시뮬레이션] Win 11 26H2 표준 보안 정책 복원 완료', '[Simulation] Win 11 26H2 standard security policy restored')
             : mode === 'legacy_bridge_compat'
-              ? '[시뮬레이션] Win 7·8.1 호환 SMB 2.1/3.0 브릿지 적용 완료 (원복 스냅샷 저장됨)'
+              ? tx('[시뮬레이션] Win 7·8.1 호환 SMB 2.1/3.0 브릿지 적용 완료 (원복 스냅샷 저장됨)', '[Simulation] Win 7/8.1 SMB 2.1/3.0 bridge applied (rollback snapshot saved)')
               : mode === 'legacy_smb1_enable'
-                ? '[시뮬레이션] 레거시 SMB 1.0 프로토콜 활성화 완료 (재부팅 필수)'
+                ? tx('[시뮬레이션] 레거시 SMB 1.0 프로토콜 활성화 완료 (재부팅 필수)', '[Simulation] Legacy SMB 1.0 protocol enabled (reboot required)')
                 : mode === 'legacy_bridge_rollback'
-                  ? '[시뮬레이션] 구형 OS 호환 설정 표준 보안 원복 완료'
+                  ? tx('[시뮬레이션] 구형 OS 호환 설정 표준 보안 원복 완료', '[Simulation] Legacy OS compatibility settings rolled back to defaults')
                   : mode === 'rpc_printer_compat'
-                    ? '[시뮬레이션] Win 11 26H2 프린터 RPC·스풀러 호환 패치 완료'
+                    ? tx('[시뮬레이션] Win 11 26H2 프린터 RPC·스풀러 호환 패치 완료', '[Simulation] Win 11 26H2 printer RPC & Spooler compatibility patch applied')
                     : mode === 'rpc_printer_default'
-                      ? '[시뮬레이션] 프린터 RPC 기본 보안 정책 복원 완료'
+                      ? tx('[시뮬레이션] 프린터 RPC 기본 보안 정책 복원 완료', '[Simulation] Printer RPC default security policy restored')
                       : mode === 'enable_uac_token_filter'
-                        ? '[시뮬레이션] UAC 원격 토큰 필터(LocalAccountTokenFilterPolicy=1) 활성화 완료'
+                        ? tx('[시뮬레이션] UAC 원격 토큰 필터(LocalAccountTokenFilterPolicy=1) 활성화 완료', '[Simulation] UAC remote token filter (LocalAccountTokenFilterPolicy=1) enabled')
                         : mode === 'disable_uac_token_filter'
-                          ? '[시뮬레이션] UAC 원격 토큰 필터 기본 보안 복원 완료'
+                          ? tx('[시뮬레이션] UAC 원격 토큰 필터 기본 보안 복원 완료', '[Simulation] UAC remote token filter default protection restored')
                           : mode === 'enable_smbv1_client'
-                            ? '[시뮬레이션] 구형 NAS·복합기용 SMBv1 클라이언트 선택적 기능 설치 완료'
+                            ? tx('[시뮬레이션] 구형 NAS·복합기용 SMBv1 클라이언트 선택적 기능 설치 완료', '[Simulation] Legacy NAS/MFP SMBv1 client optional feature installed')
                             : mode === 'kir_duplicate_sid_compat'
-                              ? '[시뮬레이션] 복제 PC 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용 완료 (재부팅 필수)'
-                              : '[시뮬레이션] OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침 완료',
+                              ? tx('[시뮬레이션] 복제 PC 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용 완료 (재부팅 필수)', '[Simulation] Duplicate Machine SID KIR bypass (1517186191=0) applied (reboot required)')
+                              : tx('[시뮬레이션] OS 빌드 맞춤 안전 호환 패치 및 SMB 서비스 새로고침 완료', '[Simulation] OS-aware safe compatibility patch & SMB service refresh complete'),
       appliedActions,
       rebootJudgment,
       updatedPolicy,
@@ -3446,7 +3671,7 @@ Write-Output 'SMB_SESSION_CLEANED'
         success: true,
         appliedModes: [],
         failedModes: [],
-        summary: '로컬 PC에서 추가로 적용할 불일치 정책이 없습니다.',
+        summary: tx('로컬 PC에서 추가로 적용할 불일치 정책이 없습니다.', 'No remaining policy mismatches to apply on this local PC.'),
         appliedActions: [],
         rebootJudgment: combineRebootJudgments([]),
         updatedPolicy: latestPolicy,
@@ -3455,8 +3680,8 @@ Write-Output 'SMB_SESSION_CLEANED'
 
     const alignSteps: PipelineStep[] = uniqueModes.map((m, idx) => ({
       id: `align-${idx}-${m}`,
-      title: `${getPolicyPatchLabel(m)} 적용`,
-      detail: '호스트·클라이언트 정책 정렬 및 SMB 서비스 새로고침',
+      title: tx(`${getPolicyPatchLabel(m)} 적용`, `Apply ${getPolicyPatchLabel(m)}`),
+      detail: tx('호스트·클라이언트 정책 정렬 및 SMB 서비스 새로고침', 'Aligning host/client policy and refreshing SMB services'),
       status: 'idle',
     }));
     onProgress?.([...alignSteps]);
@@ -3487,15 +3712,15 @@ Write-Output 'SMB_SESSION_CLEANED'
         } else {
           failedModes.push(mode);
           alignSteps[i].status = 'error';
-          alignSteps[i].error = res.summary || `${getPolicyPatchLabel(mode)} 적용 실패`;
+          alignSteps[i].error = res.summary || tx(`${getPolicyPatchLabel(mode)} 적용 실패`, `Failed to apply ${getPolicyPatchLabel(mode)}`);
         }
       } catch (err) {
         alignSteps[i].durationMs = Math.round(performance.now() - t0);
         failedModes.push(mode);
-        const reason = err instanceof Error ? err.message : '알 수 없는 오류';
+        const reason = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
         alignSteps[i].status = 'error';
         alignSteps[i].error = reason;
-        actionSet.add(`${getPolicyPatchLabel(mode)} 적용 오류: ${reason}`);
+        actionSet.add(tx(`${getPolicyPatchLabel(mode)} 적용 오류: ${reason}`, `Error applying ${getPolicyPatchLabel(mode)}: ${reason}`));
       }
       onProgress?.([...alignSteps]);
     }
@@ -3510,10 +3735,16 @@ Write-Output 'SMB_SESSION_CLEANED'
 
     const summary =
       failedModes.length === 0
-        ? `호스트·클라이언트 불일치 정책 ${appliedModes.length}종(${appliedLabels}) 원클릭 자동 정렬 완료`
+        ? tx(
+            `호스트·클라이언트 불일치 정책 ${appliedModes.length}종(${appliedLabels}) 원클릭 자동 정렬 완료`,
+            `One-click aligned ${appliedModes.length} host/client policy mismatch(es) (${appliedLabels})`
+          )
         : appliedModes.length > 0
-          ? `일괄 자동 정렬 부분 완료 (적용: ${appliedLabels} / 실패: ${failedLabels})`
-          : `호환성 정책 자동 정렬 실패 (${failedLabels})`;
+          ? tx(
+              `일괄 자동 정렬 부분 완료 (적용: ${appliedLabels} / 실패: ${failedLabels})`,
+              `Partial batch alignment complete (Applied: ${appliedLabels} / Failed: ${failedLabels})`
+            )
+          : tx(`호환성 정책 자동 정렬 실패 (${failedLabels})`, `Failed to auto-align compatibility policies (${failedLabels})`);
 
     return {
       success: failedModes.length === 0 && appliedModes.length > 0,
@@ -3533,8 +3764,8 @@ Write-Output 'SMB_SESSION_CLEANED'
   ): Promise<AutoAlignBatchResult> {
     const modeSteps: PipelineStep[] = task.modes.map((m, idx) => ({
       id: `pending-mode-${idx}-${m}`,
-      title: `[호스트 예약] ${getPolicyPatchLabel(m)} 적용`,
-      detail: '요청된 정책 패치 반영 및 SMB 서비스 갱신',
+      title: tx(`[호스트 예약] ${getPolicyPatchLabel(m)} 적용`, `[Host Queued] Apply ${getPolicyPatchLabel(m)}`),
+      detail: tx('요청된 정책 패치 반영 및 SMB 서비스 갱신', 'Applying requested policy patch and refreshing SMB services'),
       status: 'idle',
     }));
     const steps: PipelineStep[] = [
@@ -3543,16 +3774,22 @@ Write-Output 'SMB_SESSION_CLEANED'
         ? [
             {
               id: 'pending-guest-unlock',
-              title: '[호스트 예약] Guest 무비밀번호 정책 완전 개방 (오류 86·1223·1385)',
-              detail: 'LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · 445 방화벽 개방',
+              title: tx(
+                '[호스트 예약] Guest 무비밀번호 정책 완전 개방 (오류 86·1223·1385)',
+                '[Host Queued] Full Passwordless Guest Unlock (Errors 86, 1223, 1385)'
+              ),
+              detail: tx(
+                'LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · 445 방화벽 개방',
+                'LimitBlankPasswordUse=0 · Enable Guest · Clear SeDenyNetworkLogonRight · Open Port 445'
+              ),
               status: 'idle' as const,
             },
           ]
         : []),
       {
         id: 'pending-cleanup',
-        title: '호스트 OS 정책 재검사 및 USB 대기 작업 완료 처리',
-        detail: 'USB 포터블 저장소에서 완료된 대기 작업을 정리합니다.',
+        title: tx('호스트 OS 정책 재검사 및 USB 대기 작업 완료 처리', 'Re-inspect Host OS Policy & Complete Queued USB Task'),
+        detail: tx('USB 포터블 저장소에서 완료된 대기 작업을 정리합니다.', 'Removes completed queued tasks from USB portable storage.'),
         status: 'idle',
       },
     ];
@@ -3588,7 +3825,7 @@ Write-Output 'SMB_SESSION_CLEANED'
       } catch (err) {
         steps[i].durationMs = Math.round(performance.now() - t0);
         failedModes.push(mode);
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
         steps[i].status = 'error';
         steps[i].error = msg;
       }
@@ -3618,11 +3855,21 @@ Write-Output 'SMB_SESSION_CLEANED'
         if (res.success) {
           steps[gIdx].status = 'success';
           judgments.push(evaluateRebootJudgment({ mode: 'safe_compat', restartedServices: ['LanmanServer'] }));
-          actionSet.add('호스트 Guest 계정(SID *-501) 무비밀번호 개방·LSA 빈 암호 해제·TCP 445 방화벽 정렬');
+          actionSet.add(
+            tx(
+              '호스트 Guest 계정(SID *-501) 무비밀번호 개방·LSA 빈 암호 해제·TCP 445 방화벽 정렬',
+              'Unlocked Host Guest (SID *-501) passwordless access, LSA blank password, and TCP 445 firewall'
+            )
+          );
         } else {
           guestUnlockFailed = true;
           steps[gIdx].status = 'error';
-          steps[gIdx].error = res.error || 'Guest 무비밀번호 정책 개방 실패 (관리자 권한 확인 필요)';
+          steps[gIdx].error =
+            res.error ||
+            tx(
+              'Guest 무비밀번호 정책 개방 실패 (관리자 권한 확인 필요)',
+              'Failed to unlock passwordless Guest policy (check administrator privileges)'
+            );
         }
       } else {
         await new Promise((r) => setTimeout(r, 220));
@@ -3641,7 +3888,12 @@ Write-Output 'SMB_SESSION_CLEANED'
         };
         steps[gIdx].status = 'success';
         judgments.push(evaluateRebootJudgment({ mode: 'safe_compat', restartedServices: ['LanmanServer'] }));
-        actionSet.add('[시뮬레이션] 호스트 Guest 무비밀번호 정책·빈 암호 제한·445 방화벽 완전 개방 완료');
+        actionSet.add(
+          tx(
+            '[시뮬레이션] 호스트 Guest 무비밀번호 정책·빈 암호 제한·445 방화벽 완전 개방 완료',
+            '[Simulation] Fully unlocked Host Guest passwordless policy, blank password limit, and TCP 445 firewall'
+          )
+        );
       }
       onProgress?.([...steps]);
     }
@@ -3655,18 +3907,30 @@ Write-Output 'SMB_SESSION_CLEANED'
     if (allSucceeded) {
       await this.deletePendingHostPolicyTask(task.targetHostName);
       steps[cleanIdx].status = 'success';
-      steps[cleanIdx].detail = '호스트 스냅샷 갱신 및 USB 대기 작업 완료 제거';
+      steps[cleanIdx].detail = tx(
+        '호스트 스냅샷 갱신 및 USB 대기 작업 완료 제거',
+        'Host snapshot updated and queued USB task removed'
+      );
     } else {
       steps[cleanIdx].status = 'error';
-      steps[cleanIdx].error = '일부 단계 실패로 USB 대기 작업을 유지했습니다.';
+      steps[cleanIdx].error = tx(
+        '일부 단계 실패로 USB 대기 작업을 유지했습니다.',
+        'Kept queued USB task because one or more steps failed.'
+      );
     }
     steps[cleanIdx].durationMs = Math.round(performance.now() - tClean);
     onProgress?.([...steps]);
 
     const rebootJudgment = combineRebootJudgments(judgments);
     const summary = allSucceeded
-      ? `${task.requestedByHostName}에서 예약한 호스트 호환 정책 자동 적용 완료`
-      : '예약된 호스트 정책 적용 중 일부 오류가 발생했습니다.';
+      ? tx(
+          `${task.requestedByHostName}에서 예약한 호스트 호환 정책 자동 적용 완료`,
+          `Auto-applied host compatibility policies queued by ${task.requestedByHostName}`
+        )
+      : tx(
+          '예약된 호스트 정책 적용 중 일부 오류가 발생했습니다.',
+          'Some errors occurred while applying queued host policies.'
+        );
 
     return {
       success: allSucceeded,
@@ -3685,13 +3949,16 @@ Write-Output 'SMB_SESSION_CLEANED'
       return {
         success: res.success,
         message: res.success
-          ? 'Windows Update 설정 창을 열었습니다.'
-          : res.error || 'Windows Update 설정 창을 열지 못했습니다.',
+          ? tx('Windows Update 설정 창을 열었습니다.', 'Opened Windows Update settings.')
+          : res.error || tx('Windows Update 설정 창을 열지 못했습니다.', 'Failed to open Windows Update settings.'),
       };
     }
     return {
       success: true,
-      message: '웹 미리보기 모드: Windows 실행 환경에서는 Windows Update 설정(ms-settings:windowsupdate)이 열립니다.',
+      message: tx(
+        '웹 미리보기 모드: Windows 실행 환경에서는 Windows Update 설정(ms-settings:windowsupdate)이 열립니다.',
+        'Web preview mode: on Windows desktop, Windows Update settings (ms-settings:windowsupdate) open directly.'
+      ),
     };
   },
 
@@ -3704,7 +3971,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     if (existing) return existing;
     const current = await this.inspectOsNetworkPolicy(netInfo);
     const snap: LegacyRollbackSnapshot = {
-      capturedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      capturedAt: formatLocaleTime(),
       hostName: netInfo?.hostname || 'LOCAL-PC',
       smbServerSigningRequired: current.smbServerSigningRequired,
       smbClientSigningRequired: current.smbClientSigningRequired,
@@ -3752,7 +4019,10 @@ Write-Output 'SMB_SESSION_CLEANED'
     return {
       success: true,
       mode: 'web-download',
-      message: `웹 미리보기 모드: 적용(.bat/.reg)과 원복(.bat/.reg) ${bundle.files.length}개 파일 다운로드를 준비했습니다.`,
+      message: tx(
+        `웹 미리보기 모드: 적용(.bat/.reg)과 원복(.bat/.reg) ${bundle.files.length}개 파일 다운로드를 준비했습니다.`,
+        `Web preview mode: prepared ${bundle.files.length} apply/rollback (.bat/.reg) script files for download.`
+      ),
     };
   },
 
@@ -3762,7 +4032,10 @@ Write-Output 'SMB_SESSION_CLEANED'
     }
     return {
       success: true,
-      message: '웹 프리뷰 시뮬레이션: Windows 런타임에서는 5초 후 컴퓨터를 안전하게 재부팅(shutdown /r /t 5)합니다.',
+      message: tx(
+        '웹 프리뷰 시뮬레이션: Windows 런타임에서는 5초 후 컴퓨터를 안전하게 재부팅(shutdown /r /t 5)합니다.',
+        'Web preview simulation: on Windows runtime, this safely reboots the PC in 5 seconds (shutdown /r /t 5).'
+      ),
     };
   },
 
@@ -3784,7 +4057,10 @@ Write-Output 'SMB_SESSION_CLEANED'
       success: true,
       jsonContent,
       fileName,
-      message: 'Win 10/11과 Win 7/8 레거시 앱 간 양방향 데이터 공유 브릿지 파일이 생성되었습니다.',
+      message: tx(
+        'Win 10/11과 Win 7/8 레거시 앱 간 양방향 데이터 공유 브릿지 파일이 생성되었습니다.',
+        'Generated bidirectional data sync bridge file between Win 10/11 and Win 7/8 legacy builds.'
+      ),
     };
   },
 
@@ -3800,7 +4076,7 @@ Write-Output 'SMB_SESSION_CLEANED'
           countShares: 0,
           countMounts: 0,
           countPolicies: 0,
-          message: '올바르지 않은 브릿지 JSON 형식입니다.',
+          message: tx('올바르지 않은 브릿지 JSON 형식입니다.', 'Invalid bridge JSON format.'),
         };
       }
 
@@ -3815,7 +4091,10 @@ Write-Output 'SMB_SESSION_CLEANED'
           countShares: 0,
           countMounts: 0,
           countPolicies: 0,
-          message: '가져올 공유/마운트/포터블 정책 데이터가 포함되어 있지 않습니다.',
+          message: tx(
+            '가져올 공유/마운트/포터블 정책 데이터가 포함되어 있지 않습니다.',
+            'No share, mount, or portable policy data found in bridge file.'
+          ),
         };
       }
 
@@ -3884,7 +4163,7 @@ Write-Output 'SMB_SESSION_CLEANED'
             permission: sh.permission || 'read',
             username: sh.authMode === 'account' ? sh.username || decodedToken?.username : undefined,
             password: sh.authMode === 'account' ? resolvedPassword || undefined : undefined,
-            createdAt: sh.createdAt || new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+            createdAt: sh.createdAt || formatLocaleTime(),
             updatedAt: sh.updatedAt || new Date().toISOString(),
             ...(typeof sh.ttlMinutes === 'number' && sh.ttlMinutes > 0 ? { ttlMinutes: sh.ttlMinutes } : {}),
             ...(sh.expiresAt ? { expiresAt: sh.expiresAt } : {}),
@@ -4008,7 +4287,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         countShares,
         countMounts,
         countPolicies,
-        message: `브릿지 데이터 가져오기 성공 (공유 ${countShares}건, 마운트 ${countMounts}건, 호스트 정책 ${countPolicies}건 동기화됨)`,
+        message: tx(
+          `브릿지 데이터 가져오기 성공 (공유 ${countShares}건, 마운트 ${countMounts}건, 호스트 정책 ${countPolicies}건 동기화됨)`,
+          `Bridge data imported (synced ${countShares} share(s), ${countMounts} mount(s), ${countPolicies} host policy/policies)`
+        ),
       };
     } catch (err) {
       return {
@@ -4016,7 +4298,10 @@ Write-Output 'SMB_SESSION_CLEANED'
         countShares: 0,
         countMounts: 0,
         countPolicies: 0,
-        message: `브릿지 데이터 파싱 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`,
+        message: tx(
+          `브릿지 데이터 파싱 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`,
+          `Failed to parse bridge data: ${err instanceof Error ? err.message : 'Unknown error'}`
+        ),
       };
     }
   },
@@ -4036,7 +4321,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     preferredPatchMode?: PolicyPatchMode;
     existingCreatedAt?: string;
   }): LocationProfileFile {
-    const cleanName = params.locationName.trim() || '새 사용장소';
+    const cleanName = params.locationName.trim() || tx('새 사용장소', 'New Location');
     const profileId = normalizeLocationProfileId(params.profileId, cleanName);
     const nowIso = new Date().toISOString();
 
@@ -4193,7 +4478,7 @@ Write-Output 'SMB_SESSION_CLEANED'
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return {
       success: true,
-      directory: '웹 브라우저 사용장소 보관함',
+      directory: tx('웹 브라우저 사용장소 보관함', 'Web Browser Location Vault'),
       writable: true,
       profiles: summaries,
     };
@@ -4235,7 +4520,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     filePath?: string;
     error?: string;
   }> {
-    const cleanName = edited.locationName.trim() || '이름 없는 장소';
+    const cleanName = edited.locationName.trim() || tx('이름 없는 장소', 'Unnamed Location');
     const nowIso = new Date().toISOString();
 
     const normalizeFolder = (rawPath: string) => {
@@ -4280,7 +4565,7 @@ Write-Output 'SMB_SESSION_CLEANED'
         const password = authMode === 'account' ? sh.password || undefined : undefined;
         const ttlMinutes =
           typeof sh.ttlMinutes === 'number' && sh.ttlMinutes > 0 ? Math.round(sh.ttlMinutes) : undefined;
-        const createdAt = sh.createdAt || new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        const createdAt = sh.createdAt || formatLocaleTime();
         const freshCode = encodeConnectionCode({
           v: 1,
           hostName: sourceHostName,
@@ -4514,7 +4799,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     if (latestExisting.some((p) => p.profileId === profile.profileId)) {
       await this.createDataBackup({
         trigger: 'auto_before_modify',
-        reason: `사용장소 '${profile.locationName}' 수정 직전 자동 백업`,
+        reason: tx(`사용장소 '${profile.locationName}' 수정 직전 자동 백업`, `Auto-backup before modifying location '${profile.locationName}'`),
       });
     }
     const nextList = [sanitizedForSim, ...latestExisting.filter((p) => p.profileId !== profile.profileId)];
@@ -4556,7 +4841,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     const stored = readStore<LocationProfileFile[]>(STORAGE_LOCATIONS_SIM_KEY, []);
     const found = stored.find((p) => p.profileId === profileId);
     if (!found) {
-      return { success: false, error: '해당 사용장소 프로필을 찾을 수 없습니다.' };
+      return { success: false, error: tx('해당 사용장소 프로필을 찾을 수 없습니다.', 'The requested location profile was not found.') };
     }
 
     let hydratedHostPreset: LocationHostPreset | undefined;
@@ -4664,7 +4949,7 @@ Write-Output 'SMB_SESSION_CLEANED'
       if (targetLoc) {
         await this.createDataBackup({
           trigger: 'auto_before_delete',
-          reason: `사용장소 '${targetLoc.locationName}' 삭제 직전 자동 백업`,
+          reason: tx(`사용장소 '${targetLoc.locationName}' 삭제 직전 자동 백업`, `Auto-backup before deleting location '${targetLoc.locationName}'`),
         });
       }
       writeStore(
@@ -4713,7 +4998,10 @@ Write-Output 'SMB_SESSION_CLEANED'
     return {
       success: true,
       filePath: a.download,
-      message: `사용장소 '${profile.locationName}' 프로필 파일(${a.download})을 다운로드했습니다.`,
+      message: tx(
+        `사용장소 '${profile.locationName}' 프로필 파일(${a.download})을 다운로드했습니다.`,
+        `Downloaded location '${profile.locationName}' profile file (${a.download}).`
+      ),
     };
   },
 
@@ -4734,7 +5022,10 @@ Write-Output 'SMB_SESSION_CLEANED'
     }
     return {
       success: false,
-      message: '브라우저 환경에서는 파일 업로드 input을 통해 JSON을 가져옵니다.',
+      message: tx(
+        '브라우저 환경에서는 파일 업로드 input을 통해 JSON을 가져옵니다.',
+        'In browser preview mode, JSON is imported via file upload.'
+      ),
     };
   },
 
@@ -4750,7 +5041,13 @@ Write-Output 'SMB_SESSION_CLEANED'
       const cleanText = jsonText.replace(/^\uFEFF/, '');
       const parsed = JSON.parse(cleanText) as Partial<LocationProfileFile>;
       if (!parsed || typeof parsed !== 'object' || !parsed.locationName) {
-        return { success: false, message: '사용장소 이름(locationName)이 포함된 올바른 프로필 JSON이 아닙니다.' };
+        return {
+          success: false,
+          message: tx(
+            '사용장소 이름(locationName)이 포함된 올바른 프로필 JSON이 아닙니다.',
+            'Invalid profile JSON: missing locationName.'
+          ),
+        };
       }
       const cleanName = String(parsed.locationName).trim();
       const normalized: LocationProfileFile = {
@@ -4769,23 +5066,32 @@ Write-Output 'SMB_SESSION_CLEANED'
       if (saveToCatalog) {
         const saved = await this.saveLocationProfile(normalized);
         if (!saved.success) {
-          return { success: false, message: saved.error || '사용장소 목록 등록 실패' };
+          return { success: false, message: saved.error || tx('사용장소 목록 등록 실패', 'Failed to register location profile') };
         }
         return {
           success: true,
           profile: saved.profile || normalized,
-          message: `사용장소 '${normalized.locationName}' 프로필을 가져와 저장했습니다.`,
+          message: tx(
+            `사용장소 '${normalized.locationName}' 프로필을 가져와 저장했습니다.`,
+            `Imported and saved location profile '${normalized.locationName}'.`
+          ),
         };
       }
       return {
         success: true,
         profile: normalized,
-        message: `사용장소 '${normalized.locationName}' 프로필을 불러왔습니다.`,
+        message: tx(
+          `사용장소 '${normalized.locationName}' 프로필을 불러왔습니다.`,
+          `Loaded location profile '${normalized.locationName}'.`
+        ),
       };
     } catch (err) {
       return {
         success: false,
-        message: `JSON 파일 파싱 실패: ${err instanceof Error ? err.message : '형식 오류'}`,
+        message: tx(
+          `JSON 파일 파싱 실패: ${err instanceof Error ? err.message : '형식 오류'}`,
+          `Failed to parse JSON file: ${err instanceof Error ? err.message : 'Format error'}`
+        ),
       };
     }
   },
@@ -4903,22 +5209,37 @@ Write-Output 'SMB_SESSION_CLEANED'
     const envChecks: LocationPreflightSubCheck[] = [];
     envChecks.push({
       key: 'admin',
-      label: '관리자 권한',
+      label: tx('관리자 권한', 'Administrator Privileges'),
       status: isAdmin ? 'pass' : shares.length > 0 ? 'fail' : 'warning',
       detail: isAdmin
-        ? '관리자 권한으로 실행 중입니다 (방화벽·SMB 공유·네트워크 드라이브 변경 가능).'
+        ? tx(
+            '관리자 권한으로 실행 중입니다 (방화벽·SMB 공유·네트워크 드라이브 변경 가능).',
+            'Running with administrator privileges (firewall, SMB share, and network drive changes allowed).'
+          )
         : shares.length > 0
-          ? '관리자 권한이 아니어서 호스트 공유폴더 개설 및 방화벽 설정이 거부될 수 있습니다. 앱을 관리자 권한으로 다시 실행하세요.'
-          : '관리자 권한이 아니므로 정책 변경이나 일부 드라이브 매핑이 제한될 수 있습니다.',
+          ? tx(
+              '관리자 권한이 아니어서 호스트 공유폴더 개설 및 방화벽 설정이 거부될 수 있습니다. 앱을 관리자 권한으로 다시 실행하세요.',
+              'Without administrator privileges, creating host shares and configuring firewall rules may be denied. Relaunch as administrator.'
+            )
+          : tx(
+              '관리자 권한이 아니므로 정책 변경이나 일부 드라이브 매핑이 제한될 수 있습니다.',
+              'Without administrator privileges, policy changes or some drive mappings may be restricted.'
+            ),
     });
     envChecks.push({
       key: 'smb_services',
-      label: 'Windows SMB 서비스',
+      label: tx('Windows SMB 서비스', 'Windows SMB Services'),
       status: srvRunning && wrkRunning ? 'pass' : 'warning',
       detail:
         srvRunning && wrkRunning
-          ? 'Server(LanmanServer) 및 Workstation(LanmanWorkstation) 서비스가 정상 실행 중입니다.'
-          : `중지된 서비스 감지 (${!srvRunning ? 'LanmanServer ' : ''}${!wrkRunning ? 'LanmanWorkstation' : ''}) — 적용 시 자동 시작을 시도합니다.`,
+          ? tx(
+              'Server(LanmanServer) 및 Workstation(LanmanWorkstation) 서비스가 정상 실행 중입니다.',
+              'Server (LanmanServer) and Workstation (LanmanWorkstation) services are running normally.'
+            )
+          : tx(
+              `중지된 서비스 감지 (${!srvRunning ? 'LanmanServer ' : ''}${!wrkRunning ? 'LanmanWorkstation' : ''}) — 적용 시 자동 시작을 시도합니다.`,
+              `Stopped service detected (${!srvRunning ? 'LanmanServer ' : ''}${!wrkRunning ? 'LanmanWorkstation' : ''}) — will attempt auto-start on apply.`
+            ),
     });
 
     const profileSubnet = (profile.networkHint?.subnetPrefix || '').trim();
@@ -4927,18 +5248,27 @@ Write-Output 'SMB_SESSION_CLEANED'
       const sameSubnet = profileSubnet.toLowerCase() === currentSubnet.toLowerCase();
       envChecks.push({
         key: 'subnet_match',
-        label: '네트워크 대역 대조',
+        label: tx('네트워크 대역 대조', 'Network Subnet Check'),
         status: sameSubnet ? 'pass' : 'warning',
         detail: sameSubnet
-          ? `프로필 참고 대역(${profileSubnet}.x)과 현재 PC 대역(${currentSubnet}.x)이 일치합니다.`
-          : `프로필 참고 대역(${profileSubnet}.x)과 현재 PC 대역(${currentSubnet}.x)이 다릅니다. 올바른 사용장소인지 확인하세요.`,
+          ? tx(
+              `프로필 참고 대역(${profileSubnet}.x)과 현재 PC 대역(${currentSubnet}.x)이 일치합니다.`,
+              `Profile reference subnet (${profileSubnet}.x) matches current PC subnet (${currentSubnet}.x).`
+            )
+          : tx(
+              `프로필 참고 대역(${profileSubnet}.x)과 현재 PC 대역(${currentSubnet}.x)이 다릅니다. 올바른 사용장소인지 확인하세요.`,
+              `Profile reference subnet (${profileSubnet}.x) differs from current PC subnet (${currentSubnet}.x). Verify you selected the right location.`
+            ),
       });
     } else {
       envChecks.push({
         key: 'subnet_match',
-        label: '네트워크 대역 대조',
+        label: tx('네트워크 대역 대조', 'Network Subnet Check'),
         status: 'pass',
-        detail: `현재 어댑터 ${netInfo.primaryIp} (${netInfo.adapterName}) 환경에서 실행합니다.`,
+        detail: tx(
+          `현재 어댑터 ${netInfo.primaryIp} (${netInfo.adapterName}) 환경에서 실행합니다.`,
+          `Running on current adapter ${netInfo.primaryIp} (${netInfo.adapterName}).`
+        ),
       });
     }
 
@@ -4946,15 +5276,27 @@ Write-Output 'SMB_SESSION_CLEANED'
     items.push({
       kind: 'environment',
       index: 0,
-      label: `실행 환경 · ${netInfo.hostname} (${netInfo.primaryIp})`,
+      label: tx(
+        `실행 환경 · ${netInfo.hostname} (${netInfo.primaryIp})`,
+        `Runtime Environment · ${netInfo.hostname} (${netInfo.primaryIp})`
+      ),
       targetDesc: `${netInfo.osProductName || 'Windows'} · ${profile.locationName}`,
       status: envStatus,
       summary:
         envStatus === 'pass'
-          ? '관리자 권한·SMB 서비스·네트워크 환경이 정상입니다.'
+          ? tx(
+              '관리자 권한·SMB 서비스·네트워크 환경이 정상입니다.',
+              'Administrator rights, SMB services, and network environment are healthy.'
+            )
           : envStatus === 'warning'
-            ? '네트워크 대역 또는 서비스 상태를 확인하세요.'
-            : '관리자 권한 부족 등 실행 환경 제약이 감지되었습니다.',
+            ? tx(
+                '네트워크 대역 또는 서비스 상태를 확인하세요.',
+                'Check the network subnet or SMB service status.'
+              )
+            : tx(
+                '관리자 권한 부족 등 실행 환경 제약이 감지되었습니다.',
+                'Runtime environment restrictions detected (such as missing admin rights).'
+              ),
       checks: envChecks,
     });
 
@@ -4968,16 +5310,22 @@ Write-Output 'SMB_SESSION_CLEANED'
       if (shareNameErr || folderPathErr) {
         checks.push({
           key: 'syntax',
-          label: '공유명·폴더 경로 형식',
+          label: tx('공유명·폴더 경로 형식', 'Share Name & Folder Path Format'),
           status: 'fail',
-          detail: shareNameErr || folderPathErr || '경로 또는 공유 이름이 올바르지 않습니다.',
+          detail:
+            shareNameErr ||
+            folderPathErr ||
+            tx('경로 또는 공유 이름이 올바르지 않습니다.', 'Invalid folder path or share name.'),
         });
       } else {
         checks.push({
           key: 'syntax',
-          label: '공유명·폴더 경로 형식',
+          label: tx('공유명·폴더 경로 형식', 'Share Name & Folder Path Format'),
           status: 'pass',
-          detail: `'${sh.shareName.trim()}' · ${sh.folderPath.trim()} (유효한 Windows 공유 형식)`,
+          detail: tx(
+            `'${sh.shareName.trim()}' · ${sh.folderPath.trim()} (유효한 Windows 공유 형식)`,
+            `'${sh.shareName.trim()}' · ${sh.folderPath.trim()} (Valid Windows share format)`
+          ),
         });
       }
 
@@ -4989,49 +5337,70 @@ Write-Output 'SMB_SESSION_CLEANED'
           if (psProbe.isFileConflict) {
             checks.push({
               key: 'path',
-              label: '로컬 폴더 경로 존재',
+              label: tx('로컬 폴더 경로 존재', 'Local Folder Path'),
               status: 'fail',
-              detail: `지정 경로(${sh.folderPath})에 폴더가 아닌 일반 파일이 이미 존재하여 공유할 수 없습니다.`,
+              detail: tx(
+                `지정 경로(${sh.folderPath})에 폴더가 아닌 일반 파일이 이미 존재하여 공유할 수 없습니다.`,
+                `A regular file already exists at '${sh.folderPath}' instead of a folder.`
+              ),
             });
           } else if (!psProbe.driveExists) {
             checks.push({
               key: 'path',
-              label: '로컬 폴더 경로 존재',
+              label: tx('로컬 폴더 경로 존재', 'Local Folder Path'),
               status: 'fail',
-              detail: `대상 드라이브가 현재 PC에 연결되어 있지 않습니다 (${sh.folderPath}). 외장 디스크 연결 또는 경로를 확인하세요.`,
+              detail: tx(
+                `대상 드라이브가 현재 PC에 연결되어 있지 않습니다 (${sh.folderPath}). 외장 디스크 연결 또는 경로를 확인하세요.`,
+                `Target drive is not connected on this PC (${sh.folderPath}). Check external drives or path.`
+              ),
             });
           } else if (psProbe.isReadOnlyDrive) {
             checks.push({
               key: 'path',
-              label: '로컬 폴더 경로 존재',
+              label: tx('로컬 폴더 경로 존재', 'Local Folder Path'),
               status: 'fail',
-              detail: `읽기 전용 광학/가상 드라이브(${sh.folderPath})에는 공유 폴더를 생성·권한 구성할 수 없습니다.`,
+              detail: tx(
+                `읽기 전용 광학/가상 드라이브(${sh.folderPath})에는 공유 폴더를 생성·권한 구성할 수 없습니다.`,
+                `Cannot create or configure shares on read-only optical/virtual drive (${sh.folderPath}).`
+              ),
             });
           } else if (!psProbe.folderExists) {
             canAutoProvisionFolder = true;
             checks.push({
               key: 'path',
-              label: '로컬 폴더 경로 존재',
+              label: tx('로컬 폴더 경로 존재', 'Local Folder Path'),
               status: 'warning',
-              detail: `폴더가 아직 존재하지 않습니다(${sh.folderPath}). 상위 드라이브는 정상이므로 일괄 적용 시 자동 생성됩니다.`,
+              detail: tx(
+                `폴더가 아직 존재하지 않습니다(${sh.folderPath}). 상위 드라이브는 정상이므로 일괄 적용 시 자동 생성됩니다.`,
+                `Folder does not exist yet (${sh.folderPath}). Parent drive is ready and it will be created automatically on apply.`
+              ),
             });
           } else {
             checks.push({
               key: 'path',
-              label: '로컬 폴더 경로 존재',
+              label: tx('로컬 폴더 경로 존재', 'Local Folder Path'),
               status: 'pass',
-              detail: `로컬 폴더 존재 확인됨 (${sh.folderPath}).`,
+              detail: tx(
+                `로컬 폴더 존재 확인됨 (${sh.folderPath}).`,
+                `Local folder verified (${sh.folderPath}).`
+              ),
             });
           }
 
           if (psProbe.driveExists && !psProbe.isFileConflict && !psProbe.isReadOnlyDrive) {
             checks.push({
               key: 'acl',
-              label: 'NTFS 접근·권한 부여 가능성',
+              label: tx('NTFS 접근·권한 부여 가능성', 'NTFS Access & ACL Permissions'),
               status: psProbe.aclReadable ? 'pass' : 'fail',
               detail: psProbe.aclReadable
-                ? `폴더 접근 및 ACL 읽기 정상${psProbe.aclDetail ? ` (${psProbe.aclDetail})` : ''}.`
-                : `폴더 접근 권한을 읽을 수 없습니다${psProbe.aclDetail ? `: ${psProbe.aclDetail}` : ''}.`,
+                ? tx(
+                    `폴더 접근 및 ACL 읽기 정상${psProbe.aclDetail ? ` (${psProbe.aclDetail})` : ''}.`,
+                    `Folder access and ACL read succeeded${psProbe.aclDetail ? ` (${psProbe.aclDetail})` : ''}.`
+                  )
+                : tx(
+                    `폴더 접근 권한을 읽을 수 없습니다${psProbe.aclDetail ? `: ${psProbe.aclDetail}` : ''}.`,
+                    `Unable to read folder ACL permissions${psProbe.aclDetail ? `: ${psProbe.aclDetail}` : ''}.`
+                  ),
             });
           }
 
@@ -5039,18 +5408,27 @@ Write-Output 'SMB_SESSION_CLEANED'
             const sameTarget = normalizeFolder(psProbe.existingSharePath) === normalizeFolder(sh.folderPath);
             checks.push({
               key: 'share_conflict',
-              label: '기존 SMB 공유 이름 충돌',
+              label: tx('기존 SMB 공유 이름 충돌', 'Existing SMB Share Conflict'),
               status: sameTarget ? 'pass' : 'warning',
               detail: sameTarget
-                ? `동일 경로(${psProbe.existingSharePath})로 이미 공유 중입니다 — 권한·방화벽을 최신 상태로 갱신합니다.`
-                : `공유 이름 '${sh.shareName}'이 현재 다른 폴더(${psProbe.existingSharePath})에 연결되어 있어 적용 시 새 경로로 교체됩니다.`,
+                ? tx(
+                    `동일 경로(${psProbe.existingSharePath})로 이미 공유 중입니다 — 권한·방화벽을 최신 상태로 갱신합니다.`,
+                    `Already shared at '${psProbe.existingSharePath}' — permissions and firewall rules will be refreshed.`
+                  )
+                : tx(
+                    `공유 이름 '${sh.shareName}'이 현재 다른 폴더(${psProbe.existingSharePath})에 연결되어 있어 적용 시 새 경로로 교체됩니다.`,
+                    `Share name '${sh.shareName}' currently points to '${psProbe.existingSharePath}' and will be replaced on apply.`
+                  ),
             });
           } else {
             checks.push({
               key: 'share_conflict',
-              label: '기존 SMB 공유 이름 충돌',
+              label: tx('기존 SMB 공유 이름 충돌', 'Existing SMB Share Conflict'),
               status: 'pass',
-              detail: `공유 이름 '${sh.shareName}' 사용 가능 (충돌 없음).`,
+              detail: tx(
+                `공유 이름 '${sh.shareName}' 사용 가능 (충돌 없음).`,
+                `Share name '${sh.shareName}' is available (no conflict).`
+              ),
             });
           }
         } else {
@@ -5061,19 +5439,28 @@ Write-Output 'SMB_SESSION_CLEANED'
           );
           checks.push({
             key: 'path',
-            label: '로컬 폴더 경로 형식',
+            label: tx('로컬 폴더 경로 형식', 'Local Folder Path Format'),
             status: 'pass',
-            detail: `웹 프리뷰 검증: 유효한 Windows 경로 형식 (${sh.folderPath}).`,
+            detail: tx(
+              `웹 프리뷰 검증: 유효한 Windows 경로 형식 (${sh.folderPath}).`,
+              `Web preview check: Valid Windows path format (${sh.folderPath}).`
+            ),
           });
           if (existingSim) {
             const sameTarget = normalizeFolder(existingSim.folderPath) === normPath;
             checks.push({
               key: 'share_conflict',
-              label: '기존 SMB 공유 이름 충돌',
+              label: tx('기존 SMB 공유 이름 충돌', 'Existing SMB Share Conflict'),
               status: sameTarget ? 'pass' : 'warning',
               detail: sameTarget
-                ? `현재 활성 공유(${existingSim.folderPath})와 동일하여 갱신됩니다.`
-                : `기존 활성 공유(${existingSim.folderPath})가 새 경로(${sh.folderPath})로 교체됩니다.`,
+                ? tx(
+                    `현재 활성 공유(${existingSim.folderPath})와 동일하여 갱신됩니다.`,
+                    `Matches current active share (${existingSim.folderPath}) and will be refreshed.`
+                  )
+                : tx(
+                    `기존 활성 공유(${existingSim.folderPath})가 새 경로(${sh.folderPath})로 교체됩니다.`,
+                    `Existing active share (${existingSim.folderPath}) will be replaced with '${sh.folderPath}'.`
+                  ),
             });
           }
         }
@@ -5091,18 +5478,27 @@ Write-Output 'SMB_SESSION_CLEANED'
         const hasCreds = Boolean((sh.username || '').trim() && resolvedSharePwd);
         checks.push({
           key: 'credentials',
-          label: '보안 계정 자격증명',
+          label: tx('보안 계정 자격증명', 'Secure Account Credentials'),
           status: hasCreds ? 'pass' : 'fail',
           detail: hasCreds
-            ? `계정 '${sh.username || 'AhBiShare'}' 및 복호화된 비밀번호 준비됨 (${sh.permission === 'full' ? '읽기/쓰기' : '읽기 전용'}).`
-            : '보안 계정 모드의 비밀번호를 복원할 수 없습니다. 프로필 [내용 수정]에서 비밀번호를 입력하세요.',
+            ? tx(
+                `계정 '${sh.username || 'AhBiShare'}' 및 복호화된 비밀번호 준비됨 (${sh.permission === 'full' ? '읽기/쓰기' : '읽기 전용'}).`,
+                `Account '${sh.username || 'AhBiShare'}' and decrypted password ready (${sh.permission === 'full' ? 'Read/Write' : 'Read-Only'}).`
+              )
+            : tx(
+                '보안 계정 모드의 비밀번호를 복원할 수 없습니다. 프로필 [내용 수정]에서 비밀번호를 입력하세요.',
+                'Cannot restore password for Secure Account mode. Enter a password in profile [Edit Details].'
+              ),
         });
       } else {
         checks.push({
           key: 'credentials',
-          label: '무비밀번호 Guest 정책',
+          label: tx('무비밀번호 Guest 정책', 'Passwordless Guest Policy'),
           status: 'pass',
-          detail: `누구나(Guest/Anonymous) ${sh.permission === 'full' ? '읽기/쓰기' : '읽기 전용'} 공유 개설 준비 완료.`,
+          detail: tx(
+            `누구나(Guest/Anonymous) ${sh.permission === 'full' ? '읽기/쓰기' : '읽기 전용'} 공유 개설 준비 완료.`,
+            `Ready to open Guest/Anonymous ${sh.permission === 'full' ? 'Read/Write' : 'Read-Only'} share.`
+          ),
         });
       }
 
@@ -5112,10 +5508,16 @@ Write-Output 'SMB_SESSION_CLEANED'
       items.push({
         kind: 'share',
         index: i,
-        label: `호스트 공유 #${i + 1}: ${sh.shareName || '(이름 없음)'}`,
-        targetDesc: sh.folderPath || '(경로 미지정)',
+        label: tx(
+          `호스트 공유 #${i + 1}: ${sh.shareName || '(이름 없음)'}`,
+          `Host Share #${i + 1}: ${sh.shareName || '(Unnamed)'}`
+        ),
+        targetDesc: sh.folderPath || tx('(경로 미지정)', '(No path specified)'),
         status: itemStatus,
-        summary: failItem?.detail || warnItem?.detail || '경로·권한·자격증명 검증을 모두 통과했습니다.',
+        summary:
+          failItem?.detail ||
+          warnItem?.detail ||
+          tx('경로·권한·자격증명 검증을 모두 통과했습니다.', 'Passed all path, permission, and credential checks.'),
         canAutoProvisionFolder,
         checks,
       });
@@ -5136,16 +5538,25 @@ Write-Output 'SMB_SESSION_CLEANED'
       if (hostErr || shareErr || !driveFormatOk) {
         checks.push({
           key: 'syntax',
-          label: '대상 호스트·공유명·드라이브 형식',
+          label: tx('대상 호스트·공유명·드라이브 형식', 'Target Host, Share Name & Drive Format'),
           status: 'fail',
-          detail: hostErr || shareErr || `올바르지 않은 드라이브 문자입니다 (${ct.driveLetter} · 허용: D:~Z:).`,
+          detail:
+            hostErr ||
+            shareErr ||
+            tx(
+              `올바르지 않은 드라이브 문자입니다 (${ct.driveLetter} · 허용: D:~Z:).`,
+              `Invalid drive letter (${ct.driveLetter} · allowed: D: to Z:).`
+            ),
         });
       } else {
         checks.push({
           key: 'syntax',
-          label: '대상 호스트·공유명·드라이브 형식',
+          label: tx('대상 호스트·공유명·드라이브 형식', 'Target Host, Share Name & Drive Format'),
           status: 'pass',
-          detail: `${dl} → ${targetUnc} (유효한 UNC 및 드라이브 형식)`,
+          detail: tx(
+            `${dl} → ${targetUnc} (유효한 UNC 및 드라이브 형식)`,
+            `${dl} -> ${targetUnc} (Valid UNC & drive format)`
+          ),
         });
       }
 
@@ -5154,9 +5565,12 @@ Write-Output 'SMB_SESSION_CLEANED'
         if (firstIdx !== undefined) {
           checks.push({
             key: 'duplicate_drive',
-            label: '프로필 내 드라이브 중복',
+            label: tx('프로필 내 드라이브 중복', 'Duplicate Drive in Profile'),
             status: 'fail',
-            detail: `프로필 내 #${firstIdx + 1} 항목과 드라이브 문자 '${dl}'가 중복 지정되었습니다.`,
+            detail: tx(
+              `프로필 내 #${firstIdx + 1} 항목과 드라이브 문자 '${dl}'가 중복 지정되었습니다.`,
+              `Drive letter '${dl}' duplicates item #${firstIdx + 1} in this profile.`
+            ),
           });
         } else {
           seenDriveLetters.set(dl, i);
@@ -5167,26 +5581,38 @@ Write-Output 'SMB_SESSION_CLEANED'
           if (psDrive.localDriveType) {
             checks.push({
               key: 'drive_letter',
-              label: `로컬 드라이브(${dl}) 점유 상태`,
+              label: tx(`로컬 드라이브(${dl}) 점유 상태`, `Local Drive (${dl}) Occupancy`),
               status: 'fail',
-              detail: `${dl} 드라이브는 현재 PC의 로컬 디스크(${psDrive.localDriveType})로 사용 중이어서 네트워크 드라이브로 연결할 수 없습니다.`,
+              detail: tx(
+                `${dl} 드라이브는 현재 PC의 로컬 디스크(${psDrive.localDriveType})로 사용 중이어서 네트워크 드라이브로 연결할 수 없습니다.`,
+                `Drive ${dl} is used as a local disk (${psDrive.localDriveType}) on this PC and cannot be mapped as a network drive.`
+              ),
             });
           } else if (psDrive.mappedUnc) {
             const sameUnc = normalizeUnc(psDrive.mappedUnc) === normalizeUnc(targetUnc);
             checks.push({
               key: 'drive_letter',
-              label: `네트워크 드라이브(${dl}) 점유 상태`,
+              label: tx(`네트워크 드라이브(${dl}) 점유 상태`, `Network Drive (${dl}) Occupancy`),
               status: sameUnc ? 'pass' : 'warning',
               detail: sameUnc
-                ? `${dl}가 이미 동일 경로(${psDrive.mappedUnc})에 연결되어 있습니다 — 자격증명을 갱신해 재연결합니다.`
-                : `${dl}에 다른 공유(${psDrive.mappedUnc})가 연결되어 있어 기존 연결 해제 후 ${targetUnc}로 교체합니다.`,
+                ? tx(
+                    `${dl}가 이미 동일 경로(${psDrive.mappedUnc})에 연결되어 있습니다 — 자격증명을 갱신해 재연결합니다.`,
+                    `${dl} is already mapped to ${psDrive.mappedUnc} — will reconnect with refreshed credentials.`
+                  )
+                : tx(
+                    `${dl}에 다른 공유(${psDrive.mappedUnc})가 연결되어 있어 기존 연결 해제 후 ${targetUnc}로 교체합니다.`,
+                    `${dl} is mapped to another share (${psDrive.mappedUnc}); existing mapping will be replaced with ${targetUnc}.`
+                  ),
             });
           } else {
             checks.push({
               key: 'drive_letter',
-              label: `드라이브 문자(${dl}) 사용 가능`,
+              label: tx(`드라이브 문자(${dl}) 사용 가능`, `Drive Letter (${dl}) Available`),
               status: 'pass',
-              detail: `${dl} 드라이브 문자가 비어 있어 즉시 할당할 수 있습니다.`,
+              detail: tx(
+                `${dl} 드라이브 문자가 비어 있어 즉시 할당할 수 있습니다.`,
+                `Drive letter ${dl} is free and ready to map.`
+              ),
             });
           }
         } else {
@@ -5195,18 +5621,24 @@ Write-Output 'SMB_SESSION_CLEANED'
             const sameUnc = normalizeUnc(simMount.uncPath) === normalizeUnc(targetUnc);
             checks.push({
               key: 'drive_letter',
-              label: `네트워크 드라이브(${dl}) 점유 상태`,
+              label: tx(`네트워크 드라이브(${dl}) 점유 상태`, `Network Drive (${dl}) Occupancy`),
               status: sameUnc ? 'pass' : 'warning',
               detail: sameUnc
-                ? `${dl}가 이미 ${simMount.uncPath}에 연결되어 있습니다.`
-                : `${dl}의 기존 연결(${simMount.uncPath})을 해제하고 ${targetUnc}로 재연결합니다.`,
+                ? tx(
+                    `${dl}가 이미 ${simMount.uncPath}에 연결되어 있습니다.`,
+                    `${dl} is already mapped to ${simMount.uncPath}.`
+                  )
+                : tx(
+                    `${dl}의 기존 연결(${simMount.uncPath})을 해제하고 ${targetUnc}로 재연결합니다.`,
+                    `Existing mapping on ${dl} (${simMount.uncPath}) will be disconnected and remapped to ${targetUnc}.`
+                  ),
             });
           } else {
             checks.push({
               key: 'drive_letter',
-              label: `드라이브 문자(${dl}) 사용 가능`,
+              label: tx(`드라이브 문자(${dl}) 사용 가능`, `Drive Letter (${dl}) Available`),
               status: 'pass',
-              detail: `${dl} 드라이브 문자 사용 가능합니다.`,
+              detail: tx(`${dl} 드라이브 문자 사용 가능합니다.`, `Drive letter ${dl} is available.`),
             });
           }
         }
@@ -5218,31 +5650,43 @@ Write-Output 'SMB_SESSION_CLEANED'
           if (pingRes.smbPortOpen) {
             checks.push({
               key: 'smb_port',
-              label: '대상 호스트 · TCP 445 응답',
+              label: tx('대상 호스트 · TCP 445 응답', 'Target Host · TCP 445 Reachability'),
               status: 'pass',
-              detail: `${ct.targetHost} SMB TCP 445 포트 개방 확인됨 (${pingRes.avgLatencyMs !== null ? `${pingRes.avgLatencyMs}ms` : '응답 정상'}).`,
+              detail: tx(
+                `${ct.targetHost} SMB TCP 445 포트 개방 확인됨 (${pingRes.avgLatencyMs !== null ? `${pingRes.avgLatencyMs}ms` : '응답 정상'}).`,
+                `${ct.targetHost} SMB TCP port 445 is open (${pingRes.avgLatencyMs !== null ? `${pingRes.avgLatencyMs}ms` : 'OK'}).`
+              ),
             });
           } else if (pingRes.reachable) {
             checks.push({
               key: 'smb_port',
-              label: '대상 호스트 · TCP 445 응답',
+              label: tx('대상 호스트 · TCP 445 응답', 'Target Host · TCP 445 Reachability'),
               status: 'warning',
-              detail: `${ct.targetHost} ICMP 핑은 응답하나 TCP 445(SMB) 포트가 닫혀 있거나 방화벽에 차단되었습니다.`,
+              detail: tx(
+                `${ct.targetHost} ICMP 핑은 응답하나 TCP 445(SMB) 포트가 닫혀 있거나 방화벽에 차단되었습니다.`,
+                `${ct.targetHost} responds to ICMP ping, but TCP port 445 (SMB) is closed or blocked by firewall.`
+              ),
             });
           } else {
             checks.push({
               key: 'smb_port',
-              label: '대상 호스트 · TCP 445 응답',
+              label: tx('대상 호스트 · TCP 445 응답', 'Target Host · TCP 445 Reachability'),
               status: 'warning',
-              detail: `${ct.targetHost}에 네트워크 응답이 없습니다 (PC 전원 꺼짐 · 다른 서브넷 · 방화벽 차단 가능).`,
+              detail: tx(
+                `${ct.targetHost}에 네트워크 응답이 없습니다 (PC 전원 꺼짐 · 다른 서브넷 · 방화벽 차단 가능).`,
+                `No network response from ${ct.targetHost} (host powered off, different subnet, or firewall blocking).`
+              ),
             });
           }
         } else {
           checks.push({
             key: 'smb_port',
-            label: '대상 호스트 · TCP 445 응답',
+            label: tx('대상 호스트 · TCP 445 응답', 'Target Host · TCP 445 Reachability'),
             status: 'warning',
-            detail: `${ct.targetHost} 연결 상태 확인을 완료하지 못했습니다.`,
+            detail: tx(
+              `${ct.targetHost} 연결 상태 확인을 완료하지 못했습니다.`,
+              `Could not complete connectivity check for ${ct.targetHost}.`
+            ),
           });
         }
       }
@@ -5256,18 +5700,27 @@ Write-Output 'SMB_SESSION_CLEANED'
         const hasClientCreds = Boolean((ct.username || '').trim() && resolvedClientPwd);
         checks.push({
           key: 'credentials',
-          label: '접속 계정 자격증명',
+          label: tx('접속 계정 자격증명', 'Connection Credentials'),
           status: hasClientCreds ? 'pass' : 'fail',
           detail: hasClientCreds
-            ? `접속 계정 '${ct.username}' 및 비밀번호가 준비되었습니다 (${ct.persistent ? '재부팅 유지' : '임시 연결'}).`
-            : `보안 계정 모드의 접속 비밀번호가 비어 있습니다. 프로필 [내용 수정]에서 비밀번호를 입력하세요.`,
+            ? tx(
+                `접속 계정 '${ct.username}' 및 비밀번호가 준비되었습니다 (${ct.persistent ? '재부팅 유지' : '임시 연결'}).`,
+                `Account '${ct.username}' and password are ready (${ct.persistent ? 'Persistent' : 'Session-only'}).`
+              )
+            : tx(
+                '보안 계정 모드의 접속 비밀번호가 비어 있습니다. 프로필 [내용 수정]에서 비밀번호를 입력하세요.',
+                'Password is empty for Secure Account mode. Enter it in profile [Edit Details].'
+              ),
         });
       } else {
         checks.push({
           key: 'credentials',
-          label: '접속 인증 모드',
+          label: tx('접속 인증 모드', 'Connection Auth Mode'),
           status: 'pass',
-          detail: `무비밀번호 Guest 모드로 ${ct.persistent ? '영구' : '세션'} 연결을 시도합니다.`,
+          detail: tx(
+            `무비밀번호 Guest 모드로 ${ct.persistent ? '영구' : '세션'} 연결을 시도합니다.`,
+            `Will connect in passwordless Guest mode (${ct.persistent ? 'Persistent' : 'Session-only'}).`
+          ),
         });
       }
 
@@ -5277,10 +5730,16 @@ Write-Output 'SMB_SESSION_CLEANED'
       items.push({
         kind: 'mount',
         index: i,
-        label: `네트워크 드라이브 #${i + 1}: ${dl || '(미지정)'}`,
+        label: tx(
+          `네트워크 드라이브 #${i + 1}: ${dl || '(미지정)'}`,
+          `Network Drive #${i + 1}: ${dl || '(Unassigned)'}`
+        ),
         targetDesc: targetUnc,
         status: itemStatus,
-        summary: failItem?.detail || warnItem?.detail || '드라이브·포트 445·자격증명 검증을 통과했습니다.',
+        summary:
+          failItem?.detail ||
+          warnItem?.detail ||
+          tx('드라이브·포트 445·자격증명 검증을 통과했습니다.', 'Passed drive, port 445, and credential checks.'),
         checks,
       });
     }
@@ -5294,7 +5753,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     return {
       profileId: profile.profileId,
       locationName: profile.locationName,
-      checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      checkedAt: formatLocaleTime(),
       overallStatus,
       isAdmin,
       totalItems: items.length,
@@ -5325,7 +5784,12 @@ Write-Output 'SMB_SESSION_CLEANED'
     const validShares = profile.savedShares.filter((s) => Boolean(s.folderPath && s.shareName));
     for (let i = 0; i < validShares.length; i++) {
       const sh = validShares[i];
-      callbacks?.onProgressText?.(`호스트 공유폴더(${i + 1}/${validShares.length}): ${sh.shareName}`);
+      callbacks?.onProgressText?.(
+        tx(
+          `호스트 공유폴더(${i + 1}/${validShares.length}): ${sh.shareName}`,
+          `Host share (${i + 1}/${validShares.length}): ${sh.shareName}`
+        )
+      );
       const decodedCodePwd = sh.connectionCode ? decodeConnectionCode(sh.connectionCode)?.password || '' : '';
       const resolvedSharePwd =
         sh.password ||
@@ -5340,7 +5804,10 @@ Write-Output 'SMB_SESSION_CLEANED'
           kind: 'share',
           label: `${sh.shareName} (${sh.folderPath})`,
           success: false,
-          message: '보안 계정 모드의 공유 암호를 복원할 수 없습니다. 암호를 입력해 재개설하거나 장소 프로필을 다시 저장하세요.',
+          message: tx(
+            '보안 계정 모드의 공유 암호를 복원할 수 없습니다. 암호를 입력해 재개설하거나 장소 프로필을 다시 저장하세요.',
+            'Cannot restore share password for Secure Account mode. Re-enter password to recreate share or re-save the location profile.'
+          ),
         });
         continue;
       }
@@ -5362,7 +5829,7 @@ Write-Output 'SMB_SESSION_CLEANED'
             kind: 'share',
             label: `${sh.shareName} (${sh.folderPath})`,
             success: true,
-            message: '공유폴더 개설 및 방화벽 설정 완료',
+            message: tx('공유폴더 개설 및 방화벽 설정 완료', 'Share folder and firewall configured'),
           });
         } else {
           failedShares++;
@@ -5371,7 +5838,7 @@ Write-Output 'SMB_SESSION_CLEANED'
             kind: 'share',
             label: `${sh.shareName} (${sh.folderPath})`,
             success: false,
-            message: failedErr || '공유폴더 개설 중 오류가 발생했습니다.',
+            message: failedErr || tx('공유폴더 개설 중 오류가 발생했습니다.', 'An error occurred while creating the share folder.'),
           });
         }
       } catch (err) {
@@ -5380,7 +5847,7 @@ Write-Output 'SMB_SESSION_CLEANED'
           kind: 'share',
           label: `${sh.shareName} (${sh.folderPath})`,
           success: false,
-          message: err instanceof Error ? err.message : '알 수 없는 오류',
+          message: err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error'),
         });
       }
     }
@@ -5388,7 +5855,12 @@ Write-Output 'SMB_SESSION_CLEANED'
     // 2. Apply saved client network drive targets
     for (let i = 0; i < profile.clientTargets.length; i++) {
       const ct = profile.clientTargets[i];
-      callbacks?.onProgressText?.(`네트워크 드라이브(${i + 1}/${profile.clientTargets.length}): ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`);
+      callbacks?.onProgressText?.(
+        tx(
+          `네트워크 드라이브(${i + 1}/${profile.clientTargets.length}): ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`,
+          `Network drive (${i + 1}/${profile.clientTargets.length}): ${ct.driveLetter} -> \\\\${ct.targetHost}\\${ct.shareName}`
+        )
+      );
       const resolvedClientPwd =
         ct.password ||
         runtimeLocationTargetPasswordCache.get(`${profile.profileId}::${ct.driveLetter.toUpperCase()}`) ||
@@ -5400,7 +5872,10 @@ Write-Output 'SMB_SESSION_CLEANED'
           kind: 'mount',
           label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
           success: false,
-          message: '보안 계정 모드의 접속 암호가 비어 있습니다. 암호가 저장된 PC에서 실행하거나 연결 폼에 암호를 입력하세요.',
+          message: tx(
+            '보안 계정 모드의 접속 암호가 비어 있습니다. 암호가 저장된 PC에서 실행하거나 연결 폼에 암호를 입력하세요.',
+            'Connection password is empty for Secure Account mode. Run on a PC with saved password or enter it in the connection form.'
+          ),
         });
         continue;
       }
@@ -5425,7 +5900,7 @@ Write-Output 'SMB_SESSION_CLEANED'
             kind: 'mount',
             label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
             success: true,
-            message: '네트워크 드라이브 연결 완료',
+            message: tx('네트워크 드라이브 연결 완료', 'Network drive connected'),
           });
         } else {
           failedMounts++;
@@ -5434,7 +5909,12 @@ Write-Output 'SMB_SESSION_CLEANED'
             kind: 'mount',
             label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
             success: false,
-            message: failedErr || '네트워크 드라이브 연결 실패 (대상 PC 전원·LAN·계정 확인 필요)',
+            message:
+              failedErr ||
+              tx(
+                '네트워크 드라이브 연결 실패 (대상 PC 전원·LAN·계정 확인 필요)',
+                'Network drive connection failed (check target PC power, LAN, and credentials)'
+              ),
           });
         }
       } catch (err) {
@@ -5443,7 +5923,7 @@ Write-Output 'SMB_SESSION_CLEANED'
           kind: 'mount',
           label: `${ct.driveLetter} (\\\\${ct.targetHost}\\${ct.shareName})`,
           success: false,
-          message: err instanceof Error ? err.message : '알 수 없는 오류',
+          message: err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error'),
         });
       }
     }
@@ -5454,10 +5934,19 @@ Write-Output 'SMB_SESSION_CLEANED'
 
     const summary =
       totalAttempted === 0
-        ? `'${profile.locationName}'에 일괄 실행할 공유폴더나 드라이브 항목이 없습니다.`
+        ? tx(
+            `'${profile.locationName}'에 일괄 실행할 공유폴더나 드라이브 항목이 없습니다.`,
+            `No share folders or drives to apply in '${profile.locationName}'.`
+          )
         : totalFailed === 0
-          ? `'${profile.locationName}' 일괄 적용 완료 (공유 ${appliedShares}건 · 드라이브 ${appliedMounts}건)`
-          : `'${profile.locationName}' 부분 적용 완료 (성공 ${totalSucceeded}건 · 실패 ${totalFailed}건)`;
+          ? tx(
+              `'${profile.locationName}' 일괄 적용 완료 (공유 ${appliedShares}건 · 드라이브 ${appliedMounts}건)`,
+              `Applied '${profile.locationName}' batch (${appliedShares} share(s), ${appliedMounts} drive(s))`
+            )
+          : tx(
+              `'${profile.locationName}' 부분 적용 완료 (성공 ${totalSucceeded}건 · 실패 ${totalFailed}건)`,
+              `Partially applied '${profile.locationName}' (${totalSucceeded} succeeded, ${totalFailed} failed)`
+            );
 
     return {
       success: totalAttempted > 0 && totalFailed === 0,
@@ -5546,17 +6035,32 @@ Write-Output 'SMB_SESSION_CLEANED'
           switchToMode = 'account';
           switchedFromMode = 'guest';
           reason = known.password
-            ? '대상이 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환하고 저장된 자격증명을 불러왔습니다.'
-            : '대상이 게스트·익명 접근을 거부해 보안 계정 모드로 자동 전환했습니다.';
+            ? tx(
+                '대상이 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환하고 저장된 자격증명을 불러왔습니다.',
+                'Target requires secure account authentication. Auto-switched to Secure Account mode and loaded saved credentials.'
+              )
+            : tx(
+                '대상이 게스트·익명 접근을 거부해 보안 계정 모드로 자동 전환했습니다.',
+                'Target rejected guest/anonymous access. Auto-switched to Secure Account mode.'
+              );
         } else {
           action = 'recommend';
           reason = suppressed
-            ? '사용자가 무비밀번호 유지를 선택했으나 대상 서버는 보안 계정 인증을 권장합니다.'
-            : '대상이 게스트 접근을 거부했습니다. 보안 계정 모드로 전환하세요.';
+            ? tx(
+                '사용자가 무비밀번호 유지를 선택했으나 대상 서버는 보안 계정 인증을 권장합니다.',
+                'You chose to keep No-Password mode, though the target server recommends Secure Account authentication.'
+              )
+            : tx(
+                '대상이 게스트 접근을 거부했습니다. 보안 계정 모드로 전환하세요.',
+                'Target rejected guest access. Switch to Secure Account mode.'
+              );
         }
       } else {
         action = 'keep';
-        reason = '대상 공유폴더의 보안 계정 인증 요구와 현재 연결 모드가 일치합니다.';
+        reason = tx(
+          '대상 공유폴더의 보안 계정 인증 요구와 현재 연결 모드가 일치합니다.',
+          'Current mode matches the target share security requirement (Secure Account).'
+        );
       }
     } else if (probe.verdict === 'guest_allowed') {
       recommendedAuthMode = 'guest';
@@ -5566,47 +6070,77 @@ Write-Output 'SMB_SESSION_CLEANED'
           action = 'auto_switch';
           switchToMode = 'guest';
           switchedFromMode = 'account';
-          reason = '대상이 무비밀번호(Guest) 연결을 허용하여 간편 무비밀번호 모드로 자동 전환했습니다.';
+          reason = tx(
+            '대상이 무비밀번호(Guest) 연결을 허용하여 간편 무비밀번호 모드로 자동 전환했습니다.',
+            'Target allows No-Password (Guest) access. Auto-switched to No-Password mode.'
+          );
         } else {
           action = 'recommend';
           reason = hasTypedPassword
-            ? '대상이 무비밀번호 연결을 허용하지만 입력된 암호를 보호하기 위해 자동 전환하지 않았습니다.'
-            : '대상이 무비밀번호 연결을 허용합니다. 필요 시 무비밀번호 모드로 전환할 수 있습니다.';
+            ? tx(
+                '대상이 무비밀번호 연결을 허용하지만 입력된 암호를 보호하기 위해 자동 전환하지 않았습니다.',
+                'Target allows No-Password access, but auto-switch was skipped to preserve your entered password.'
+              )
+            : tx(
+                '대상이 무비밀번호 연결을 허용합니다. 필요 시 무비밀번호 모드로 전환할 수 있습니다.',
+                'Target allows No-Password access. You can switch to No-Password mode if needed.'
+              );
         }
       } else {
         action = 'keep';
-        reason = '대상 공유폴더의 무비밀번호 허용 정책과 현재 연결 모드가 일치합니다.';
+        reason = tx(
+          '대상 공유폴더의 무비밀번호 허용 정책과 현재 연결 모드가 일치합니다.',
+          'Current mode matches the target share No-Password policy.'
+        );
       }
     } else if (probe.verdict === 'client_guest_blocked') {
       recommendedAuthMode = 'account';
       confidence = 'confirmed';
       if (currentAuthMode === 'guest') {
         action = 'recommend';
-        reason =
-          '로컬 PC의 Win 11 게스트 차단 정책이 활성 상태입니다. 보안 계정으로 연결하거나 호환성 매트릭스에서 게스트 차단을 해제하세요.';
+        reason = tx(
+          '로컬 PC의 Win 11 게스트 차단 정책이 활성 상태입니다. 보안 계정으로 연결하거나 호환성 매트릭스에서 게스트 차단을 해제하세요.',
+          'Local PC Win 11 insecure guest blocking policy is active. Connect with a Secure Account or unblock guest access in Compatibility Matrix.'
+        );
       } else {
         action = 'keep';
-        reason = '로컬 PC가 게스트 연결을 차단 중이며 현재 보안 계정 모드로 설정되어 있습니다.';
+        reason = tx(
+          '로컬 PC가 게스트 연결을 차단 중이며 현재 보안 계정 모드로 설정되어 있습니다.',
+          'Local PC blocks guest access and is currently set to Secure Account mode.'
+        );
       }
     } else if (probe.verdict === 'existing_session_conflict' && probe.existingSessionMode) {
       recommendedAuthMode = probe.existingSessionMode;
       confidence = 'confirmed';
       if (currentAuthMode !== probe.existingSessionMode) {
         action = 'recommend';
-        reason = `이미 연결된 SMB 세션(${
-          probe.existingSessionMode === 'account' ? '보안 계정' : '무비밀번호'
-        })과 인증 모드를 일치시켜 오류 1219를 방지하는 것을 권장합니다.`;
+        reason = tx(
+          `이미 연결된 SMB 세션(${
+            probe.existingSessionMode === 'account' ? '보안 계정' : '무비밀번호'
+          })과 인증 모드를 일치시켜 오류 1219를 방지하는 것을 권장합니다.`,
+          `Match the auth mode with the existing SMB session (${
+            probe.existingSessionMode === 'account' ? 'Secure Account' : 'No-Password'
+          }) to prevent Error 1219.`
+        );
       } else {
         action = 'keep';
-        reason = '기존 활성 SMB 세션과 동일한 인증 모드로 설정되어 있습니다.';
+        reason = tx(
+          '기존 활성 SMB 세션과 동일한 인증 모드로 설정되어 있습니다.',
+          'Auth mode already matches the existing active SMB session.'
+        );
       }
     } else if ((probe.verdict === 'unknown' || probe.verdict === 'unreachable') && known.hintAuthMode) {
       recommendedAuthMode = known.hintAuthMode;
       confidence = 'hint';
       action = currentAuthMode !== known.hintAuthMode ? 'recommend' : 'keep';
-      reason = `${known.hintSource} 기준으로 ${
-        known.hintAuthMode === 'account' ? '보안 계정' : '무비밀번호'
-      } 인증 방식이 권장됩니다.`;
+      reason = tx(
+        `${known.hintSource} 기준으로 ${
+          known.hintAuthMode === 'account' ? '보안 계정' : '무비밀번호'
+        } 인증 방식이 권장됩니다.`,
+        `Based on ${known.hintSource}, ${
+          known.hintAuthMode === 'account' ? 'Secure Account' : 'No-Password'
+        } authentication is recommended.`
+      );
     }
 
     return {
@@ -5667,7 +6201,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     const cleanHost = String(targetHost || '').trim();
     const cleanShare = String(shareName || '').trim();
     const targetUnc = `\\\\${cleanHost}\\${cleanShare}`;
-    const checkedAt = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    const checkedAt = formatLocaleTime();
 
     const buildProbeCopy = (
       verdict: ShareAuthProbeVerdict,
@@ -5677,50 +6211,87 @@ Write-Output 'SMB_SESSION_CLEANED'
       existingSessionMode: AuthMode | null = null,
       probeMethod = ''
     ): ShareAuthProbeResult => {
-      let summary = '인증 방식 미확인';
-      let detail = `${targetUnc}의 인증 방식을 확정할 수 없습니다${rawDetail ? ` (${rawDetail})` : ''}. 수동으로 모드를 선택해 연결하세요.`;
+      let summary = tx('인증 방식 미확인', 'Auth Mode Unknown');
+      let detail = tx(
+        `${targetUnc}의 인증 방식을 확정할 수 없습니다${rawDetail ? ` (${rawDetail})` : ''}. 수동으로 모드를 선택해 연결하세요.`,
+        `Could not determine authentication mode for ${targetUnc}${rawDetail ? ` (${rawDetail})` : ''}. Select a mode manually to connect.`
+      );
       switch (verdict) {
         case 'guest_allowed':
-          summary = '무비밀번호 허용';
-          detail = `${targetUnc} 공유폴더가 게스트·익명 접근을 허용합니다. 비밀번호 없이 바로 연결할 수 있습니다.`;
+          summary = tx('무비밀번호 허용', 'No-Password Allowed');
+          detail = tx(
+            `${targetUnc} 공유폴더가 게스트·익명 접근을 허용합니다. 비밀번호 없이 바로 연결할 수 있습니다.`,
+            `${targetUnc} allows guest/anonymous access. You can connect immediately without a password.`
+          );
           break;
         case 'account_required':
-          summary = '보안 계정 필수';
-          detail = `${targetUnc} 대상(NAS 또는 호스트)이 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다${
-            win32Code ? ` (Win32 오류 ${win32Code})` : ''
-          }. 보안 계정 모드로 아이디·암호를 입력해 연결하세요.`;
+          summary = tx('보안 계정 필수', 'Secure Account Required');
+          detail = tx(
+            `${targetUnc} 대상(NAS 또는 호스트)이 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다${
+              win32Code ? ` (Win32 오류 ${win32Code})` : ''
+            }. 보안 계정 모드로 아이디·암호를 입력해 연결하세요.`,
+            `${targetUnc} (NAS or Host) rejected guest access and requested account authentication${
+              win32Code ? ` (Win32 error ${win32Code})` : ''
+            }. Enter username and password in Secure Account mode.`
+          );
           break;
         case 'client_guest_blocked':
-          summary = '로컬 PC 게스트 차단됨';
-          detail = `현재 PC의 Win 11 24H2~26H2 게스트 차단 정책으로 무비밀번호 확인이 거부되었습니다${
-            win32Code ? ` (오류 ${win32Code})` : ''
-          }. 보안 계정으로 연결하거나 호환성 매트릭스에서 로컬 게스트 차단을 해제한 뒤 재확인하세요.`;
+          summary = tx('로컬 PC 게스트 차단됨', 'Local PC Guest Blocked');
+          detail = tx(
+            `현재 PC의 Win 11 24H2~26H2 게스트 차단 정책으로 무비밀번호 확인이 거부되었습니다${
+              win32Code ? ` (오류 ${win32Code})` : ''
+            }. 보안 계정으로 연결하거나 호환성 매트릭스에서 로컬 게스트 차단을 해제한 뒤 재확인하세요.`,
+            `Win 11 24H2–26H2 insecure guest block policy on this PC denied the no-password check${
+              win32Code ? ` (error ${win32Code})` : ''
+            }. Connect with a Secure Account or unblock guest access in Compatibility Matrix.`
+          );
           break;
         case 'host_guest_denied':
-          summary = '호스트 게스트 로그온 거부';
-          detail = `대상 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)이 게스트 네트워크 로그온을 거부했습니다 (오류 1385). 보안 계정으로 연결하거나 호스트에서 게스트 정책을 개방하세요.`;
+          summary = tx('호스트 게스트 로그온 거부', 'Host Guest Logon Denied');
+          detail = tx(
+            `대상 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)이 게스트 네트워크 로그온을 거부했습니다 (오류 1385). 보안 계정으로 연결하거나 호스트에서 게스트 정책을 개방하세요.`,
+            `Target PC local security policy (SeDenyNetworkLogonRight) denied guest network logon (error 1385). Connect with a Secure Account or allow guest logon on the host.`
+          );
           break;
         case 'share_not_found':
-          summary = '공유폴더 없음';
-          detail = `대상 서버(${cleanHost})는 응답하지만 '${cleanShare}' 공유폴더 이름을 찾을 수 없습니다 (오류 67). 공유 이름 철자와 공유 상태를 확인하세요.`;
+          summary = tx('공유폴더 없음', 'Share Not Found');
+          detail = tx(
+            `대상 서버(${cleanHost})는 응답하지만 '${cleanShare}' 공유폴더 이름을 찾을 수 없습니다 (오류 67). 공유 이름 철자와 공유 상태를 확인하세요.`,
+            `Target server (${cleanHost}) responded, but share '${cleanShare}' was not found (error 67). Verify share name spelling and status.`
+          );
           break;
         case 'existing_session_conflict':
-          summary = '기존 SMB 세션 활성 중';
-          detail = `${cleanHost}에 이미 연결된 SMB 세션(${
-            rawDetail || targetUnc
-          })을 보호하기 위해 게스트 시험을 생략했습니다${
-            existingSessionMode
-              ? ` (현재 세션: ${existingSessionMode === 'account' ? '보안 계정' : '무비밀번호'})`
-              : ''
-          }.`;
+          summary = tx('기존 SMB 세션 활성 중', 'Active SMB Session Exists');
+          detail = tx(
+            `${cleanHost}에 이미 연결된 SMB 세션(${
+              rawDetail || targetUnc
+            })을 보호하기 위해 게스트 시험을 생략했습니다${
+              existingSessionMode
+                ? ` (현재 세션: ${existingSessionMode === 'account' ? '보안 계정' : '무비밀번호'})`
+                : ''
+            }.`,
+            `Skipped guest probe to protect an existing SMB session to ${cleanHost} (${
+              rawDetail || targetUnc
+            })${
+              existingSessionMode
+                ? ` (Current session: ${existingSessionMode === 'account' ? 'Secure Account' : 'No-Password'})`
+                : ''
+            }.`
+          );
           break;
         case 'smb_protocol_mismatch':
-          summary = 'SMB 프로토콜 불일치';
-          detail = `대상 장치와 SMB 암호화·서명 또는 프로토콜 협상에 실패했습니다 (오류 58). OS 호환성 매트릭스 또는 구형 OS 브릿지를 확인하세요.`;
+          summary = tx('SMB 프로토콜 불일치', 'SMB Protocol Mismatch');
+          detail = tx(
+            `대상 장치와 SMB 암호화·서명 또는 프로토콜 협상에 실패했습니다 (오류 58). OS 호환성 매트릭스 또는 구형 OS 브릿지를 확인하세요.`,
+            `SMB encryption, signing, or protocol negotiation failed with target device (error 58). Check OS Compatibility Matrix or Legacy OS Bridge.`
+          );
           break;
         case 'unreachable':
-          summary = 'TCP 445 미응답';
-          detail = `${cleanHost}의 SMB 포트(445)에 도달할 수 없습니다. IP 주소, 대상 전원, 또는 방화벽 규칙을 확인하세요.`;
+          summary = tx('TCP 445 미응답', 'TCP 445 Unreachable');
+          detail = tx(
+            `${cleanHost}의 SMB 포트(445)에 도달할 수 없습니다. IP 주소, 대상 전원, 또는 방화벽 규칙을 확인하세요.`,
+            `Cannot reach SMB port (445) on ${cleanHost}. Check IP address, device power, or firewall rules.`
+          );
           break;
         default:
           break;
@@ -5743,7 +6314,7 @@ Write-Output 'SMB_SESSION_CLEANED'
     const hostErr = validateTargetHost(cleanHost);
     const shareErr = validateShareName(cleanShare);
     if (hostErr || shareErr) {
-      return buildProbeCopy('unknown', null, null, hostErr || shareErr || '입력값 확인 필요', null, 'Validation');
+      return buildProbeCopy('unknown', null, null, hostErr || shareErr || tx('입력값 확인 필요', 'Check input values'), null, 'Validation');
     }
 
     const cacheKey = cacheKeyForShare(cleanHost, cleanShare);
@@ -5796,10 +6367,10 @@ Write-Output 'SMB_SESSION_CLEANED'
               parsed.probeMethod || ''
             );
           } else {
-            finalResult = buildProbeCopy('unknown', null, null, '프로브 응답 파싱 실패', null, 'PowerShell');
+            finalResult = buildProbeCopy('unknown', null, null, tx('프로브 응답 파싱 실패', 'Failed to parse probe response'), null, 'PowerShell');
           }
         } else {
-          finalResult = buildProbeCopy('unknown', null, null, res.error || '프로브 응답 파싱 실패', null, 'PowerShell');
+          finalResult = buildProbeCopy('unknown', null, null, res.error || tx('프로브 응답 파싱 실패', 'Failed to parse probe response'), null, 'PowerShell');
         }
       } else {
         // Web Preview deterministic simulation
@@ -5843,7 +6414,7 @@ Write-Output 'SMB_SESSION_CLEANED'
                 ? buildProbeCopy('account_required', 86, 'account', 'Host Share ACL', null, 'WebSimLocal')
                 : buildProbeCopy('guest_allowed', 0, 'guest', 'Host Share Guest', null, 'WebSimLocal');
           } else {
-            const matchedMockPeer = DEFAULT_MOCK_PEERS.find(
+            const matchedMockPeer = getDefaultMockPeers().find(
               (p) => p.ipAddress.toLowerCase() === lowerHost || p.hostName.toLowerCase() === lowerHost
             );
             if (matchedMockPeer?.authModeHint === 'account') {

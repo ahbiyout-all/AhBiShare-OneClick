@@ -26,6 +26,8 @@ import {
   evaluateSecurityRollbackAudit,
   formatExpertRegistryComparisonText,
 } from '@/services/networkEvolution';
+import { useI18n } from '@/i18n/I18nContext';
+import { tx } from '@/i18n/localeState';
 
 interface ExpertComparisonViewProps {
   netInfo: LocalNetworkInfo;
@@ -50,21 +52,21 @@ function discrepancyStyle(status: HostDiscrepancyLevel): {
   switch (status) {
     case 'conflict':
       return {
-        label: '충돌',
+        label: tx('충돌', 'Conflict'),
         badgeClass: 'bg-red-500/12 text-red-700 dark:text-red-300 border-red-500/35',
         valueClass: 'text-red-700 dark:text-red-300 font-bold',
         Icon: ShieldAlert,
       };
     case 'warning':
       return {
-        label: '차이',
+        label: tx('차이', 'Diff'),
         badgeClass: 'bg-amber-500/12 text-amber-700 dark:text-amber-300 border-amber-500/35',
         valueClass: 'text-amber-700 dark:text-amber-300 font-bold',
         Icon: AlertTriangle,
       };
     case 'aligned':
       return {
-        label: '일치',
+        label: tx('일치', 'Match'),
         badgeClass: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30',
         valueClass: 'text-slate-800 dark:text-slate-200',
         Icon: CheckCircle2,
@@ -72,7 +74,7 @@ function discrepancyStyle(status: HostDiscrepancyLevel): {
     case 'unmeasured':
     default:
       return {
-        label: '미측정',
+        label: tx('미측정', 'Unmeasured'),
         badgeClass:
           'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700',
         valueClass: 'text-slate-500 dark:text-slate-400',
@@ -94,13 +96,14 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
   onFetchRawRegistry,
   onNotify,
 }) => {
+  const { locale, tx: txLocal } = useI18n();
   const [filterMode, setFilterMode] = useState<'all' | 'diff'>('all');
 
   const localRaw = useMemo(() => {
     if (fetchResult?.localSnapshot) return fetchResult.localSnapshot;
     if (policyStatus) return deriveRawRegistrySnapshotFromStatus(netInfo.hostname, policyStatus);
     return null;
-  }, [fetchResult, policyStatus, netInfo.hostname]);
+  }, [fetchResult, policyStatus, netInfo.hostname, locale]);
 
   const hostRaw = useMemo(() => {
     if (
@@ -115,19 +118,19 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
       return deriveRawRegistrySnapshotFromHostSnap(targetHostSnapshot, isPresetTarget);
     }
     return null;
-  }, [fetchResult, targetHostSnapshot, isPresetTarget]);
+  }, [fetchResult, targetHostSnapshot, isPresetTarget, locale]);
 
   const auditReport: SecurityRollbackAuditReport | null = useMemo(() => {
     if (!policyStatus) return null;
     return evaluateSecurityRollbackAudit(policyStatus, {
       targetHostSnapshot,
     });
-  }, [policyStatus, targetHostSnapshot]);
+  }, [policyStatus, targetHostSnapshot, locale]);
 
   const rows = useMemo(() => {
     if (!localRaw || !hostRaw) return [];
     return buildExpertRegistryComparisonRows(localRaw, hostRaw, auditReport);
-  }, [localRaw, hostRaw, auditReport]);
+  }, [localRaw, hostRaw, auditReport, locale]);
 
   const diffPolicyRows = useMemo(
     () => rows.filter((r) => r.overallStatus === 'conflict' || r.overallStatus === 'warning'),
@@ -177,8 +180,14 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
     }
     onNotify?.(
       copied
-        ? '전문가 비교 보기(10대 보안 정책 원시 레지스트리 대조표)를 클립보드에 복사했습니다.'
-        : '클립보드 복사에 실패했습니다. 화면의 레지스트리 대조표를 확인하세요.'
+        ? txLocal(
+            '전문가 비교 보기(10대 보안 정책 원시 레지스트리 대조표)를 클립보드에 복사했습니다.',
+            'Copied Expert Raw Registry Comparison table to clipboard.'
+          )
+        : txLocal(
+            '클립보드 복사에 실패했습니다. 화면의 레지스트리 대조표를 확인하세요.',
+            'Failed to copy to clipboard. Review the registry table on screen.'
+          )
     );
   };
 
@@ -198,7 +207,10 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
               ·
             </span>
             <span className="tabular-data text-slate-600 dark:text-slate-400">
-              10대 핵심 보안 정책 원시 레지스트리 나란히 대조
+              {txLocal(
+                '10대 핵심 보안 정책 원시 레지스트리 나란히 대조',
+                'Side-by-side raw registry comparison across 10 core security policies'
+              )}
             </span>
             {connectedHostLabel && (
               <>
@@ -207,7 +219,7 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                 </span>
                 <span className="tabular-data inline-flex items-center gap-1 font-semibold text-emerald-700 dark:text-emerald-300">
                   <HardDrive className="w-3 h-3 shrink-0" />
-                  연결 호스트: {connectedHostLabel}
+                  {txLocal('연결 호스트', 'Connected host')}: {connectedHostLabel}
                 </span>
               </>
             )}
@@ -215,13 +227,18 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
 
           <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <Terminal className="w-4 h-4 text-indigo-500 shrink-0" />
-            <span>전문가 비교 보기 · 로컬 PC vs 연결 호스트 원시 레지스트리 비교</span>
+            <span>
+              {txLocal(
+                '전문가 비교 보기 · 로컬 PC vs 연결 호스트 원시 레지스트리 비교',
+                'Expert Comparison View · Local PC vs Connected Host Raw Registry'
+              )}
+            </span>
           </h3>
 
           {localRaw && hostRaw && (
             <p className="text-xs text-slate-500 dark:text-slate-400 tabular-data">
-              로컬(<strong className="text-slate-700 dark:text-slate-200">{localRaw.hostName}</strong>:{' '}
-              {localRaw.sourceLabel}) ↔ 호스트(
+              {txLocal('로컬', 'Local')}(<strong className="text-slate-700 dark:text-slate-200">{localRaw.hostName}</strong>:{' '}
+              {localRaw.sourceLabel}) ↔ {txLocal('호스트', 'Host')}(
               <strong className="text-slate-700 dark:text-slate-200">{hostRaw.hostName}</strong>
               {hostRaw.targetIp ? ` · ${hostRaw.targetIp}` : ''}: {hostRaw.sourceLabel})
             </p>
@@ -237,7 +254,9 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
             className="px-3.5 py-2 text-xs font-bold text-white bg-slate-900 dark:bg-indigo-600 hover:bg-slate-800 dark:hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />
-            {isFetching ? '원시 레지스트리 조회 중...' : '원시 레지스트리 실시간 조회'}
+            {isFetching
+              ? txLocal('원시 레지스트리 조회 중...', 'Querying raw registry...')
+              : txLocal('원시 레지스트리 실시간 조회', 'Query Live Raw Registry')}
           </button>
 
           {rows.length > 0 && (
@@ -248,7 +267,7 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
               className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Copy className="w-3.5 h-3.5" />
-              대조표 복사
+              {txLocal('대조표 복사', 'Copy Table')}
             </button>
           )}
 
@@ -262,12 +281,12 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
             {isExpanded ? (
               <>
                 <ChevronUp className="w-3.5 h-3.5" />
-                접기
+                {txLocal('접기', 'Collapse')}
               </>
             ) : (
               <>
                 <ChevronDown className="w-3.5 h-3.5" />
-                원시 비교표 펼치기
+                {txLocal('원시 비교표 펼치기', 'Expand Raw Table')}
               </>
             )}
           </button>
@@ -279,7 +298,10 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
           {!localRaw || !hostRaw ? (
             <div className="px-6 py-8 text-center space-y-3">
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                로컬 OS 정책 또는 대상 호스트 정보가 아직 로드되지 않았습니다. 아래 버튼을 눌러 원시 레지스트리를 조회하세요.
+                {txLocal(
+                  '로컬 OS 정책 또는 대상 호스트 정보가 아직 로드되지 않았습니다. 아래 버튼을 눌러 원시 레지스트리를 조회하세요.',
+                  'Local OS policies or target host data have not been loaded yet. Click below to query the raw registry.'
+                )}
               </p>
               <button
                 type="button"
@@ -288,7 +310,7 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                 className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />
-                지금 10대 정책 원시 레지스트리 조회
+                {txLocal('지금 10대 정책 원시 레지스트리 조회', 'Query 10-Policy Raw Registry Now')}
               </button>
             </div>
           ) : (
@@ -297,13 +319,16 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
               <div className="px-6 py-3 bg-slate-50/70 dark:bg-slate-950/35 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-data">
                   <span className="font-bold text-slate-800 dark:text-slate-200">
-                    정책 {rows.length}개 · 세부 키 {stats.totalSubKeys}개
+                    {txLocal(
+                      `정책 ${rows.length}개 · 세부 키 ${stats.totalSubKeys}개`,
+                      `${rows.length} policies · ${stats.totalSubKeys} sub-keys`
+                    )}
                   </span>
                   <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
                     |
                   </span>
                   <span className="font-semibold text-emerald-700 dark:text-emerald-300">
-                    원시값 일치 {stats.alignedSubKeys}개
+                    {txLocal(`원시값 일치 ${stats.alignedSubKeys}개`, `Matched ${stats.alignedSubKeys}`)}
                   </span>
                   <span
                     className={`font-semibold ${
@@ -312,13 +337,13 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                         : 'text-slate-500 dark:text-slate-400'
                     }`}
                   >
-                    불일치·차이 {stats.diffSubKeys}개
+                    {txLocal(`불일치·차이 ${stats.diffSubKeys}개`, `Mismatched ${stats.diffSubKeys}`)}
                   </span>
                   <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
                     |
                   </span>
                   <span className="text-slate-500 dark:text-slate-400">
-                    조회 시각: {localRaw.fetchedAt}
+                    {txLocal('조회 시각', 'Queried')}: {localRaw.fetchedAt}
                   </span>
                 </div>
 
@@ -333,7 +358,7 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
-                    전체 10대 정책 ({rows.length})
+                    {txLocal(`전체 10대 정책 (${rows.length})`, `All 10 Policies (${rows.length})`)}
                   </button>
                   <button
                     id="expert-filter-diff"
@@ -345,7 +370,7 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
-                    원시값 불일치 ({diffPolicyRows.length})
+                    {txLocal(`원시값 불일치 (${diffPolicyRows.length})`, `Mismatched (${diffPolicyRows.length})`)}
                   </button>
                 </div>
               </div>
@@ -362,28 +387,31 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 font-semibold">
                       <th className="py-2.5 pl-6 pr-2 w-10 tabular-data">#</th>
-                      <th className="py-2.5 px-3 min-w-[200px]">핵심 보안 정책</th>
-                      <th className="py-2.5 px-3 min-w-[250px]">레지스트리 경로 · 값 이름</th>
+                      <th className="py-2.5 px-3 min-w-[200px]">{txLocal('핵심 보안 정책', 'Core Security Policy')}</th>
+                      <th className="py-2.5 px-3 min-w-[250px]">{txLocal('레지스트리 경로 · 값 이름', 'Registry Path · Value Name')}</th>
                       <th className="py-2.5 px-3 min-w-[165px] tabular-data">
-                        <div>로컬 PC ({localRaw.hostName})</div>
+                        <div>{txLocal('로컬 PC', 'Local PC')} ({localRaw.hostName})</div>
                         <div className="text-[10px] font-normal text-slate-400 dark:text-slate-500">
                           {localRaw.sourceLabel}
                         </div>
                       </th>
                       <th className="py-2.5 px-3 min-w-[165px] tabular-data">
-                        <div>연결 호스트 ({hostRaw.hostName})</div>
+                        <div>{txLocal('연결 호스트', 'Connected Host')} ({hostRaw.hostName})</div>
                         <div className="text-[10px] font-normal text-slate-400 dark:text-slate-500">
                           {hostRaw.sourceLabel}
                         </div>
                       </th>
-                      <th className="py-2.5 pl-3 pr-6 min-w-[155px]">SFI 기본값 · 판정</th>
+                      <th className="py-2.5 pl-3 pr-6 min-w-[155px]">{txLocal('SFI 기본값 · 판정', 'SFI Default · Verdict')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                     {visibleRows.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="py-8 px-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                          원시 레지스트리 값이 불일치하는 정책이 없습니다. 양단 레지스트리가 일치합니다.
+                          {txLocal(
+                            '원시 레지스트리 값이 불일치하는 정책이 없습니다. 양단 레지스트리가 일치합니다.',
+                            'No mismatched raw registry policies found. Both endpoints match.'
+                          )}
                         </td>
                       </tr>
                     ) : (
@@ -510,7 +538,7 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
                                   </span>
                                 </div>
                                 <div className="font-mono text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 tabular-data">
-                                  기본: {sub.expectedDefaultDisplay}
+                                  {txLocal('기본', 'Default')}: {sub.expectedDefaultDisplay}
                                 </div>
                               </td>
                             </tr>

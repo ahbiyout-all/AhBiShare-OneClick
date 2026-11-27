@@ -23,6 +23,8 @@ import {
   selectRecommendedPortableAsset,
   subscribeUpdateProgress,
 } from '../services/updateChecker';
+import { useI18n } from '@/i18n/I18nContext';
+import { tx } from '@/i18n/localeState';
 
 interface UpdateModalProps {
   isOpen: boolean;
@@ -53,10 +55,10 @@ function formatBytesHuman(bytes: number): string {
 
 function getAssetFriendlyLabel(name: string): string {
   const lower = name.toLowerCase();
-  if (lower.includes('win7')) return 'Win 7/8/8.1 전용 포터블';
-  if (lower.includes('lite')) return '경량 포터블 (Lite)';
-  if (lower.includes('setup')) return '설치형 인스톨러 (Setup)';
-  return '표준 포터블 (Win 10/11)';
+  if (lower.includes('win7')) return tx('Win 7/8/8.1 전용 포터블', 'Win 7/8/8.1 Portable');
+  if (lower.includes('lite')) return tx('경량 포터블 (Lite)', 'Lite Portable');
+  if (lower.includes('setup')) return tx('설치형 인스톨러 (Setup)', 'Installer (Setup)');
+  return tx('표준 포터블 (Win 10/11)', 'Standard Portable (Win 10/11)');
 }
 
 export const UpdateModal: React.FC<UpdateModalProps> = ({
@@ -69,6 +71,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   isRechecking = false,
   onClose,
 }) => {
+  const { tx: txLocal } = useI18n();
   const [runtimeInfo, setRuntimeInfo] = useState<PortableUpdateRuntimeInfo | null>(null);
   const [selectedAssetName, setSelectedAssetName] = useState<string>('');
   const hasUserSelectedAssetRef = useRef(false);
@@ -114,7 +117,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       setProgress(p);
       if (p.phase === 'error') {
         setIsUpdating(false);
-        setUpdateError(p.message || '포터블 업데이트 중 오류가 발생했습니다.');
+        setUpdateError(p.message || tx('포터블 업데이트 중 오류가 발생했습니다.', 'Error occurred during portable update.'));
       } else if (p.phase === 'cancelled') {
         setIsUpdating(false);
       }
@@ -169,7 +172,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       percent: 0,
       downloadedBytes: 0,
       totalBytes: activeTargetAsset.size || 0,
-      message: `${activeTargetAsset.name} 다운로드 준비 중...`,
+      message: txLocal(`${activeTargetAsset.name} 다운로드 준비 중...`, `Preparing download for ${activeTargetAsset.name}...`),
     });
 
     try {
@@ -177,14 +180,14 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       if (!res.success) {
         setIsUpdating(false);
         if (!res.cancelled) {
-          setUpdateError(res.error || '포터블 자동 업데이트에 실패했습니다.');
+          setUpdateError(res.error || txLocal('포터블 자동 업데이트에 실패했습니다.', 'Portable auto-update failed.'));
         } else {
           setProgress(null);
         }
       }
     } catch (err) {
       setIsUpdating(false);
-      setUpdateError(err instanceof Error ? err.message : '포터블 자동 업데이트 호출 오류');
+      setUpdateError(err instanceof Error ? err.message : txLocal('포터블 자동 업데이트 호출 오류', 'Portable auto-update invocation error'));
     }
   };
 
@@ -214,7 +217,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             <Sparkles className="w-5 h-5 text-indigo-100 shrink-0" />
             <div className="min-w-0">
               <h3 id="update-modal-title" className="font-display text-base font-bold truncate">
-                새로운 업데이트 확인 (GitHub Releases)
+                {txLocal('새로운 업데이트 확인 (GitHub Releases)', 'Update Available (GitHub Releases)')}
               </h3>
               {release.name && release.name !== release.tagName && (
                 <p className="text-xs text-indigo-100 truncate">{release.name}</p>
@@ -225,7 +228,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             type="button"
             disabled={isUpdating || isReplacingNow}
             onClick={onClose}
-            aria-label="업데이트 확인창 닫기"
+            aria-label={txLocal('업데이트 확인창 닫기', 'Close update modal')}
             className="p-1.5 rounded-lg hover:bg-indigo-700 text-indigo-100 hover:text-white transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <X className="w-5 h-5" />
@@ -235,14 +238,16 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         <div className="p-6 space-y-5 overflow-y-auto">
           <div className="grid grid-cols-2 gap-3 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800">
             <div>
-              <span className="text-xs text-slate-500 dark:text-slate-400 block">현재 실행 버전</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block">
+                {txLocal('현재 실행 버전', 'Current Version')}
+              </span>
               <span className="tabular-data text-sm font-semibold text-slate-700 dark:text-slate-300">
                 v{currentVersion}
               </span>
             </div>
             <div className="text-right">
               <span className="text-xs text-indigo-600 dark:text-indigo-400 font-semibold block">
-                GitHub 최신 버전{publishedStr ? ` · ${publishedStr}` : ''}
+                {txLocal('GitHub 최신 버전', 'Latest GitHub Release')}{publishedStr ? ` · ${publishedStr}` : ''}
               </span>
               <span className="tabular-data text-base font-bold text-indigo-600 dark:text-indigo-400">
                 {release.tagName}
@@ -263,24 +268,34 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   <ArrowRightLeft className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                   <div className="min-w-0">
                     <div className="font-semibold text-emerald-800 dark:text-emerald-300">
-                      포터블 원클릭 자동 교체 지원
+                      {txLocal('포터블 원클릭 자동 교체 지원', 'One-Click Portable Auto-Replace Supported')}
                     </div>
                     <p className="mt-0.5 text-[11px] opacity-90 break-all">
-                      현재 포터블(<span className="font-semibold">{runtimeInfo.currentExeName}</span>)을 안전하게
-                      종료 및 제거한 뒤{' '}
+                      {txLocal('현재 포터블(', 'Safely stops and removes current portable (')}
+                      <span className="font-semibold">{runtimeInfo.currentExeName}</span>
+                      {txLocal(')을 안전하게 종료 및 제거한 뒤 ', '), replaces it with ')}
                       <span className="font-semibold">
                         {activeTargetAsset && isPortableExeAsset(activeTargetAsset)
                           ? activeTargetAsset.name
-                          : '새 포터블 EXE'}
+                          : txLocal('새 포터블 EXE', 'New Portable EXE')}
                       </span>
-                      로 교체해 자동 실행합니다. 기존 공유 설정 및 사용장소 프로필(.json)은 그대로 유지됩니다.
+                      {txLocal(
+                        '로 교체해 자동 실행합니다. 기존 공유 설정 및 사용장소 프로필(.json)은 그대로 유지됩니다.',
+                        ', and relaunches automatically. Existing share settings & location profiles (.json) are preserved.'
+                      )}
                     </p>
                   </div>
                 </div>
               ) : (
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                  <span>{runtimeInfo.reason || '포터블 단일 실행 파일 모드에서만 자동 교체를 지원합니다.'}</span>
+                  <span>
+                    {runtimeInfo.reason ||
+                      txLocal(
+                        '포터블 단일 실행 파일 모드에서만 자동 교체를 지원합니다.',
+                        'Auto-replace is only supported in standalone Portable EXE mode.'
+                      )}
+                  </span>
                 </div>
               )}
             </div>
@@ -302,7 +317,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 </div>
                 <span className="tabular-data font-bold text-indigo-700 dark:text-indigo-300 shrink-0">
                   {progress.phase === 'downloading' && progress.totalBytes <= 0
-                    ? '수신 중'
+                    ? txLocal('수신 중', 'Receiving')
                     : `${progress.percent}%`}
                 </span>
               </div>
@@ -325,8 +340,8 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     {progress.totalBytes > 0
                       ? `${formatBytesHuman(progress.downloadedBytes)} / ${formatBytesHuman(progress.totalBytes)}`
                       : progress.downloadedBytes > 0
-                        ? `${formatBytesHuman(progress.downloadedBytes)} 받음`
-                        : '연결 중...'}
+                        ? txLocal(`${formatBytesHuman(progress.downloadedBytes)} 받음`, `${formatBytesHuman(progress.downloadedBytes)} received`)
+                        : txLocal('연결 중...', 'Connecting...')}
                   </span>
                   {isUpdating && !isReplacingNow && (
                     <button
@@ -335,7 +350,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                       onClick={() => void handleCancelDownload()}
                       className="text-rose-600 dark:text-rose-400 hover:underline font-semibold cursor-pointer"
                     >
-                      다운로드 취소
+                      {txLocal('다운로드 취소', 'Cancel Download')}
                     </button>
                   )}
                 </div>
@@ -352,7 +367,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
           <div>
             <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              릴리즈 노트 &amp; 변경 사항
+              {txLocal('릴리즈 노트 & 변경 사항', 'Release Notes & Changelog')}
             </h4>
             <div className="max-h-36 overflow-y-auto p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
               {release.body}
@@ -363,8 +378,8 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             <div className="space-y-2">
               <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 {runtimeInfo?.canSelfReplace
-                  ? `교체할 버전 선택 / 내려받기 (${exeAssets.length})`
-                  : `실행 파일 바로 내려받기 (${exeAssets.length})`}
+                  ? txLocal(`교체할 버전 선택 / 내려받기 (${exeAssets.length})`, `Select Build to Replace / Download (${exeAssets.length})`)
+                  : txLocal(`실행 파일 바로 내려받기 (${exeAssets.length})`, `Direct Executable Downloads (${exeAssets.length})`)}
               </h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {exeAssets.map((asset) => {
@@ -395,7 +410,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                       <div className="min-w-0">
                         <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
                           {getAssetFriendlyLabel(asset.name)}
-                          {rec ? ' (권장)' : ''}
+                          {rec ? txLocal(' (권장)', ' (Recommended)') : ''}
                         </div>
                         <div className="tabular-data text-[11px] text-slate-500 dark:text-slate-400 truncate">
                           {asset.name}
@@ -422,7 +437,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                GitHub 저장소
+                {txLocal('GitHub 저장소', 'GitHub Repository')}
               </button>
               {onRecheck && (
                 <button
@@ -432,7 +447,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer disabled:opacity-50"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isRechecking ? 'animate-spin' : ''}`} />
-                  다시 확인
+                  {txLocal('다시 확인', 'Recheck')}
                 </button>
               )}
               {onSkipVersion && (
@@ -446,7 +461,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   }}
                   className="text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline underline-offset-2 cursor-pointer disabled:opacity-50"
                 >
-                  이 버전 건너뛰기
+                  {txLocal('이 버전 건너뛰기', 'Skip This Version')}
                 </button>
               )}
             </div>
@@ -459,7 +474,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 onClick={onClose}
                 className="px-3.5 py-2 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
               >
-                나중에 하기
+                {txLocal('나중에 하기', 'Remind Later')}
               </button>
               <button
                 id="btn-update-download"
@@ -475,10 +490,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               >
                 <Download className="w-3.5 h-3.5" />
                 {canAutoReplaceTarget
-                  ? '직접 다운로드'
+                  ? txLocal('직접 다운로드', 'Direct Download')
                   : activeTargetAsset
-                    ? '권장 버전 바로 다운로드'
-                    : 'GitHub에서 다운로드'}
+                    ? txLocal('권장 버전 바로 다운로드', 'Download Recommended')
+                    : txLocal('GitHub에서 다운로드', 'Download on GitHub')}
               </button>
               {canAutoReplaceTarget && (
                 <button
@@ -493,7 +508,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   ) : (
                     <ArrowRightLeft className="w-4 h-4" />
                   )}
-                  {isUpdating ? '포터블 교체 진행 중...' : '기존 파일 제거 후 자동 교체'}
+                  {isUpdating
+                    ? txLocal('포터블 교체 진행 중...', 'Replacing portable...')
+                    : txLocal('기존 파일 제거 후 자동 교체', 'Auto-Replace Portable EXE')}
                 </button>
               )}
             </div>

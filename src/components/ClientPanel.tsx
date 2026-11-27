@@ -26,6 +26,7 @@ import { shareBridge } from '@/services/shareBridge';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
 import { ShareAuthProbeBar } from './ShareAuthProbeBar';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface ClientPanelProps {
   peers: DiscoveredPeer[];
@@ -120,6 +121,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onDeleteHostPolicySnapshot,
   onDeletePortableShare,
 }) => {
+  const { tx } = useI18n();
   const [rawCodeInput, setRawCodeInput] = useState('');
   const [codeParseState, setCodeParseState] = useState<'empty' | 'valid' | 'invalid'>('empty');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -734,7 +736,10 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       }
       if (preProbe && (preProbe.verdict === 'account_required' || preProbe.verdict === 'host_guest_denied')) {
         setValidationError(
-          '대상 공유폴더가 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환했습니다. 아이디·암호를 확인한 뒤 [원클릭 공유폴더 연결]을 다시 실행하세요.'
+          tx(
+            '대상 공유폴더가 보안 계정 인증을 요구해 보안 계정 모드로 자동 전환했습니다. 아이디·암호를 확인한 뒤 [원클릭 공유폴더 연결]을 다시 실행하세요.',
+            'Target share requires account authentication, so auth mode switched to Secure Account. Verify username and password, then click [Connect Share (1-Click)] again.'
+          )
         );
         return;
       }
@@ -742,11 +747,15 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
     if (config.authMode === 'account') {
       if (!config.username.trim()) {
-        setValidationError('보안 계정 연결 모드에서는 사용자 ID를 입력하세요.');
+        setValidationError(
+          tx('보안 계정 연결 모드에서는 사용자 ID를 입력하세요.', 'Enter a username in Secure Account mode.')
+        );
         return;
       }
       if (!config.password) {
-        setValidationError('보안 계정 연결 모드에서는 접속 암호를 입력하세요.');
+        setValidationError(
+          tx('보안 계정 연결 모드에서는 접속 암호를 입력하세요.', 'Enter a password in Secure Account mode.')
+        );
         return;
       }
     }
@@ -804,7 +813,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       {activePortableEntry && !bannerDismissed && (
         <section
           id="portable-usb-banner"
-          aria-label="USB 포터블 공유 데이터 감지 알림"
+          aria-label={tx('USB 포터블 공유 데이터 감지 알림', 'USB portable share data detection banner')}
           className="border border-indigo-500/35 bg-indigo-500/5 dark:bg-indigo-500/10 rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4"
         >
           <div className="flex items-start gap-3.5 min-w-0">
@@ -815,8 +824,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                 <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
                   {isRemotePortable
-                    ? 'USB에서 메인 PC 공유 데이터가 감지되었습니다'
-                    : 'USB 포터블 저장소의 공유 데이터가 감지되었습니다'}
+                    ? tx('USB에서 메인 PC 공유 데이터가 감지되었습니다', 'Host PC Share Data Detected on USB')
+                    : tx('USB 포터블 저장소의 공유 데이터가 감지되었습니다', 'Share Data Detected in USB Portable Storage')}
                 </h3>
                 {portableStatus?.fileName && (
                   <span className="tabular-data text-xs text-slate-500 dark:text-slate-400">
@@ -826,19 +835,25 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               </div>
 
               <p className="tabular-data text-xs text-slate-700 dark:text-slate-300 break-all">
-                원본 PC: {activePortableEntry.sourceHostName || '-'} · {activePortableEntry.uncPath || `\\\\${activePortableEntry.sourceIp}\\${activePortableEntry.shareName}`} ·{' '}
+                {tx('원본 PC', 'Source PC')}: {activePortableEntry.sourceHostName || '-'} · {activePortableEntry.uncPath || `\\\\${activePortableEntry.sourceIp}\\${activePortableEntry.shareName}`} ·{' '}
                 {activePortableEntry.authMode === 'account'
                   ? activePortableEntry.decryptionFailed
-                    ? `보안 계정 (${activePortableEntry.username || '-'} · 암호 재입력 필요)`
-                    : `보안 계정 (${activePortableEntry.username || '-'} · 암호화 비밀번호 자동 복원)`
-                  : '간편 무비밀번호'}
-                {activePortableEntry.updatedAt ? ` · 기록 일시: ${formatSnapshotTimestamp(activePortableEntry.updatedAt)}` : ''}
+                    ? tx(
+                        `보안 계정 (${activePortableEntry.username || '-'} · 암호 재입력 필요)`,
+                        `Secure Account (${activePortableEntry.username || '-'} · Re-enter password)`
+                      )
+                    : tx(
+                        `보안 계정 (${activePortableEntry.username || '-'} · 암호화 비밀번호 자동 복원)`,
+                        `Secure Account (${activePortableEntry.username || '-'} · Encrypted password restored)`
+                      )
+                  : tx('간편 무비밀번호', 'Passwordless')}
+                {activePortableEntry.updatedAt ? ` · ${tx('기록 일시', 'Recorded')}: ${formatSnapshotTimestamp(activePortableEntry.updatedAt)}` : ''}
               </p>
 
               {portableShares.length > 1 && (
                 <div className="pt-1.5 flex flex-wrap items-center gap-2">
                   <label htmlFor="portable-share-select" className="text-xs font-semibold text-slate-600 dark:text-slate-400">
-                    저장된 공유 항목 ({portableShares.length}개):
+                    {tx(`저장된 공유 항목 (${portableShares.length}개):`, `Saved Shares (${portableShares.length}):`)}
                   </label>
                   <select
                     id="portable-share-select"
@@ -854,7 +869,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       const ts = entry.updatedAt ? formatSnapshotTimestamp(entry.updatedAt) : '';
                       return (
                         <option key={`${entry.sourceHostName}-${entry.shareName}-${idx}`} value={idx}>
-                          {entry.sourceHostName || entry.sourceIp} · \\{entry.sourceIp}\{entry.shareName} ({entry.authMode === 'account' ? '보안 계정' : '무비밀번호'}) {ts ? `[${ts}]` : ''}
+                          {entry.sourceHostName || entry.sourceIp} · \\{entry.sourceIp}\{entry.shareName} ({entry.authMode === 'account' ? tx('보안 계정', 'Secure Account') : tx('무비밀번호', 'Passwordless')}) {ts ? `[${ts}]` : ''}
                         </option>
                       );
                     })}
@@ -865,7 +880,10 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               {isPortableApplied && (
                 <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 pt-0.5">
                   <Check className="w-3.5 h-3.5 shrink-0" />
-                  연결 정보가 아래 입력 폼에 자동 채워졌습니다. [원클릭 공유폴더 연결]을 실행하세요.
+                  {tx(
+                    '연결 정보가 아래 입력 폼에 자동 채워졌습니다. [원클릭 공유폴더 연결]을 실행하세요.',
+                    'Connection info has been filled in below. Click [Connect Share (1-Click)] to connect.'
+                  )}
                 </p>
               )}
 
@@ -873,7 +891,10 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 <div className="pt-1 flex flex-wrap items-center gap-2 text-xs text-amber-800 dark:text-amber-300">
                   <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    호스트({matchedHostPolicy?.hostName || activePortableEntry.sourceHostName}{matchedHostPolicy?.capturedAt ? ` · ${formatSnapshotTimestamp(matchedHostPolicy.capturedAt)} 감지` : ''})와 OS/SMB/RPC 정책 불일치 {portablePolicyConflicts.length}건 감지 ({portablePolicyConflicts.map((c) => c.label).join(', ')})
+                    {tx(
+                      `호스트(${matchedHostPolicy?.hostName || activePortableEntry.sourceHostName}${matchedHostPolicy?.capturedAt ? ` · ${formatSnapshotTimestamp(matchedHostPolicy.capturedAt)} 감지` : ''})와 OS/SMB/RPC 정책 불일치 ${portablePolicyConflicts.length}건 감지 (${portablePolicyConflicts.map((c) => c.label).join(', ')})`,
+                      `${portablePolicyConflicts.length} OS/SMB/RPC policy conflict(s) with host (${matchedHostPolicy?.hostName || activePortableEntry.sourceHostName}${matchedHostPolicy?.capturedAt ? ` · captured ${formatSnapshotTimestamp(matchedHostPolicy.capturedAt)}` : ''}): ${portablePolicyConflicts.map((c) => c.label).join(', ')}`
+                    )}
                   </span>
                   {onOpenMatrix && (
                     <button
@@ -882,7 +903,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       onClick={onOpenMatrix}
                       className="font-semibold underline underline-offset-2 hover:text-amber-600 dark:hover:text-amber-200 cursor-pointer"
                     >
-                      매트릭스에서 맞추기
+                      {tx('매트릭스에서 맞추기', 'Align in Matrix')}
                     </button>
                   )}
                   {onDeleteHostPolicySnapshot && (matchedHostPolicy?.hostName || activePortableEntry.sourceHostName) && (
@@ -901,7 +922,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded cursor-pointer disabled:opacity-50"
                     >
                       <Trash2 className="w-3 h-3" />
-                      {deletingPolicySnap ? '삭제 중...' : '감지 스냅샷 삭제'}
+                      {deletingPolicySnap ? tx('삭제 중...', 'Deleting...') : tx('감지 스냅샷 삭제', 'Delete Snapshot')}
                     </button>
                   )}
                 </div>
@@ -916,7 +937,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               onClick={() => applyPortableEntry(activePortableEntry, true)}
               className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
             >
-              {isPortableApplied ? '연결 정보 다시 채우기' : '원클릭 자동 채우기'}
+              {isPortableApplied ? tx('연결 정보 다시 채우기', 'Refill Connection Info') : tx('원클릭 자동 채우기', '1-Click Auto-Fill')}
             </button>
             {onDeletePortableShare && (
               confirmingDeletePortable ? (
@@ -937,14 +958,14 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                     }}
                     className="px-2.5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer disabled:opacity-50"
                   >
-                    삭제 확인
+                    {tx('삭제 확인', 'Confirm Delete')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmingDeletePortable(false)}
                     className="px-2 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
                   >
-                    취소
+                    {tx('취소', 'Cancel')}
                   </button>
                 </div>
               ) : (
@@ -952,8 +973,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   id="btn-delete-portable-entry"
                   type="button"
                   onClick={() => setConfirmingDeletePortable(true)}
-                  aria-label="선택된 포터블 공유 항목 삭제"
-                  title="현재 선택된 포터블 공유 항목 삭제"
+                  aria-label={tx('선택된 포터블 공유 항목 삭제', 'Delete selected portable share entry')}
+                  title={tx('현재 선택된 포터블 공유 항목 삭제', 'Delete currently selected portable share entry')}
                   className="p-2 text-slate-500 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-red-500/10 cursor-pointer shrink-0"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -963,8 +984,8 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
             <button
               type="button"
               onClick={() => setBannerDismissed(true)}
-              aria-label="USB 감지 배너 닫기"
-              title="배너 닫기"
+              aria-label={tx('USB 감지 배너 닫기', 'Close USB detection banner')}
+              title={tx('배너 닫기', 'Close banner')}
               className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800 cursor-pointer shrink-0"
             >
               <X className="w-4 h-4" />
@@ -979,10 +1000,13 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-                  클라이언트 PC 원클릭 연결
+                  {tx('클라이언트 PC 원클릭 연결', 'One-Click Client Share Connection')}
                 </h2>
                 <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                  메인 PC에서 복사한 연결 코드를 붙여넣거나 같은 네트워크의 PC를 자동 탐색해 즉시 연결합니다.
+                  {tx(
+                    '메인 PC에서 복사한 연결 코드를 붙여넣거나 같은 네트워크의 PC를 자동 탐색해 즉시 연결합니다.',
+                    'Paste the connection code copied from the host PC or scan your LAN to connect immediately.'
+                  )}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -995,7 +1019,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                     className="px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
-                    {isRefreshing ? '새로고침 중...' : '새로고침'}
+                    {isRefreshing ? tx('새로고침 중...', 'Refreshing...') : tx('새로고침', 'Refresh')}
                   </button>
                 )}
                 <button
@@ -1005,41 +1029,47 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   className="px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                 >
                   <Radar className={`w-4 h-4 ${isScanning ? 'animate-spin text-indigo-500' : ''}`} />
-                  {isScanning ? 'LAN 스캔 중...' : 'LAN PC 자동 탐색'}
+                  {isScanning ? tx('LAN 스캔 중...', 'Scanning LAN...') : tx('LAN PC 자동 탐색', 'Auto-Scan LAN PCs')}
                 </button>
               </div>
             </div>
 
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
               <label htmlFor="client-conn-code" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                연결 코드 또는 UNC 경로 붙여넣기 (ABSHARE://... 또는 \\IP\공유명)
+                {tx('연결 코드 또는 UNC 경로 붙여넣기 (ABSHARE://... 또는 \\\\IP\\공유명)', 'Paste Connection Code or UNC Path (ABSHARE://... or \\\\IP\\Share)')}
               </label>
               <input
                 id="client-conn-code"
                 type="text"
                 value={rawCodeInput}
                 onChange={(e) => handleCodeChange(e.target.value)}
-                placeholder="ABSHARE://... 코드를 붙여넣으면 서버 IP·공유명·계정 정보가 자동 입력됩니다"
+                placeholder={tx(
+                  'ABSHARE://... 코드를 붙여넣으면 서버 IP·공유명·계정 정보가 자동 입력됩니다',
+                  'Paste ABSHARE://... code to auto-fill server IP, share name, and credentials'
+                )}
                 className="w-full px-3.5 py-2.5 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               {codeParseState === 'valid' && (
                 <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
                   <Check className="w-3.5 h-3.5 shrink-0" />
-                  연결 코드 확인 완료 · 대상: \\{config.targetHost}\{config.shareName} (
+                  {tx('연결 코드 확인 완료 · 대상:', 'Connection code verified · Target:')} \\{config.targetHost}\{config.shareName} (
                   {rawCodeInput.trim().startsWith('ABSHARE://')
                     ? config.authMode === 'account'
-                      ? '보안 계정 포함'
-                      : '무비밀번호 모드'
+                      ? tx('보안 계정 포함', 'Account Included')
+                      : tx('무비밀번호 모드', 'Passwordless Mode')
                     : config.authMode === 'account'
-                      ? '보안 계정 모드'
-                      : '무비밀번호 모드'}
+                      ? tx('보안 계정 모드', 'Secure Account Mode')
+                      : tx('무비밀번호 모드', 'Passwordless Mode')}
                   )
                 </p>
               )}
               {codeParseState === 'invalid' && (
                 <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
                   <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  유효한 ABSHARE:// 코드 또는 \\서버\공유명 형식이 아닙니다. 아래에서 직접 입력할 수 있습니다.
+                  {tx(
+                    '유효한 ABSHARE:// 코드 또는 \\\\서버\\공유명 형식이 아닙니다. 아래에서 직접 입력할 수 있습니다.',
+                    'Not a valid ABSHARE:// code or \\\\Server\\Share format. You can enter details manually below.'
+                  )}
                 </p>
               )}
             </div>
@@ -1049,10 +1079,13 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    {activeLocationName ? `'${activeLocationName}' 저장 연결 대상` : '저장된 장소 연결 대상'} ({savedLocationTargets.length})
+                    {activeLocationName
+                      ? tx(`'${activeLocationName}' 저장 연결 대상`, `Saved Targets for '${activeLocationName}'`)
+                      : tx('저장된 장소 연결 대상', 'Saved Location Targets')}{' '}
+                    ({savedLocationTargets.length})
                   </span>
                   <span className="text-xs text-slate-500 dark:text-slate-400">
-                    항목을 클릭하면 아래 입력란에 즉시 채워집니다
+                    {tx('항목을 클릭하면 아래 입력란에 즉시 채워집니다', 'Click an item to fill the fields below')}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1099,17 +1132,20 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
             <div className="pt-2">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  탐색된 로컬 네트워크 공유 PC ({peers.length})
+                  {tx('탐색된 로컬 네트워크 공유 PC', 'Discovered LAN Share PCs')} ({peers.length})
                 </span>
                 <span className="text-xs text-slate-500 dark:text-slate-400">
-                  공유 폴더를 클릭하면 연결 대상이 자동 선택됩니다
+                  {tx('공유 폴더를 클릭하면 연결 대상이 자동 선택됩니다', 'Click a share to auto-select the connection target')}
                 </span>
               </div>
 
               {peers.length === 0 ? (
                 <div className="py-6 text-center border border-dashed border-slate-300 dark:border-slate-700 rounded-lg">
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    감지된 SMB(445) 호스트가 없습니다. [LAN PC 자동 탐색]을 누르거나 아래에 IP를 직접 입력하세요.
+                    {tx(
+                      '감지된 SMB(445) 호스트가 없습니다. [LAN PC 자동 탐색]을 누르거나 아래에 IP를 직접 입력하세요.',
+                      'No SMB (445) hosts detected. Click [Auto-Scan LAN PCs] or enter the host IP below.'
+                    )}
                   </p>
                 </div>
               ) : (
@@ -1117,9 +1153,9 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="bg-slate-50 dark:bg-slate-950/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-semibold">
-                        <th className="py-2.5 px-3">PC / IP 주소</th>
-                        <th className="py-2.5 px-3">공유 폴더 선택</th>
-                        <th className="py-2.5 px-3 text-right">응답 시간</th>
+                        <th className="py-2.5 px-3">{tx('PC / IP 주소', 'PC / IP Address')}</th>
+                        <th className="py-2.5 px-3">{tx('공유 폴더 선택', 'Select Shared Folder')}</th>
+                        <th className="py-2.5 px-3 text-right">{tx('응답 시간', 'Latency')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -1131,12 +1167,12 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                               {peer.ipAddress}
                               {peer.authModeHint === 'account' && (
                                 <span className="text-indigo-600 dark:text-indigo-400 font-medium">
-                                  {' '}· 계정 인증 추정
+                                  {' '}· {tx('계정 인증 추정', 'Account Auth Likely')}
                                 </span>
                               )}
                               {peer.authModeHint === 'guest' && (
                                 <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                                  {' '}· 무비밀번호 응답
+                                  {' '}· {tx('무비밀번호 응답', 'Passwordless Ready')}
                                 </span>
                               )}
                             </div>
@@ -1167,7 +1203,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                                   onClick={() => handleSelectPeerShare(peer, 'AhBiShared')}
                                   className="px-2.5 py-1 text-xs font-medium rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-indigo-500 cursor-pointer"
                                 >
-                                  직접 지정 선택
+                                  {tx('직접 지정 선택', 'Select Custom')}
                                 </button>
                               )}
                             </div>
@@ -1191,7 +1227,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label htmlFor="client-target-host" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  메인 PC IP 또는 이름
+                  {tx('메인 PC IP 또는 이름', 'Host PC IP or Name')}
                 </label>
                 <input
                   id="client-target-host"
@@ -1227,7 +1263,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
               <div>
                 <label htmlFor="client-share-name" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  공유 폴더 이름
+                  {tx('공유 폴더 이름', 'Shared Folder Name')}
                 </label>
                 <input
                   id="client-share-name"
@@ -1253,7 +1289,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
               <div>
                 <label htmlFor="client-drive-letter" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  연결 드라이브 문자
+                  {tx('연결 드라이브 문자', 'Drive Letter')}
                 </label>
                 <select
                   id="client-drive-letter"
@@ -1263,7 +1299,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 >
                   {driveLetterOptions.map((dl) => (
                     <option key={dl} value={dl}>
-                      {dl} 드라이브{mountedSet.has(dl) ? ' (연결됨)' : ''}
+                      {tx(`${dl} 드라이브${mountedSet.has(dl) ? ' (연결됨)' : ''}`, `${dl} Drive${mountedSet.has(dl) ? ' (Mounted)' : ''}`)}
                     </option>
                   ))}
                 </select>
@@ -1332,7 +1368,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  무비밀번호 (Win11 0x80070035 자동 해제)
+                  {tx('무비밀번호 (Win11 0x80070035 자동 해제)', 'Passwordless (Auto Win11 0x80070035 Fix)')}
                 </button>
                 <button
                   type="button"
@@ -1347,7 +1383,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  보안 계정 (cmdkey 자동 등록)
+                  {tx('보안 계정 (cmdkey 자동 등록)', 'Secure Account (Auto cmdkey)')}
                 </button>
               </div>
 
@@ -1368,7 +1404,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="client-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                      전용 계정 ID
+                      {tx('전용 계정 ID', 'Account Username')}
                     </label>
                     <input
                       id="client-acc-user"
@@ -1378,13 +1414,13 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         setValidationError(null);
                         setConfig({ ...config, username: e.target.value });
                       }}
-                      placeholder="사용자 ID (예: AhBiShare)"
+                      placeholder={tx('사용자 ID (예: AhBiShare)', 'Username (e.g., AhBiShare)')}
                       className="w-full px-3.5 py-2 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
                   <div>
                     <label htmlFor="client-acc-pass" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                      공유 계정 암호
+                      {tx('공유 계정 암호', 'Account Password')}
                     </label>
                     <div className="relative">
                       <input
@@ -1395,13 +1431,13 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                           setValidationError(null);
                           setConfig({ ...config, password: e.target.value });
                         }}
-                        placeholder="공유 계정 암호"
+                        placeholder={tx('공유 계정 암호', 'Account Password')}
                         className="w-full px-3.5 py-2 pr-10 text-sm tabular-data bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                       <button
                         type="button"
                         onClick={() => setShowClientPass(!showClientPass)}
-                        aria-label={showClientPass ? '비밀번호 숨기기' : '비밀번호 표시'}
+                        aria-label={showClientPass ? tx('비밀번호 숨기기', 'Hide password') : tx('비밀번호 표시', 'Show password')}
                         className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
                       >
                         {showClientPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -1427,7 +1463,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                   onChange={(e) => setConfig({ ...config, persistent: e.target.checked })}
                   className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                 />
-                재부팅 후에도 드라이브 연결 유지
+                {tx('재부팅 후에도 드라이브 연결 유지', 'Reconnect at sign-in (persistent)')}
               </label>
 
               <button
@@ -1437,7 +1473,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                 className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
                 <Link2 className="w-4 h-4" />
-                {isConnecting ? '드라이브 연결 중...' : '원클릭 공유폴더 연결'}
+                {isConnecting ? tx('드라이브 연결 중...', 'Connecting Drive...') : tx('원클릭 공유폴더 연결', 'Connect Share (1-Click)')}
               </button>
             </div>
           </form>
@@ -1445,7 +1481,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
 
         <div className="lg:col-span-5 space-y-4">
           <PipelineTracker
-            title="클라이언트 5단계 연결·복구 파이프라인"
+            title={tx('클라이언트 5단계 연결·복구 파이프라인', 'Client 5-Step Connect & Repair Pipeline')}
             steps={steps}
             isRunning={isConnecting}
           />
@@ -1462,7 +1498,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-amber-900 dark:text-amber-200">
-                    연결 실패 처방 가이드 · {diag.title}
+                    {tx('연결 실패 처방 가이드', 'Connection Failure Guide')} · {diag.title}
                   </span>
                   <span className="tabular-data text-[11px] font-semibold text-amber-700 dark:text-amber-300">
                     {diag.code}
@@ -1482,7 +1518,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer shadow-sm"
                         >
                           <KeyRound className="w-3.5 h-3.5" />
-                          통합 해결 가이드 & 도구 열기
+                          {tx('통합 해결 가이드 & 도구 열기', 'Open Fix Guide & Tools')}
                         </button>
                       )}
                       <button
@@ -1492,7 +1528,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 border border-indigo-300 dark:border-indigo-700 rounded-lg cursor-pointer"
                       >
                         <Shield className="w-3.5 h-3.5" />
-                        보안 계정 모드로 즉시 전환
+                        {tx('보안 계정 모드로 즉시 전환', 'Switch to Secure Account Mode')}
                       </button>
                       <button
                         id="btn-failure-copy-host-cmd"
@@ -1501,7 +1537,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-lg cursor-pointer"
                       >
                         {hostCmdCopied ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        {hostCmdCopied ? '복구 명령 복사됨!' : '호스트 원클릭 복구 명령 복사'}
+                        {hostCmdCopied ? tx('복구 명령 복사됨!', 'Fix Command Copied!') : tx('호스트 원클릭 복구 명령 복사', 'Copy Host 1-Click Fix Command')}
                       </button>
                     </>
                   ) : (
@@ -1525,7 +1561,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer shadow-sm"
                     >
                       <Wrench className="w-3.5 h-3.5" />
-                      단계별 해결 마법사 열기
+                      {tx('단계별 해결 마법사 열기', 'Open Step-by-Step Troubleshoot Wizard')}
                     </button>
                   )}
                 </div>
@@ -1538,17 +1574,20 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
-            연결된 네트워크 드라이브 ({mounts.length})
+            {tx('연결된 네트워크 드라이브', 'Connected Network Drives')} ({mounts.length})
           </h3>
           <span className="text-xs text-slate-500 dark:text-slate-400">
-            연결 완료 즉시 Windows 탐색기에서 바로 사용할 수 있습니다
+            {tx('연결 완료 즉시 Windows 탐색기에서 바로 사용할 수 있습니다', 'Available immediately in Windows Explorer once mounted')}
           </span>
         </div>
 
         {mounts.length === 0 ? (
           <div className="px-6 py-10 text-center">
             <p className="text-sm text-slate-600 dark:text-slate-400">
-              연결된 네트워크 드라이브가 없습니다. 상단에서 메인 PC를 선택하거나 연결 코드를 입력해 연결하세요.
+              {tx(
+                '연결된 네트워크 드라이브가 없습니다. 상단에서 메인 PC를 선택하거나 연결 코드를 입력해 연결하세요.',
+                'No network drives connected. Select a host PC or enter a connection code above.'
+              )}
             </p>
           </div>
         ) : (
@@ -1556,11 +1595,11 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 dark:text-slate-400">
-                  <th className="py-3 px-6">드라이브</th>
-                  <th className="py-3 px-4">네트워크 UNC 경로</th>
-                  <th className="py-3 px-4">인증 모드</th>
-                  <th className="py-3 px-4">연결 시각</th>
-                  <th className="py-3 px-6 text-right">작업</th>
+                  <th className="py-3 px-6">{tx('드라이브', 'Drive')}</th>
+                  <th className="py-3 px-4">{tx('네트워크 UNC 경로', 'Network UNC Path')}</th>
+                  <th className="py-3 px-4">{tx('인증 모드', 'Auth Mode')}</th>
+                  <th className="py-3 px-4">{tx('연결 시각', 'Connected At')}</th>
+                  <th className="py-3 px-6 text-right">{tx('작업', 'Actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
@@ -1571,14 +1610,16 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                         {m.driveLetter}
                       </span>
                       {m.status === 'disconnected' && (
-                        <span className="ml-2 text-[10px] font-medium text-amber-600 dark:text-amber-400">(오프라인)</span>
+                        <span className="ml-2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                          {tx('(오프라인)', '(Offline)')}
+                        </span>
                       )}
                     </td>
                     <td className="py-3 px-4 tabular-data text-xs text-slate-700 dark:text-slate-300">
                       {m.uncPath}
                     </td>
                     <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                      {m.authMode === 'guest' ? '간편 무비밀번호' : '보안 계정 (cmdkey)'}
+                      {m.authMode === 'guest' ? tx('간편 무비밀번호', 'Passwordless') : tx('보안 계정 (cmdkey)', 'Secure Account (cmdkey)')}
                     </td>
                     <td className="py-3 px-4 tabular-data text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
                       {m.mountedAt}
@@ -1591,7 +1632,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                           className="px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md inline-flex items-center gap-1 cursor-pointer"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
-                          탐색기 열기
+                          {tx('탐색기 열기', 'Open Explorer')}
                         </button>
                         <button
                           type="button"
@@ -1599,7 +1640,7 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
                           className="px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 rounded-md inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Unplug className="w-3.5 h-3.5" />
-                          연결 해제
+                          {tx('연결 해제', 'Disconnect')}
                         </button>
                       </div>
                     </td>

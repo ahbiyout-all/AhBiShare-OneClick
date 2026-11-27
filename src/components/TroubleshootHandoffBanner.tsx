@@ -16,6 +16,8 @@ import {
   TroubleshootTicket,
 } from '@/types/share';
 import { formatSnapshotTimestamp } from '@/services/networkEvolution';
+import { useI18n } from '@/i18n/I18nContext';
+import { tx } from '@/i18n/localeState';
 
 interface TroubleshootHandoffBannerProps {
   tickets: TroubleshootTicket[];
@@ -34,13 +36,13 @@ interface TroubleshootHandoffBannerProps {
 function getTicketStatusText(status: TroubleshootTicket['status']): string {
   switch (status) {
     case 'host_fixed':
-      return '메인 PC 조치 완료 (클라이언트 확인 대기)';
+      return tx('메인 PC 조치 완료 (클라이언트 확인 대기)', 'Host Fixed (Awaiting Client Verification)');
     case 'client_fixed':
-      return '클라이언트 조치 완료 (호스트 확인 대기)';
+      return tx('클라이언트 조치 완료 (호스트 확인 대기)', 'Client Fixed (Awaiting Host Check)');
     case 'resolved':
-      return '양단 해결 완료';
+      return tx('양단 해결 완료', 'Resolved on Both Sides');
     default:
-      return '조치 대기 중';
+      return tx('조치 대기 중', 'Pending Action');
   }
 }
 
@@ -57,6 +59,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
   onDeleteTicket,
   onClearResolved,
 }) => {
+  const { tx: txLocal } = useI18n();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (!tickets || tickets.length === 0) return null;
@@ -74,15 +77,26 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
     const isHandoffBackToClient = primaryTicket.status === 'host_fixed';
     const isFromOtherPc =
       (primaryTicket.originHostName || '').trim().toLowerCase() !== currentHostname.trim().toLowerCase();
-    const targetDisplay = primaryTicket.targetHostName || primaryTicket.targetIp || '대상 PC';
+    const targetDisplay = primaryTicket.targetHostName || primaryTicket.targetIp || txLocal('대상 PC', 'Target PC');
 
     const headline = isHandoffBackToClient
-      ? `메인 PC(${targetDisplay}) 조치 완료 · 이 PC(${currentHostname})에서 재연결 마법사를 계속하세요`
+      ? txLocal(
+          `메인 PC(${targetDisplay}) 조치 완료 · 이 PC(${currentHostname})에서 재연결 마법사를 계속하세요`,
+          `Main PC (${targetDisplay}) fixed · Continue the reconnection wizard on this PC (${currentHostname})`
+        )
       : isFromOtherPc
-        ? `USB로 전달된 오류 티켓 감지 (${primaryTicket.errorCode}) · 이 PC(${currentHostname})에서 ${
-            side === 'host' ? '메인 호스트 조치' : '단계별 해결'
-          }를 진행하세요`
-        : `이 PC(${currentHostname})에서 해결이 필요한 연결·공유 오류 (${primaryTicket.errorCode})`;
+        ? txLocal(
+            `USB로 전달된 오류 티켓 감지 (${primaryTicket.errorCode}) · 이 PC(${currentHostname})에서 ${
+              side === 'host' ? '메인 호스트 조치' : '단계별 해결'
+            }를 진행하세요`,
+            `USB error ticket detected (${primaryTicket.errorCode}) · Run ${
+              side === 'host' ? 'host fixes' : 'step-by-step resolution'
+            } on this PC (${currentHostname})`
+          )
+        : txLocal(
+            `이 PC(${currentHostname})에서 해결이 필요한 연결·공유 오류 (${primaryTicket.errorCode})`,
+            `Connection/share error requiring attention on ${currentHostname} (${primaryTicket.errorCode})`
+          );
 
     const applicableSteps = [
       ...(side === 'host' || side === 'both' ? primaryTicket.hostSteps : []),
@@ -117,20 +131,24 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
           <div className="space-y-1 min-w-0">
             <div className="text-xs font-bold text-slate-900 dark:text-white">
               {headline}
-              {currentPcActionTickets.length > 1 ? ` (총 ${currentPcActionTickets.length}건)` : ''}
+              {currentPcActionTickets.length > 1
+                ? txLocal(` (총 ${currentPcActionTickets.length}건)`, ` (${currentPcActionTickets.length} total)`)
+                : ''}
             </div>
             <p className="tabular-data text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-              {primaryTicket.errorTitle} · 발생: {primaryTicket.originHostName}
-              {primaryTicket.originIp ? ` (${primaryTicket.originIp})` : ''} → 대상:{' '}
+              {primaryTicket.errorTitle} · {txLocal('발생:', 'Origin:')} {primaryTicket.originHostName}
+              {primaryTicket.originIp ? ` (${primaryTicket.originIp})` : ''} → {txLocal('대상:', 'Target:')}{' '}
               <span className="font-semibold">
                 \\{primaryTicket.targetIp || primaryTicket.targetHostName || 'HOST'}\{primaryTicket.shareName}
               </span>{' '}
-              · 남은 단계 {pendingCount}개
-              {syncedPolicyCount > 0 ? ` · 매트릭스 자동 반영 ${syncedPolicyCount}개` : ''} · 상태:{' '}
-              {getTicketStatusText(primaryTicket.status)} ·{' '}
+              · {txLocal(`남은 단계 ${pendingCount}개`, `${pendingCount} step(s) remaining`)}
+              {syncedPolicyCount > 0
+                ? txLocal(` · 매트릭스 자동 반영 ${syncedPolicyCount}개`, ` · ${syncedPolicyCount} auto-synced`)
+                : ''}{' '}
+              · {txLocal('상태:', 'Status:')} {getTicketStatusText(primaryTicket.status)} ·{' '}
               {formatSnapshotTimestamp(primaryTicket.updatedAt || primaryTicket.createdAt)}
-              {pendingHostTask ? ' · 호스트 대기 작업과 동기화됨' : ''}
-              {writeProtected ? ' · USB 읽기 전용(세션 임시 보관)' : ''}
+              {pendingHostTask ? txLocal(' · 호스트 대기 작업과 동기화됨', ' · Synced with pending host task') : ''}
+              {writeProtected ? txLocal(' · USB 읽기 전용(세션 임시 보관)', ' · USB read-only (session-only)') : ''}
             </p>
             {rebootAlertActive && (
               <p
@@ -138,9 +156,12 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
                   rebootRequiredStrong ? 'text-red-700 dark:text-red-300' : 'text-amber-800 dark:text-amber-300'
                 }`}
               >
-                재부팅 판정 동기화:{' '}
+                {txLocal('재부팅 판정 동기화:', 'Reboot Notice:')}{' '}
                 {lastPatchResult?.rebootJudgment.title ||
-                  '커널·네트워크 정책 변경으로 시스템 재부팅 후 재연결해야 정상 적용됩니다.'}
+                  txLocal(
+                    '커널·네트워크 정책 변경으로 시스템 재부팅 후 재연결해야 정상 적용됩니다.',
+                    'Kernel/network policy changes require a system reboot before reconnecting.'
+                  )}
               </p>
             )}
           </div>
@@ -154,7 +175,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
             className="px-3.5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
           >
             <ListChecks className="w-3.5 h-3.5" />
-            단계별 해결 마법사 열기
+            {txLocal('단계별 해결 마법사 열기', 'Open Troubleshoot Wizard')}
           </button>
 
           {onOpenMatrix && (
@@ -165,7 +186,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
               className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <SlidersHorizontal className="w-3.5 h-3.5" />
-              {rebootAlertActive ? 'OS 매트릭스 · 재부팅' : 'OS 매트릭스 보기'}
+              {rebootAlertActive ? txLocal('OS 매트릭스 · 재부팅', 'OS Matrix · Reboot') : txLocal('OS 매트릭스 보기', 'Open OS Matrix')}
             </button>
           )}
 
@@ -176,7 +197,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
               onClick={() => void onClearResolved()}
               className="px-3 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 border border-emerald-500/35 rounded-lg whitespace-nowrap cursor-pointer"
             >
-              해결 완료 정리 ({resolvedTickets.length})
+              {txLocal(`해결 완료 정리 (${resolvedTickets.length})`, `Clear Resolved (${resolvedTickets.length})`)}
             </button>
           )}
 
@@ -190,14 +211,14 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
                 }}
                 className="px-2.5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer"
               >
-                삭제 확정
+                {txLocal('삭제 확정', 'Confirm Delete')}
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmDeleteId(null)}
                 className="px-2.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
               >
-                취소
+                {txLocal('취소', 'Cancel')}
               </button>
             </div>
           ) : (
@@ -207,7 +228,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
               className="px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              티켓 삭제
+              {txLocal('티켓 삭제', 'Delete Ticket')}
             </button>
           )}
         </div>
@@ -217,11 +238,11 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
 
   if (waitingOtherPcTickets.length > 0) {
     const topWaiting = waitingOtherPcTickets[0];
-    const targetDisplay = topWaiting.targetHostName || topWaiting.targetIp || '반대편 PC';
+    const targetDisplay = topWaiting.targetHostName || topWaiting.targetIp || txLocal('반대편 PC', 'Other PC');
     const awaitingSideLabel =
       topWaiting.status === 'host_fixed'
-        ? `클라이언트 PC(${topWaiting.originHostName})`
-        : `메인 PC(${targetDisplay})`;
+        ? txLocal(`클라이언트 PC(${topWaiting.originHostName})`, `Client PC (${topWaiting.originHostName})`)
+        : txLocal(`메인 PC(${targetDisplay})`, `Main PC (${targetDisplay})`);
 
     return (
       <div
@@ -233,12 +254,19 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
           <Usb className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
           <div className="space-y-0.5 min-w-0">
             <div className="text-xs font-bold text-slate-900 dark:text-white">
-              USB에 다른 PC 전달용 오류 티켓 {waitingOtherPcTickets.length}건 저장됨 · 다음 대상: {awaitingSideLabel}
+              {txLocal(
+                `USB에 다른 PC 전달용 오류 티켓 ${waitingOtherPcTickets.length}건 저장됨 · 다음 대상: ${awaitingSideLabel}`,
+                `${waitingOtherPcTickets.length} USB handoff ticket(s) saved for another PC · Next target: ${awaitingSideLabel}`
+              )}
             </div>
             <p className="tabular-data text-xs text-slate-600 dark:text-slate-300">
               {topWaiting.errorCode} · {topWaiting.errorTitle} · \\{topWaiting.targetIp || topWaiting.targetHostName || 'HOST'}\
-              {topWaiting.shareName} · USB를 {awaitingSideLabel}로 이동하면 마법사가 자동 실행됩니다
-              {rebootAlertActive ? ' · (현재 PC 재부팅 대기 상태 감지됨)' : ''}
+              {topWaiting.shareName} ·{' '}
+              {txLocal(
+                `USB를 ${awaitingSideLabel}로 이동하면 마법사가 자동 실행됩니다`,
+                `Move the USB drive to ${awaitingSideLabel} to launch the wizard automatically`
+              )}
+              {rebootAlertActive ? txLocal(' · (현재 PC 재부팅 대기 상태 감지됨)', ' · (Pending reboot detected on this PC)') : ''}
             </p>
           </div>
         </div>
@@ -251,7 +279,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
             className="px-3.5 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
           >
             <ListChecks className="w-3.5 h-3.5" />
-            해결 마법사 확인
+            {txLocal('해결 마법사 확인', 'View Wizard')}
           </button>
           {resolvedTickets.length > 0 && (
             <button
@@ -260,7 +288,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
               onClick={() => void onClearResolved()}
               className="px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-white dark:bg-slate-900 border border-emerald-500/35 rounded-lg whitespace-nowrap cursor-pointer"
             >
-              해결 완료 정리 ({resolvedTickets.length})
+              {txLocal(`해결 완료 정리 (${resolvedTickets.length})`, `Clear Resolved (${resolvedTickets.length})`)}
             </button>
           )}
           <button
@@ -268,7 +296,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
             onClick={() => void onDeleteTicket(topWaiting.ticketId)}
             className="px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer"
           >
-            티켓 삭제
+            {txLocal('티켓 삭제', 'Delete Ticket')}
           </button>
         </div>
       </div>
@@ -286,10 +314,13 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
         <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
         <div className="space-y-0.5 min-w-0">
           <div className="text-xs font-bold text-slate-900 dark:text-white">
-            USB 오류 해결 완료 이력 {resolvedTickets.length}건 보존됨
+            {txLocal(
+              `USB 오류 해결 완료 이력 ${resolvedTickets.length}건 보존됨`,
+              `${resolvedTickets.length} resolved USB ticket(s) archived`
+            )}
           </div>
           <p className="tabular-data text-xs text-slate-600 dark:text-slate-300">
-            {topResolved.errorCode} · {topResolved.errorTitle} · 완료 PC:{' '}
+            {topResolved.errorCode} · {topResolved.errorTitle} · {txLocal('완료 PC:', 'Resolved on:')}{' '}
             {topResolved.resolvedByHostName || currentHostname} ·{' '}
             {formatSnapshotTimestamp(topResolved.resolvedAt || topResolved.updatedAt)}
           </p>
@@ -303,7 +334,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
           className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
         >
           <ListChecks className="w-3.5 h-3.5" />
-          이력 보기
+          {txLocal('이력 보기', 'View History')}
         </button>
         <button
           id="btn-clear-resolved-troubleshoot"
@@ -312,7 +343,7 @@ export const TroubleshootHandoffBanner: React.FC<TroubleshootHandoffBannerProps>
           className="px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
         >
           <Trash2 className="w-3.5 h-3.5" />
-          해결 티켓 정리 ({resolvedTickets.length})
+          {txLocal(`해결 티켓 정리 (${resolvedTickets.length})`, `Clear Resolved (${resolvedTickets.length})`)}
         </button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
 import { PipelineStep } from '@/types/share';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface PipelineTrackerProps {
   title: string;
@@ -9,12 +10,17 @@ interface PipelineTrackerProps {
 }
 
 export const PipelineTracker: React.FC<PipelineTrackerProps> = ({ title, steps, isRunning }) => {
+  const { tx } = useI18n();
+
   if (steps.length === 0) {
     return (
       <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 p-6">
         <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
-          원클릭 버튼을 실행하면 방화벽, SMB 서비스, 보안 정책, 권한 설정 단계가 순서대로 진행됩니다.
+          {tx(
+            '원클릭 버튼을 실행하면 방화벽, SMB 서비스, 보안 정책, 권한 설정 단계가 순서대로 진행됩니다.',
+            'Running the one-click action executes firewall, SMB service, security policy, and permission steps in sequence.'
+          )}
         </p>
       </div>
     );
@@ -28,7 +34,10 @@ export const PipelineTracker: React.FC<PipelineTrackerProps> = ({ title, steps, 
       <div className="flex items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
         <span className="tabular-data text-xs font-medium text-slate-600 dark:text-slate-400 whitespace-nowrap shrink-0">
-          {completedCount} / {steps.length} 단계 · {isRunning ? '실행 중' : hasError ? '오류 중단' : completedCount === steps.length ? '완료' : '대기'}
+          {tx(
+            `${completedCount} / ${steps.length} 단계 · ${isRunning ? '실행 중' : hasError ? '오류 중단' : completedCount === steps.length ? '완료' : '대기'}`,
+            `${completedCount} / ${steps.length} steps · ${isRunning ? 'Running' : hasError ? 'Failed' : completedCount === steps.length ? 'Done' : 'Pending'}`
+          )}
         </span>
       </div>
 

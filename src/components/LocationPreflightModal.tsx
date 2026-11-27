@@ -18,6 +18,7 @@ import {
   LocationPreflightReport,
   LocationProfileFile,
 } from '@/types/share';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface LocationPreflightModalProps {
   isOpen: boolean;
@@ -33,22 +34,25 @@ interface LocationPreflightModalProps {
 
 const STATUS_BADGE: Record<
   LocationPreflightItemStatus,
-  { label: string; textClass: string; bgClass: string; borderClass: string }
+  { koLabel: string; enLabel: string; textClass: string; bgClass: string; borderClass: string }
 > = {
   pass: {
-    label: '통과',
+    koLabel: '통과',
+    enLabel: 'Pass',
     textClass: 'text-emerald-700 dark:text-emerald-300',
     bgClass: 'bg-emerald-500/10',
     borderClass: 'border-emerald-500/25',
   },
   warning: {
-    label: '주의',
+    koLabel: '주의',
+    enLabel: 'Warning',
     textClass: 'text-amber-700 dark:text-amber-300',
     bgClass: 'bg-amber-500/10',
     borderClass: 'border-amber-500/25',
   },
   fail: {
-    label: '오류',
+    koLabel: '오류',
+    enLabel: 'Fail',
     textClass: 'text-red-700 dark:text-red-300',
     bgClass: 'bg-red-500/10',
     borderClass: 'border-red-500/25',
@@ -82,6 +86,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
   onEditProfile,
   onConfirmExecute,
 }) => {
+  const { tx } = useI18n();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -135,11 +140,13 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
               className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2"
             >
               <ShieldCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
-              <span className="truncate">일괄 적용 사전 검증 (Pre-flight Check) — {profile.locationName}</span>
+              <span className="truncate">
+                {tx('일괄 적용 사전 검증 (Pre-flight Check)', 'Batch Apply Pre-flight Check')} — {profile.locationName}
+              </span>
             </h2>
             <p className="mt-0.5 tabular-data text-xs text-slate-500 dark:text-slate-400">
-              공유폴더 {shareCount}건 · 네트워크 드라이브 {mountCount}건
-              {report ? ` · 검사 시각 ${report.checkedAt}` : ' · 호스트 환경 검사 준비'}
+              {tx(`공유폴더 ${shareCount}건 · 네트워크 드라이브 ${mountCount}건`, `${shareCount} shares · ${mountCount} network drives`)}
+              {report ? ` · ${tx('검사 시각', 'Checked')} ${report.checkedAt}` : ` · ${tx('호스트 환경 검사 준비', 'Preparing host environment check')}`}
             </p>
           </div>
 
@@ -147,7 +154,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
             type="button"
             disabled={isChecking || isExecuting}
             onClick={onClose}
-            aria-label="사전 검증 창 닫기"
+            aria-label={tx('사전 검증 창 닫기', 'Close pre-flight check modal')}
             className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
           >
             <X className="w-4 h-4" />
@@ -164,16 +171,19 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
               <Loader2 className="w-7 h-7 text-indigo-600 dark:text-indigo-400 animate-spin" />
               <div className="space-y-1">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                  현재 호스트 환경에서 사용장소 설정을 사전 검증하고 있습니다...
+                  {tx('현재 호스트 환경에서 사용장소 설정을 사전 검증하고 있습니다...', 'Running pre-flight checks on your current host environment...')}
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  관리자 권한 · 로컬 폴더 존재 및 NTFS 접근 권한 · 드라이브 문자 충돌 · 대상 호스트 TCP 445 포트 · 계정 자격증명 검사 중
+                  {tx(
+                    '관리자 권한 · 로컬 폴더 존재 및 NTFS 접근 권한 · 드라이브 문자 충돌 · 대상 호스트 TCP 445 포트 · 계정 자격증명 검사 중',
+                    'Checking admin privileges · local folder & NTFS permissions · drive letter conflicts · target TCP 445 port · account credentials'
+                  )}
                 </p>
               </div>
             </div>
           ) : !report ? (
             <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-800 rounded-xl">
-              사전 검증 결과를 불러오지 못했습니다. 다시 검사를 실행해 주세요.
+              {tx('사전 검증 결과를 불러오지 못했습니다. 다시 검사를 실행해 주세요.', 'Failed to load pre-flight results. Please re-run the check.')}
             </div>
           ) : (
             <>
@@ -187,13 +197,16 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
                   <div className="space-y-0.5 min-w-0">
                     <p className={`text-sm font-bold ${overallBadge?.textClass}`}>
                       {report.overallStatus === 'pass'
-                        ? '사전 검증 통과 — 모든 설정을 안전하게 일괄 적용할 수 있습니다'
+                        ? tx('사전 검증 통과 — 모든 설정을 안전하게 일괄 적용할 수 있습니다', 'Pre-flight Passed — Ready to safely apply all settings')
                         : report.overallStatus === 'warning'
-                          ? '주의 항목 확인 — 자동 생성/재연결 또는 네트워크 응답 경고를 확인하세요'
-                          : '차단 오류 감지 — 일부 항목의 경로·권한·자격증명 문제를 먼저 확인하세요'}
+                          ? tx('주의 항목 확인 — 자동 생성/재연결 또는 네트워크 응답 경고를 확인하세요', 'Warnings Detected — Review auto-create/reconnect or network warnings')
+                          : tx('차단 오류 감지 — 일부 항목의 경로·권한·자격증명 문제를 먼저 확인하세요', 'Blocking Errors Detected — Resolve path, permission, or credential issues first')}
                     </p>
                     <p className="tabular-data text-xs text-slate-600 dark:text-slate-300">
-                      전체 {report.totalItems}건 중 통과 {report.passCount}건 · 주의 {report.warningCount}건 · 오류 {report.failCount}건
+                      {tx(
+                        `전체 ${report.totalItems}건 중 통과 ${report.passCount}건 · 주의 ${report.warningCount}건 · 오류 ${report.failCount}건`,
+                        `Total ${report.totalItems}: ${report.passCount} passed · ${report.warningCount} warnings · ${report.failCount} failed`
+                      )}
                     </p>
                   </div>
                 </div>
@@ -206,7 +219,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
                   className="px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 self-end sm:self-center"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  다시 검사
+                  {tx('다시 검사', 'Re-run Check')}
                 </button>
               </div>
 
@@ -236,7 +249,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
                           className={`px-2 py-0.5 text-[11px] font-semibold rounded-md border inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${badge.textClass} ${badge.bgClass} ${badge.borderClass}`}
                         >
                           <StatusIcon status={item.status} className="w-3.5 h-3.5" />
-                          <span>{badge.label}</span>
+                          <span>{tx(badge.koLabel, badge.enLabel)}</span>
                         </span>
                       </div>
 
@@ -261,7 +274,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
                                 <span
                                   className={`text-[11px] font-semibold whitespace-nowrap shrink-0 ${subBadge.textClass}`}
                                 >
-                                  {subBadge.label}
+                                  {tx(subBadge.koLabel, subBadge.enLabel)}
                                 </span>
                               </div>
                             </div>
@@ -280,8 +293,14 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
         <div className="px-6 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 flex flex-wrap items-center justify-between gap-3 shrink-0">
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {report?.hasBlockingErrors
-              ? '오류 항목은 [프로필 내용 수정]에서 경로·비밀번호·드라이브 문자를 바로 보완할 수 있습니다.'
-              : '사전 검증은 시스템 설정을 변경하지 않고 현재 상태만 읽기 전용으로 확인합니다.'}
+              ? tx(
+                  '오류 항목은 [프로필 내용 수정]에서 경로·비밀번호·드라이브 문자를 바로 보완할 수 있습니다.',
+                  'Fix failed paths, passwords, or drive letters directly via [Edit Profile].'
+                )
+              : tx(
+                  '사전 검증은 시스템 설정을 변경하지 않고 현재 상태만 읽기 전용으로 확인합니다.',
+                  'Pre-flight check inspects the current state read-only without modifying system settings.'
+                )}
           </p>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0 ml-auto">
@@ -292,7 +311,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
               disabled={isChecking || isExecuting}
               className="px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer disabled:opacity-50"
             >
-              취소
+              {tx('취소', 'Cancel')}
             </button>
             <button
               id="btn-preflight-edit-profile"
@@ -302,7 +321,7 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
               className="px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
             >
               <Pencil className="w-3.5 h-3.5" />
-              프로필 내용 수정
+              {tx('프로필 내용 수정', 'Edit Profile')}
             </button>
             <button
               id="btn-preflight-confirm-apply"
@@ -317,14 +336,14 @@ export const LocationPreflightModal: React.FC<LocationPreflightModalProps> = ({
             >
               <Play className="w-3.5 h-3.5" />
               {!hasApplicableTargets
-                ? '적용할 항목 없음'
+                ? tx('적용할 항목 없음', 'No Items to Apply')
                 : report?.hasBlockingErrors && eligibleTargetCount === 0
-                  ? '오류 해결 후 적용 가능'
+                  ? tx('오류 해결 후 적용 가능', 'Resolve Errors First')
                   : report?.hasBlockingErrors
-                    ? '경고·오류 확인 후 일괄 적용 실행'
+                    ? tx('경고·오류 확인 후 일괄 적용 실행', 'Acknowledge & Batch Apply')
                     : report?.overallStatus === 'warning'
-                      ? '주의 확인 · 일괄 적용 실행'
-                      : '검증 완료 · 일괄 적용 실행'}
+                      ? tx('주의 확인 · 일괄 적용 실행', 'Confirm Warnings & Apply')
+                      : tx('검증 완료 · 일괄 적용 실행', 'Verified · Batch Apply')}
             </button>
           </div>
         </div>

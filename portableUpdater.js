@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { probeDirectoryWriteSafety } = require('./portableStore');
+const { pickLocaleText } = require('./localeHelper');
 
 const ALLOWED_GITHUB_REPO = 'ahbiyout-all/AhBiShare-OneClick';
 
@@ -27,6 +28,7 @@ function detectPortableRuntimeInfo({
   execPath = process.execPath,
   platform = process.platform,
   osBuild = 0,
+  locale = 'ko',
 } = {}) {
   const portableEnv = env && typeof env.PORTABLE_EXECUTABLE_FILE === 'string' ? env.PORTABLE_EXECUTABLE_FILE.trim() : '';
   const isPackaged = Boolean(app && app.isPackaged);
@@ -51,7 +53,11 @@ function detectPortableRuntimeInfo({
       portableExePath: '',
       portableDir: '',
       currentExeName: path.basename(execPath || ''),
-      reason: 'Windows 환경에서만 포터블 자동 교체를 지원합니다.',
+      reason: pickLocaleText(
+        locale,
+        'Windows 환경에서만 포터블 자동 교체를 지원합니다.',
+        'Portable self-replacement is supported on Windows only.'
+      ),
     };
   }
 
@@ -70,10 +76,14 @@ function detectPortableRuntimeInfo({
         portableExePath: resolvedExe,
         portableDir: resolvedDir,
         currentExeName,
-        reason: '현재 실행 중인 포터블 EXE 원본 경로를 찾을 수 없습니다.',
+        reason: pickLocaleText(
+          locale,
+          '현재 실행 중인 포터블 EXE 원본 경로를 찾을 수 없습니다.',
+          'Unable to locate the currently running portable EXE source path.'
+        ),
       };
     }
-    const writeProbe = probeDirectoryWriteSafety(resolvedDir);
+    const writeProbe = probeDirectoryWriteSafety(resolvedDir, locale);
     if (writeProbe.writable) {
       return {
         isPackaged,
@@ -100,7 +110,11 @@ function detectPortableRuntimeInfo({
       currentExeName,
       reason:
         writeProbe.writeError ||
-        '실행 중인 포터블 USB/폴더에 쓰기 권한이 없거나 쓰기 금지 상태여서 자동 교체를 실행할 수 없습니다.',
+        pickLocaleText(
+          locale,
+          '실행 중인 포터블 USB/폴더에 쓰기 권한이 없거나 쓰기 금지 상태여서 자동 교체를 실행할 수 없습니다.',
+          'The portable USB drive/folder lacks write permission or is write-protected, so auto-replacement cannot run.'
+        ),
     };
   }
 
@@ -115,7 +129,11 @@ function detectPortableRuntimeInfo({
       portableExePath: '',
       portableDir: '',
       currentExeName: path.basename(execPath || ''),
-      reason: '개발/미리보기 모드에서는 포터블 자동 교체가 비활성화됩니다.',
+      reason: pickLocaleText(
+        locale,
+        '개발/미리보기 모드에서는 포터블 자동 교체가 비활성화됩니다.',
+        'Portable self-replacement is disabled in development/preview mode.'
+      ),
     };
   }
 
@@ -129,7 +147,11 @@ function detectPortableRuntimeInfo({
     portableExePath: '',
     portableDir: path.dirname(execPath || ''),
     currentExeName: path.basename(execPath || ''),
-    reason: '설치형(Setup) 또는 비압축 폴더 실행 중이므로 포터블 자동 교체 대신 일반 다운로드를 사용하세요.',
+    reason: pickLocaleText(
+      locale,
+      '설치형(Setup) 또는 비압축 폴더 실행 중이므로 포터블 자동 교체 대신 일반 다운로드를 사용하세요.',
+      'Running as an installed (Setup) or unpacked build; please use the standard installer download instead of portable auto-replace.'
+    ),
   };
 }
 
@@ -210,19 +232,35 @@ function parseExpandedAssetsHtml(html, repoPath = ALLOWED_GITHUB_REPO) {
   return assets;
 }
 
-function validateDownloadedExecutable(filePath, expectedSize = 0) {
+function validateDownloadedExecutable(filePath, expectedSize = 0, locale = 'ko') {
   if (!filePath || !fs.existsSync(filePath)) {
-    return { valid: false, size: 0, error: '다운로드된 파일을 찾을 수 없습니다.' };
+    return {
+      valid: false,
+      size: 0,
+      error: pickLocaleText(locale, '다운로드된 파일을 찾을 수 없습니다.', 'Downloaded file not found.'),
+    };
   }
   const stat = fs.statSync(filePath);
   if (!stat.isFile() || stat.size < 1024) {
-    return { valid: false, size: stat.size, error: '다운로드된 실행 파일 크기가 비정상적으로 작습니다.' };
+    return {
+      valid: false,
+      size: stat.size,
+      error: pickLocaleText(
+        locale,
+        '다운로드된 실행 파일 크기가 비정상적으로 작습니다.',
+        'Downloaded executable file size is unexpectedly small.'
+      ),
+    };
   }
   if (expectedSize > 0 && stat.size !== expectedSize) {
     return {
       valid: false,
       size: stat.size,
-      error: `파일 크기 불일치 (${stat.size} / ${expectedSize} bytes)`,
+      error: pickLocaleText(
+        locale,
+        `파일 크기 불일치 (${stat.size} / ${expectedSize} bytes)`,
+        `File size mismatch (${stat.size} / ${expectedSize} bytes)`
+      ),
     };
   }
   const fd = fs.openSync(filePath, 'r');
@@ -230,7 +268,15 @@ function validateDownloadedExecutable(filePath, expectedSize = 0) {
     const header = Buffer.alloc(2);
     const readBytes = fs.readSync(fd, header, 0, 2, 0);
     if (readBytes < 2 || header[0] !== 0x4d || header[1] !== 0x5a) {
-      return { valid: false, size: stat.size, error: '유효한 Windows 실행 파일(PE/MZ) 형식이 아닙니다.' };
+      return {
+        valid: false,
+        size: stat.size,
+        error: pickLocaleText(
+          locale,
+          '유효한 Windows 실행 파일(PE/MZ) 형식이 아닙니다.',
+          'Not a valid Windows executable (PE/MZ) binary.'
+        ),
+      };
     }
   } finally {
     fs.closeSync(fd);

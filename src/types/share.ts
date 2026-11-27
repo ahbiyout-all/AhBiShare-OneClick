@@ -1,3 +1,9 @@
+export type AppLocale = 'ko' | 'en';
+export interface AppLocaleInfo {
+  osLocale: string;
+  detectedLocale: AppLocale;
+  currentLocale: AppLocale;
+}
 export type RoleMode = 'host' | 'client';
 export type AppSection = 'workspace' | 'matrix' | 'legacy' | 'logs' | 'rollback';
 export type AuthMode = 'guest' | 'account';

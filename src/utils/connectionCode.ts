@@ -1,4 +1,5 @@
 import { ActiveShare, ConnectionTokenPayload } from '@/types/share';
+import { tx } from '@/i18n/localeState';
 
 const TOKEN_PREFIX = 'ABSHARE://';
 const INVALID_SHARE_CHARS = /[\\/:*?"<>|]/;
@@ -26,37 +27,52 @@ function decodeUtf8Base64(b64: string): string {
 
 export function validateShareName(name: string): string | null {
   const trimmed = name.trim();
-  if (!trimmed) return '공유 폴더 이름을 입력하세요.';
+  if (!trimmed) return tx('공유 폴더 이름을 입력하세요.', 'Enter a shared folder name.');
   if (INVALID_SHARE_CHARS.test(trimmed)) {
-    return '공유 이름에는 \\ / : * ? " < > | 문자를 사용할 수 없습니다.';
+    return tx(
+      '공유 이름에는 \\ / : * ? " < > | 문자를 사용할 수 없습니다.',
+      'Share name cannot contain \\ / : * ? " < > | characters.'
+    );
   }
   if (trimmed.length > 80) {
-    return '공유 이름은 80자 이하로 입력하세요.';
+    return tx('공유 이름은 80자 이하로 입력하세요.', 'Share name must be 80 characters or less.');
   }
   return null;
 }
 
 export function validateFolderPath(folderPath: string): string | null {
   const trimmed = folderPath.trim().replace(/\//g, '\\');
-  if (!trimmed) return '공유할 로컬 폴더 경로를 입력하세요.';
+  if (!trimmed) return tx('공유할 로컬 폴더 경로를 입력하세요.', 'Enter a local folder path to share.');
   if (/^[A-Za-z]:\\*$/.test(trimmed)) {
-    return '드라이브 루트 전체(예: C:\\)는 직접 공유할 수 없습니다. 하위 폴더(예: C:\\AhBiShared)를 지정하세요.';
+    return tx(
+      '드라이브 루트 전체(예: C:\\)는 직접 공유할 수 없습니다. 하위 폴더(예: C:\\AhBiShared)를 지정하세요.',
+      'Entire drive roots (e.g., C:\\) cannot be shared directly. Specify a subfolder (e.g., C:\\AhBiShared).'
+    );
   }
   if (!/^[A-Za-z]:\\/.test(trimmed)) {
-    return '올바른 Windows 절대 경로를 입력하세요 (예: C:\\AhBiShared 또는 D:\\Work).';
+    return tx(
+      '올바른 Windows 절대 경로를 입력하세요 (예: C:\\AhBiShared 또는 D:\\Work).',
+      'Enter a valid Windows absolute path (e.g., C:\\AhBiShared or D:\\Work).'
+    );
   }
   const withoutDrive = trimmed.slice(2);
   if (/[*?"<>|:]/.test(withoutDrive)) {
-    return '폴더 경로에 사용할 수 없는 특수문자(: * ? " < > |)가 포함되어 있습니다.';
+    return tx(
+      '폴더 경로에 사용할 수 없는 특수문자(: * ? " < > |)가 포함되어 있습니다.',
+      'Folder path contains invalid characters (: * ? " < > |).'
+    );
   }
   return null;
 }
 
 export function validateTargetHost(host: string): string | null {
   const trimmed = host.trim();
-  if (!trimmed) return '대상 메인 PC의 IP 주소 또는 호스트 이름을 입력하세요.';
+  if (!trimmed) return tx('대상 메인 PC의 IP 주소 또는 호스트 이름을 입력하세요.', 'Enter the target host PC IP address or hostname.');
   if (/^-/.test(trimmed) || /[\x00-\x1f\\/:*?"<>|\s;&$`'(){}[\]!]/.test(trimmed)) {
-    return 'IP 주소 또는 호스트 이름에 공백이나 허용되지 않는 특수문자를 포함할 수 없습니다.';
+    return tx(
+      'IP 주소 또는 호스트 이름에 공백이나 허용되지 않는 특수문자를 포함할 수 없습니다.',
+      'IP address or hostname cannot contain spaces or disallowed special characters.'
+    );
   }
   return null;
 }
@@ -68,16 +84,25 @@ export function isValidIpv4Address(value: string): boolean {
 
 export function validateAccountUsername(username: string): string | null {
   const trimmed = username.trim();
-  if (!trimmed) return '보안 계정 모드에서는 전용 계정 ID를 입력해야 합니다.';
+  if (!trimmed) return tx('보안 계정 모드에서는 전용 계정 ID를 입력해야 합니다.', 'Account ID is required in Account Auth mode.');
   const lower = trimmed.toLowerCase();
   if (lower === 'guest' || lower === '게스트') {
-    return 'Windows 내장 Guest 계정은 보안 계정 모드에서 비활성화 및 네트워크 로그온이 차단됩니다. 무비밀번호 모드를 사용하거나 Visitor·AhBiShare 등 다른 전용 계정 ID를 입력하세요.';
+    return tx(
+      'Windows 내장 Guest 계정은 보안 계정 모드에서 비활성화 및 네트워크 로그온이 차단됩니다. 무비밀번호 모드를 사용하거나 Visitor·AhBiShare 등 다른 전용 계정 ID를 입력하세요.',
+      'The built-in Windows Guest account is disabled and blocked from network logon in Account mode. Use Guest mode or another dedicated account ID like Visitor or AhBiShare.'
+    );
   }
   if (/^-/.test(trimmed) || /["/\\[\]:;|=,+*?<>]/.test(trimmed)) {
-    return '전용 계정 ID에는 / \\ [ ] : ; | = , + * ? < > " 문자나 선두 하이픈(-)을 사용할 수 없습니다.';
+    return tx(
+      '전용 계정 ID에는 / \\ [ ] : ; | = , + * ? < > " 문자나 선두 하이픈(-)을 사용할 수 없습니다.',
+      'Account ID cannot contain / \\ [ ] : ; | = , + * ? < > " or a leading hyphen (-).'
+    );
   }
   if (trimmed.length > 20) {
-    return '전용 계정 ID는 Windows 호환성을 위해 20자 이하로 입력하세요.';
+    return tx(
+      '전용 계정 ID는 Windows 호환성을 위해 20자 이하로 입력하세요.',
+      'Account ID must be 20 characters or less for Windows compatibility.'
+    );
   }
   return null;
 }

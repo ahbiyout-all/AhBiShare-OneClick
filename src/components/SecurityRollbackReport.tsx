@@ -22,6 +22,8 @@ import {
   formatEraShortLabel,
   formatSecurityRollbackReportText,
 } from '@/services/networkEvolution';
+import { useI18n } from '@/i18n/I18nContext';
+import { tx } from '@/i18n/localeState';
 
 interface SecurityRollbackReportProps {
   netInfo: LocalNetworkInfo;
@@ -48,25 +50,25 @@ function statusMeta(status: SecurityRollbackAuditItem['status']): {
   switch (status) {
     case 'restored':
       return {
-        label: '복구 완료',
+        label: tx('복구 완료', 'Restored'),
         textClass: 'text-emerald-700 dark:text-emerald-300',
         Icon: CheckCircle2,
       };
     case 'partial':
       return {
-        label: '세부 확인',
+        label: tx('세부 확인', 'Review'),
         textClass: 'text-amber-700 dark:text-amber-300',
         Icon: AlertTriangle,
       };
     case 'unknown':
       return {
-        label: '미측정',
+        label: tx('미측정', 'Not Measured'),
         textClass: 'text-slate-500 dark:text-slate-400',
         Icon: HelpCircle,
       };
     case 'relaxed':
       return {
-        label: '완화 상태',
+        label: tx('완화 상태', 'Relaxed'),
         textClass: 'text-red-700 dark:text-red-300',
         Icon: ShieldAlert,
       };
@@ -120,6 +122,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
   onFullSecurityRollback,
   onNotify,
 }) => {
+  const { locale, tx: txLocal } = useI18n();
   const [filter, setFilter] = useState<AuditFilter>('all');
   const [isApplyingHardening, setIsApplyingHardening] = useState(false);
 
@@ -130,7 +133,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
       activeMountCount,
       targetHostSnapshot,
     });
-  }, [policyStatus, activeShareCount, activeMountCount, targetHostSnapshot]);
+  }, [policyStatus, activeShareCount, activeMountCount, targetHostSnapshot, locale]);
 
   const effectiveFilter: AuditFilter =
     filter === 'host_diff' && !targetHostSnapshot ? 'all' : filter;
@@ -182,8 +185,14 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
     }
     onNotify?.(
       copied
-        ? '보안 원복 10개 핵심 항목 검증 보고서를 클립보드에 복사했습니다.'
-        : '클립보드 복사에 실패했습니다. 화면의 10개 항목표를 확인해 주세요.'
+        ? txLocal(
+            '보안 원복 10개 핵심 항목 검증 보고서를 클립보드에 복사했습니다.',
+            'Copied 10-point security rollback verification report to clipboard.'
+          )
+        : txLocal(
+            '클립보드 복사에 실패했습니다. 화면의 10개 항목표를 확인해 주세요.',
+            'Failed to copy to clipboard. Please review the 10-point table on screen.'
+          )
     );
   };
 
@@ -224,25 +233,25 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
         <div className="space-y-1.5 min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <span className="font-semibold text-indigo-600 dark:text-indigo-400">
-              보안 원복 정밀 검증 보고서
+              {txLocal('보안 원복 정밀 검증 보고서', 'Security Rollback Audit Report')}
             </span>
             <span aria-hidden="true">·</span>
-            <span className="tabular-data">10개 핵심 정책 감사</span>
+            <span className="tabular-data">{txLocal('10개 핵심 정책 감사', '10-Point Policy Audit')}</span>
             <span aria-hidden="true">·</span>
             <span className="tabular-data">{netInfo.hostname}</span>
             {hasHostComparison && report?.targetHostName && (
               <>
                 <span aria-hidden="true">·</span>
                 <span className="tabular-data font-medium text-slate-700 dark:text-slate-300">
-                  호스트 비교: {report.targetHostName}
-                  {targetHostIsPreset ? ' (권장 기준)' : ''}
+                  {txLocal('호스트 비교:', 'Host Compare:')} {report.targetHostName}
+                  {targetHostIsPreset ? txLocal(' (권장 기준)', ' (Baseline)') : ''}
                 </span>
               </>
             )}
             {report && (
               <>
                 <span aria-hidden="true">·</span>
-                <span className="tabular-data">점검 {report.evaluatedAt}</span>
+                <span className="tabular-data">{txLocal(`점검 ${report.evaluatedAt}`, `Checked ${report.evaluatedAt}`)}</span>
               </>
             )}
           </div>
@@ -256,14 +265,17 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
               <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
             )}
             <h3 className="font-display text-base font-bold text-slate-900 dark:text-white tracking-tight">
-              {report ? report.headline : '보안 원복 상태 검사 대기 중'}
+              {report ? report.headline : txLocal('보안 원복 상태 검사 대기 중', 'Awaiting Security Rollback Inspection')}
             </h3>
           </div>
 
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
             {report
               ? report.summary
-              : '현재 PC의 SMB 서명·게스트 차단·LSA 빈 암호/익명 제한·NTLM·UAC 원격 토큰·프린터 RPC 및 임시 방화벽 정리 여부를 10개 항목으로 검증합니다.'}
+              : txLocal(
+                  '현재 PC의 SMB 서명·게스트 차단·LSA 빈 암호/익명 제한·NTLM·UAC 원격 토큰·프린터 RPC 및 임시 방화벽 정리 여부를 10개 항목으로 검증합니다.',
+                  'Audits 10 items on this PC: SMB signing, guest block, LSA blank-password/anonymous limits, NTLM, UAC remote token, printer RPC, and firewall cleanup.'
+                )}
           </p>
         </div>
 
@@ -277,7 +289,9 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
               className="px-3.5 py-2 text-xs font-bold text-white bg-slate-900 dark:bg-indigo-600 hover:bg-slate-800 dark:hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
             >
               <RotateCcw className={`w-3.5 h-3.5 ${isApplyingHardening ? 'animate-spin' : ''}`} />
-              {isApplyingHardening ? '표준 보안 복원 중...' : '미복구 항목 표준 보안 복원'}
+              {isApplyingHardening
+                ? txLocal('표준 보안 복원 중...', 'Restoring defaults...')
+                : txLocal('미복구 항목 표준 보안 복원', 'Harden Remaining Policies')}
             </button>
           )}
           {report && (
@@ -288,7 +302,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
               className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Copy className="w-3.5 h-3.5" />
-              보고서 복사
+              {txLocal('보고서 복사', 'Copy Report')}
             </button>
           )}
           <button
@@ -299,7 +313,9 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
             className="px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isInspecting ? 'animate-spin' : ''}`} />
-            {isInspecting ? '10개 항목 검사 중...' : '10개 항목 재검사'}
+            {isInspecting
+              ? txLocal('10개 항목 검사 중...', 'Inspecting 10 items...')
+              : txLocal('10개 항목 재검사', 'Re-Audit 10 Items')}
           </button>
         </div>
       </div>
@@ -307,7 +323,10 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
       {!report ? (
         <div className="px-6 py-8 text-center space-y-3">
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            아직 OS 네트워크 정책 검사 결과가 로드되지 않았습니다. 아래 버튼을 눌러 10개 보안 항목을 즉시 검증하세요.
+            {txLocal(
+              '아직 OS 네트워크 정책 검사 결과가 로드되지 않았습니다. 아래 버튼을 눌러 10개 보안 항목을 즉시 검증하세요.',
+              'OS network policy inspection results are not loaded yet. Click below to audit all 10 security items.'
+            )}
           </p>
           <button
             type="button"
@@ -316,7 +335,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
             className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isInspecting ? 'animate-spin' : ''}`} />
-            지금 10개 핵심 항목 검사
+            {txLocal('지금 10개 핵심 항목 검사', 'Inspect 10 Security Items Now')}
           </button>
         </div>
       ) : (
@@ -325,7 +344,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
           <div className="px-6 py-3 bg-slate-50/70 dark:bg-slate-950/35 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
               <span className="tabular-data font-bold text-emerald-700 dark:text-emerald-300">
-                보안 기본값 {report.passedCount} / {report.totalCount}
+                {txLocal(`보안 기본값 ${report.passedCount} / ${report.totalCount}`, `Secure Defaults ${report.passedCount} / ${report.totalCount}`)}
               </span>
               <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
                 |
@@ -337,7 +356,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
                     : 'text-slate-500 dark:text-slate-400'
                 }`}
               >
-                완화(미복구) {report.failedCount}건
+                {txLocal(`완화(미복구) ${report.failedCount}건`, `Relaxed ${report.failedCount}`)}
               </span>
               <span
                 className={`tabular-data font-semibold ${
@@ -346,7 +365,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
                     : 'text-slate-500 dark:text-slate-400'
                 }`}
               >
-                세부 확인 {report.partialCount}건
+                {txLocal(`세부 확인 ${report.partialCount}건`, `Review ${report.partialCount}`)}
               </span>
               {hasHostComparison && (
                 <>
@@ -362,9 +381,9 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
                           : 'text-emerald-700 dark:text-emerald-300'
                     }`}
                   >
-                    호스트 기대 정책 차이 {report.targetDiscrepancyCount ?? 0}건
+                    {txLocal(`호스트 기대 정책 차이 ${report.targetDiscrepancyCount ?? 0}건`, `Host Diffs ${report.targetDiscrepancyCount ?? 0}`)}
                     {(report.targetConflictCount ?? 0) > 0
-                      ? ` (충돌 ${report.targetConflictCount}건)`
+                      ? txLocal(` (충돌 ${report.targetConflictCount}건)`, ` (${report.targetConflictCount} conflict)`)
                       : ''}
                   </span>
                 </>
@@ -373,29 +392,31 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
                 |
               </span>
               <span className="tabular-data text-slate-600 dark:text-slate-400">
-                활성 공유 {report.activeShareCount}건 · 연결 드라이브 {report.activeMountCount}건 · 445 임시규칙{' '}
-                {report.hasAhbiFirewallRule ? '잔존' : '삭제됨'}
+                {txLocal(
+                  `활성 공유 ${report.activeShareCount}건 · 연결 드라이브 ${report.activeMountCount}건 · 445 임시규칙 ${report.hasAhbiFirewallRule ? '잔존' : '삭제됨'}`,
+                  `Shares ${report.activeShareCount} · Drives ${report.activeMountCount} · Temp 445 Rule: ${report.hasAhbiFirewallRule ? 'Present' : 'Removed'}`
+                )}
               </span>
             </div>
 
             <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
               {(
                 [
-                  { id: 'all', domId: 'security-audit-filter-all', label: `전체 (${report.totalCount})` },
+                  { id: 'all', domId: 'security-audit-filter-all', label: txLocal(`전체 (${report.totalCount})`, `All (${report.totalCount})`) },
                   ...(hasHostComparison
                     ? [
                         {
                           id: 'host_diff' as const,
                           domId: 'security-audit-filter-host-diff',
-                          label: `호스트 불일치 (${report.targetDiscrepancyCount ?? 0})`,
+                          label: txLocal(`호스트 불일치 (${report.targetDiscrepancyCount ?? 0})`, `Host Diff (${report.targetDiscrepancyCount ?? 0})`),
                         },
                       ]
                     : []),
-                  { id: 'restored', domId: 'security-audit-filter-restored', label: `복구 완료 (${report.passedCount})` },
+                  { id: 'restored', domId: 'security-audit-filter-restored', label: txLocal(`복구 완료 (${report.passedCount})`, `Restored (${report.passedCount})`) },
                   {
                     id: 'attention',
                     domId: 'security-audit-filter-attention',
-                    label: `미복구·확인 (${report.failedCount + report.partialCount})`,
+                    label: txLocal(`미복구·확인 (${report.failedCount + report.partialCount})`, `Attention (${report.failedCount + report.partialCount})`),
                   },
                 ] as const
               ).map((tab) => (
@@ -422,20 +443,20 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 font-semibold">
                   <th className="py-2.5 pl-6 pr-3 w-12 tabular-data">#</th>
-                  <th className="py-2.5 px-3">핵심 보안 항목 · 대상 호스트 불일치 배지</th>
-                  <th className="py-2.5 px-3">현재 측정값</th>
+                  <th className="py-2.5 px-3">{txLocal('핵심 보안 항목 · 대상 호스트 불일치 배지', 'Security Control · Host Match Badge')}</th>
+                  <th className="py-2.5 px-3">{txLocal('현재 측정값', 'Current Value')}</th>
                   <th className="py-2.5 px-3">
-                    {hasHostComparison ? '보안 기본값 / 호스트 기대' : '의도한 보안 기본값'}
+                    {hasHostComparison ? txLocal('보안 기본값 / 호스트 기대', 'Default / Host Expected') : txLocal('의도한 보안 기본값', 'Security Default')}
                   </th>
-                  <th className="py-2.5 px-3">보안 복구 판정</th>
-                  <th className="py-2.5 pl-3 pr-6">상세 검증 결과</th>
+                  <th className="py-2.5 px-3">{txLocal('보안 복구 판정', 'Status')}</th>
+                  <th className="py-2.5 pl-3 pr-6">{txLocal('상세 검증 결과', 'Audit Details')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {filteredItems.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-6 px-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                      선택한 필터 조건에 해당하는 항목이 없습니다.
+                      {txLocal('선택한 필터 조건에 해당하는 항목이 없습니다.', 'No items match the selected filter.')}
                     </td>
                   </tr>
                 ) : (
@@ -484,7 +505,7 @@ export const SecurityRollbackReport: React.FC<SecurityRollbackReportProps> = ({
                           <div>{item.expectedDefault}</div>
                           {hc && (
                             <div className="mt-0.5 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                              호스트 기대: {hc.expectedHostValue}
+                              {txLocal('호스트 기대:', 'Host expects:')} {hc.expectedHostValue}
                             </div>
                           )}
                         </td>

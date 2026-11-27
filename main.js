@@ -23,6 +23,12 @@ const {
   validateDownloadedExecutable,
   buildPortableSelfUpdatePsScript,
 } = require('./portableUpdater');
+const {
+  normalizeAppLocale,
+  detectSystemOsLocale,
+  pickLocaleText,
+  formatLocaleTime,
+} = require('./localeHelper');
 const APP_PKG_VERSION = (() => {
   try {
     return require('./package.json').version || '1.3.1';
@@ -32,7 +38,15 @@ const APP_PKG_VERSION = (() => {
 })();
 
 let mainWindow = null;
-const portableStore = createPortableStore({ env: process.env, app, baseDir: __dirname });
+let currentAppLocale = normalizeAppLocale(detectSystemOsLocale(app).detectedLocale);
+let hasRendererSyncedLocale = false;
+const L = (koText, enText) => pickLocaleText(currentAppLocale, koText, enText);
+const portableStore = createPortableStore({
+  env: process.env,
+  app,
+  baseDir: __dirname,
+  getLocale: () => currentAppLocale,
+});
 
 function createWindow() {
   const iconPath = path.join(__dirname, 'icon.ico');
@@ -77,19 +91,47 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (!hasRendererSyncedLocale) {
+    currentAppLocale = normalizeAppLocale(detectSystemOsLocale(app).detectedLocale);
+  }
   try {
     const st = portableStore.getStatus();
     portableStore.appendAppLog({
-      role: '시스템',
+      role: L('시스템', 'System'),
       hostName: os.hostname(),
       status: 'info',
-      summary: `AhBiShare OneClick v${APP_PKG_VERSION} 시작 (모드: ${st.mode}, 경로: ${st.directory})`,
+      summary: L(
+        `AhBiShare OneClick v${APP_PKG_VERSION} 시작 (모드: ${st.mode}, 경로: ${st.directory})`,
+        `AhBiShare OneClick v${APP_PKG_VERSION} started (mode: ${st.mode}, path: ${st.directory})`
+      ),
     });
   } catch {}
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+ipcMain.handle('get-app-locale-info', async () => {
+  const detected = detectSystemOsLocale(app);
+  if (!hasRendererSyncedLocale) {
+    currentAppLocale = normalizeAppLocale(detected.detectedLocale);
+  }
+  return {
+    osLocale: detected.osLocale,
+    detectedLocale: detected.detectedLocale,
+    currentLocale: currentAppLocale,
+  };
+});
+
+ipcMain.handle('set-app-locale', async (_event, payload) => {
+  const nextLocale = normalizeAppLocale(payload?.locale);
+  currentAppLocale = nextLocale;
+  hasRendererSyncedLocale = true;
+  return {
+    success: true,
+    currentLocale: currentAppLocale,
+  };
 });
 
 app.on('window-all-closed', () => {
@@ -199,7 +241,10 @@ function executePowerShellScript(script, timeoutMs = 45000) {
       cleanupTmp();
       const partialOut = decodeWindowsBuffer(Buffer.concat(outChunks)).trim();
       const partialErr = decodeWindowsBuffer(Buffer.concat(errChunks)).trim();
-      const timeoutMsg = `PowerShell execution timed out after ${Math.round(timeoutMs / 1000)}s`;
+      const timeoutMsg = L(
+        `PowerShell 실행 제한 시간(${Math.round(timeoutMs / 1000)}초) 초과`,
+        `PowerShell execution timed out after ${Math.round(timeoutMs / 1000)}s`
+      );
       const finalTimeoutErr = partialErr ? `${timeoutMsg} (${partialErr.slice(0, 220)})` : timeoutMsg;
       try {
         portableStore.appendAppLog({
@@ -234,7 +279,10 @@ function executePowerShellScript(script, timeoutMs = 45000) {
             role: 'PowerShell',
             hostName: os.hostname(),
             status: 'error',
-            summary: `PowerShell 종료 코드 ${code}: ${(error || output || '오류 세부 내용 없음').slice(0, 320)}`,
+            summary: L(
+              `PowerShell 종료 코드 ${code}: ${(error || output || '오류 세부 내용 없음').slice(0, 320)}`,
+              `PowerShell exit code ${code}: ${(error || output || 'No error details').slice(0, 320)}`
+            ),
           });
         } catch {}
       }
@@ -273,7 +321,7 @@ ipcMain.handle('select-folder', async () => {
   const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
   const dialogOptions = {
     properties: ['openDirectory', 'createDirectory'],
-    title: '공유할 폴더 선택',
+    title: L('공유할 폴더 선택', 'Select Folder to Share'),
   };
   const result = win
     ? await dialog.showOpenDialog(win, dialogOptions)
@@ -601,7 +649,7 @@ ipcMain.handle('scan-lan-peers', async (_event, { subnetPrefix }) => {
       smbPortOpen: true,
       availableShares: shares,
       authModeHint,
-      lastSeen: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      lastSeen: formatLocaleTime(currentAppLocale),
     };
   }
 
@@ -668,8 +716,8 @@ ipcMain.handle('ping-host', async (_event, { target }) => {
       maxLatencyMs: null,
       packetLossPct: 100,
       smbPortOpen: false,
-      detail: '유효하지 않은 IP 주소 또는 호스트 이름입니다.',
-      checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+      detail: L('유효하지 않은 IP 주소 또는 호스트 이름입니다.', 'Invalid IP address or host name.'),
+      checkedAt: formatLocaleTime(currentAppLocale),
     };
   }
 
@@ -694,13 +742,25 @@ ipcMain.handle('ping-host', async (_event, { target }) => {
 
   let detail = '';
   if (pingStats.reachable && smbProbe.open) {
-    detail = `호스트 응답(${avgLatencyMs}ms) 및 SMB 포트 445 개방 확인 — 즉시 연결 가능합니다.`;
+    detail = L(
+      `호스트 응답(${avgLatencyMs}ms) 및 SMB 포트 445 개방 확인 — 즉시 연결 가능합니다.`,
+      `Host responded (${avgLatencyMs}ms) and SMB port 445 is open — ready to connect.`
+    );
   } else if (pingStats.reachable && !smbProbe.open) {
-    detail = `호스트 Ping(${avgLatencyMs}ms)은 정상이나 TCP 445가 닫혀 있습니다. 메인 PC에서 [원클릭 공유폴더 개설]을 실행하세요.`;
+    detail = L(
+      `호스트 Ping(${avgLatencyMs}ms)은 정상이나 TCP 445가 닫혀 있습니다. 메인 PC에서 [원클릭 공유폴더 개설]을 실행하세요.`,
+      `Host ping (${avgLatencyMs}ms) succeeded, but TCP 445 is closed. Run [One-Click Share Setup] on the host PC.`
+    );
   } else if (!pingStats.reachable && smbProbe.open) {
-    detail = `ICMP Ping은 방화벽에서 차단되었으나 SMB 포트 445(${smbProbe.latencyMs}ms)가 응답하여 연결 가능합니다.`;
+    detail = L(
+      `ICMP Ping은 방화벽에서 차단되었으나 SMB 포트 445(${smbProbe.latencyMs}ms)가 응답하여 연결 가능합니다.`,
+      `ICMP ping is blocked by firewall, but SMB port 445 (${smbProbe.latencyMs}ms) is open and reachable.`
+    );
   } else {
-    detail = `대상 PC(${cleanTarget})에 연결할 수 없습니다. 전원, 동일 LAN/Wi-Fi 대역 및 IP를 확인하세요.`;
+    detail = L(
+      `대상 PC(${cleanTarget})에 연결할 수 없습니다. 전원, 동일 LAN/Wi-Fi 대역 및 IP를 확인하세요.`,
+      `Cannot reach target PC (${cleanTarget}). Check power, same LAN/Wi-Fi subnet, and IP address.`
+    );
   }
 
   return {
@@ -713,7 +773,7 @@ ipcMain.handle('ping-host', async (_event, { target }) => {
     packetLossPct: pingStats.packetLossPct,
     smbPortOpen: smbProbe.open,
     detail,
-    checkedAt: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+    checkedAt: formatLocaleTime(currentAppLocale),
   };
 });
 
@@ -781,34 +841,109 @@ ipcMain.handle('open-backup-folder', async () => {
     };
   });
   if (!dirRes?.directory) {
-    return { success: false, directory: '', message: '백업 폴더 경로를 확인할 수 없습니다.' };
+    return {
+      success: false,
+      directory: '',
+      message: L('백업 폴더 경로를 확인할 수 없습니다.', 'Could not resolve backup folder path.'),
+    };
   }
   const errMsg = await shell.openPath(dirRes.directory);
   return {
     success: !errMsg,
     directory: dirRes.directory,
     message: errMsg
-      ? `백업 폴더를 열지 못했습니다: ${errMsg}`
-      : `Windows 탐색기에서 백업 폴더를 열었습니다: ${dirRes.directory}`,
+      ? L(`백업 폴더를 열지 못했습니다: ${errMsg}`, `Failed to open backup folder: ${errMsg}`)
+      : L(
+          `Windows 탐색기에서 백업 폴더를 열었습니다: ${dirRes.directory}`,
+          `Opened backup folder in Windows Explorer: ${dirRes.directory}`
+        ),
+  };
+});
+
+ipcMain.handle('open-license-folder', async () => {
+  const candidates = Array.from(
+    new Set(
+      [
+        process.resourcesPath || '',
+        process.execPath ? path.dirname(process.execPath) : '',
+        __dirname,
+        process.cwd(),
+      ].filter(Boolean)
+    )
+  );
+  const docNames = ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md'];
+  let matchedDir = '';
+  let filesFound = [];
+  for (const dir of candidates) {
+    const found = docNames.filter((name) => fs.existsSync(path.join(dir, name)));
+    if (found.length > 0) {
+      matchedDir = dir;
+      filesFound = found;
+      break;
+    }
+  }
+  if (!matchedDir) {
+    return {
+      success: false,
+      directory: '',
+      filesFound: [],
+      message: L(
+        '패키징된 라이선스 문서 경로를 찾을 수 없습니다.',
+        'Could not locate packaged license documentation directory.'
+      ),
+    };
+  }
+  const errMsg = await shell.openPath(matchedDir);
+  return {
+    success: !errMsg,
+    directory: matchedDir,
+    filesFound,
+    message: errMsg
+      ? L(`라이선스 폴더를 열지 못했습니다: ${errMsg}`, `Failed to open license folder: ${errMsg}`)
+      : L(
+          `라이선스 문서 폴더를 열었습니다 (${filesFound.join(', ')}): ${matchedDir}`,
+          `Opened packaged license folder (${filesFound.join(', ')}): ${matchedDir}`
+        ),
   };
 });
 
 ipcMain.handle('trigger-system-reboot', async () => {
   if (process.platform !== 'win32') {
-    return { success: false, message: 'Windows 환경에서만 시스템 재부팅을 실행할 수 있습니다.' };
+    return {
+      success: false,
+      message: L(
+        'Windows 환경에서만 시스템 재부팅을 실행할 수 있습니다.',
+        'System reboot is only supported on Windows.'
+      ),
+    };
   }
   return new Promise((resolve) => {
     execFile(
       'shutdown.exe',
-      ['/r', '/t', '5', '/c', 'AhBiShare OneClick 네트워크 정책 변경 적용을 위해 5초 후 재부팅합니다.'],
+      [
+        '/r',
+        '/t',
+        '5',
+        '/c',
+        L(
+          'AhBiShare OneClick 네트워크 정책 변경 적용을 위해 5초 후 재부팅합니다.',
+          'AhBiShare OneClick will reboot in 5 seconds to apply network policy changes.'
+        ),
+      ],
       { encoding: 'buffer', windowsHide: true },
       (err, _stdout, stderrBuf) => {
         if (err) {
           const msg = decodeWindowsBuffer(stderrBuf) || err.message;
-          resolve({ success: false, message: `재부팅 예약 실패: ${msg}` });
+          resolve({
+            success: false,
+            message: L(`재부팅 예약 실패: ${msg}`, `Failed to schedule reboot: ${msg}`),
+          });
           return;
         }
-        resolve({ success: true, message: '5초 후 Windows가 재부팅됩니다.' });
+        resolve({
+          success: true,
+          message: L('5초 후 Windows가 재부팅됩니다.', 'Windows will reboot in 5 seconds.'),
+        });
       }
     );
   });
@@ -818,7 +953,12 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
   const folderName = String(payload?.folderName || 'AhBiShare_Legacy_Win7_Win8_Kit').replace(/[^A-Za-z0-9_.-]/g, '') || 'AhBiShare_Legacy_Win7_Win8_Kit';
   const files = Array.isArray(payload?.files) ? payload.files : [];
   if (files.length === 0) {
-    return { success: false, directory: '', savedFiles: [], message: '저장할 스크립트 파일 목록이 비어 있습니다.' };
+    return {
+      success: false,
+      directory: '',
+      savedFiles: [],
+      message: L('저장할 스크립트 파일 목록이 비어 있습니다.', 'The script file list to save is empty.'),
+    };
   }
 
   const portStatus = portableStore.getStatus();
@@ -828,11 +968,19 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
     const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
     const pickerOpts = {
       properties: ['openDirectory', 'createDirectory'],
-      title: 'Win 7·8·8.1 스크립트 패키지를 저장할 쓰기 가능한 USB/폴더 선택',
+      title: L(
+        'Win 7·8·8.1 스크립트 패키지를 저장할 쓰기 가능한 USB/폴더 선택',
+        'Select a writable USB/folder to save the Win 7/8/8.1 script package'
+      ),
     };
     const picked = win ? await dialog.showOpenDialog(win, pickerOpts) : await dialog.showOpenDialog(pickerOpts);
     if (picked.canceled || !picked.filePaths.length) {
-      return { success: false, directory: '', savedFiles: [], message: '저장할 폴더 선택이 취소되었습니다.' };
+      return {
+        success: false,
+        directory: '',
+        savedFiles: [],
+        message: L('저장할 폴더 선택이 취소되었습니다.', 'Folder selection was cancelled.'),
+      };
     }
     baseDir = picked.filePaths[0];
   }
@@ -845,12 +993,12 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
       success: false,
       directory: '',
       savedFiles: [],
-      message: '허용되지 않은 저장 폴더 경로입니다.',
+      message: L('허용되지 않은 저장 폴더 경로입니다.', 'Disallowed destination folder path.'),
     };
   }
   try {
     fs.mkdirSync(targetDir, { recursive: true });
-    const targetProbe = probeDirectoryWriteSafety(targetDir);
+    const targetProbe = probeDirectoryWriteSafety(targetDir, currentAppLocale);
     if (!targetProbe.writable) {
       return {
         success: false,
@@ -859,7 +1007,10 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
         writeProtected: Boolean(targetProbe.writeProtected),
         message:
           targetProbe.writeError ||
-          '선택한 USB/폴더가 쓰기 금지(읽기 전용) 상태이므로 스크립트 파일을 저장할 수 없습니다.',
+          L(
+            '선택한 USB/폴더가 쓰기 금지(읽기 전용) 상태이므로 스크립트 파일을 저장할 수 없습니다.',
+            'Selected USB/folder is write-protected (read-only), so script files cannot be saved.'
+          ),
       };
     }
 
@@ -875,14 +1026,16 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
       const fileBuf = safeName.toLowerCase().endsWith('.reg')
         ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(rawContent, 'utf16le')])
         : Buffer.from(rawContent, 'utf8');
-      const writeRes = atomicWriteBuffer(outPath, fileBuf);
+      const writeRes = atomicWriteBuffer(outPath, fileBuf, currentAppLocale);
       if (!writeRes.success) {
         return {
           success: false,
           directory: targetDir,
           savedFiles,
           writeProtected: Boolean(writeRes.writeProtected),
-          message: writeRes.error || '스크립트 파일 저장에 실패했습니다.',
+          message:
+            writeRes.error ||
+            L('스크립트 파일 저장에 실패했습니다.', 'Failed to save script file.'),
         };
       }
       savedFiles.push(outPath);
@@ -892,17 +1045,24 @@ ipcMain.handle('save-legacy-scripts', async (_event, payload) => {
         success: false,
         directory: targetDir,
         savedFiles: [],
-        message: '저장 가능한 유효한 스크립트 파일이 없습니다.',
+        message: L('저장 가능한 유효한 스크립트 파일이 없습니다.', 'No valid script files to save.'),
       };
     }
     return {
       success: true,
       directory: targetDir,
       savedFiles,
-      message: `USB 폴더(${targetDir})에 적용·원복 스크립트 ${savedFiles.length}개를 안전하게 저장했습니다.`,
+      message: L(
+        `USB 폴더(${targetDir})에 적용·원복 스크립트 ${savedFiles.length}개를 안전하게 저장했습니다.`,
+        `Safely saved ${savedFiles.length} apply/rollback scripts to USB folder (${targetDir}).`
+      ),
     };
   } catch (err) {
-    const classified = classifyUsbWriteError(err, '스크립트 파일 저장');
+    const classified = classifyUsbWriteError(
+      err,
+      L('스크립트 파일 저장', 'Save script files'),
+      currentAppLocale
+    );
     return {
       success: false,
       directory: targetDir,
@@ -940,32 +1100,47 @@ ipcMain.handle('export-location-profile-file', async (_event, { profile }) => {
     const defaultName = `${diskProfile.profileId}.location.json`;
     const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
     const saveOpts = {
-      title: '사용장소 프로필(.json) 내보내기',
+      title: L('사용장소 프로필(.json) 내보내기', 'Export Location Profile (.json)'),
       defaultPath: path.join(defaultDir, defaultName),
-      filters: [{ name: 'AhBiShare 사용장소 프로필 (*.json)', extensions: ['json'] }],
+      filters: [
+        {
+          name: L('AhBiShare 사용장소 프로필 (*.json)', 'AhBiShare Location Profile (*.json)'),
+          extensions: ['json'],
+        },
+      ],
     };
     const picked = win ? await dialog.showSaveDialog(win, saveOpts) : await dialog.showSaveDialog(saveOpts);
     if (picked.canceled || !picked.filePath) {
-      return { success: false, canceled: true, message: '프로필 파일 내보내기가 취소되었습니다.' };
+      return {
+        success: false,
+        canceled: true,
+        message: L('프로필 파일 내보내기가 취소되었습니다.', 'Profile file export was cancelled.'),
+      };
     }
-    const writeRes = atomicWriteJson(picked.filePath, diskProfile);
+    const writeRes = atomicWriteJson(picked.filePath, diskProfile, currentAppLocale);
     if (!writeRes.success) {
       return {
         success: false,
         writeProtected: Boolean(writeRes.writeProtected),
         error: writeRes.error,
-        message: `파일 저장 실패: ${writeRes.error}`,
+        message: L(`파일 저장 실패: ${writeRes.error}`, `File save failed: ${writeRes.error}`),
       };
     }
     return {
       success: true,
       filePath: picked.filePath,
-      message: `사용장소 '${diskProfile.locationName}' 프로필을 파일로 내보냈습니다.`,
+      message: L(
+        `사용장소 '${diskProfile.locationName}' 프로필을 파일로 내보냈습니다.`,
+        `Exported location profile '${diskProfile.locationName}' to file.`
+      ),
     };
   } catch (err) {
     return {
       success: false,
-      message: `사용장소 내보내기 실패: ${err && err.message ? err.message : '알 수 없는 오류'}`,
+      message: L(
+        `사용장소 내보내기 실패: ${err && err.message ? err.message : '알 수 없는 오류'}`,
+        `Location export failed: ${err && err.message ? err.message : 'Unknown error'}`
+      ),
     };
   }
 });
@@ -977,14 +1152,23 @@ ipcMain.handle('import-location-profile-file', async (_event, payload) => {
     const defaultDir = path.join(portStatus.directory, 'locations');
     const win = BrowserWindow.getFocusedWindow() || (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
     const openOpts = {
-      title: '사용장소 프로필(.json) 불러오기',
+      title: L('사용장소 프로필(.json) 불러오기', 'Import Location Profile (.json)'),
       ...(fs.existsSync(defaultDir) ? { defaultPath: defaultDir } : {}),
       properties: ['openFile'],
-      filters: [{ name: 'AhBiShare 사용장소 프로필 (*.json)', extensions: ['json'] }],
+      filters: [
+        {
+          name: L('AhBiShare 사용장소 프로필 (*.json)', 'AhBiShare Location Profile (*.json)'),
+          extensions: ['json'],
+        },
+      ],
     };
     const picked = win ? await dialog.showOpenDialog(win, openOpts) : await dialog.showOpenDialog(openOpts);
     if (picked.canceled || !picked.filePaths.length) {
-      return { success: false, canceled: true, message: '프로필 파일 선택이 취소되었습니다.' };
+      return {
+        success: false,
+        canceled: true,
+        message: L('프로필 파일 선택이 취소되었습니다.', 'Profile file selection was cancelled.'),
+      };
     }
     const selectedPath = picked.filePaths[0];
     const raw = fs.readFileSync(selectedPath, 'utf8').replace(/^\uFEFF/, '');
@@ -1008,12 +1192,18 @@ ipcMain.handle('import-location-profile-file', async (_event, payload) => {
       filePath: selectedPath,
       savedToCatalog,
       ...(saveError ? { saveError } : {}),
-      message: `사용장소 '${resultProfile.locationName}' 프로필을 가져왔습니다.`,
+      message: L(
+        `사용장소 '${resultProfile.locationName}' 프로필을 가져왔습니다.`,
+        `Imported location profile '${resultProfile.locationName}'.`
+      ),
     };
   } catch (err) {
     return {
       success: false,
-      message: `사용장소 파일 불러오기 실패: ${err && err.message ? err.message : '올바른 JSON 프로필이 아닙니다.'}`,
+      message: L(
+        `사용장소 파일 불러오기 실패: ${err && err.message ? err.message : '올바른 JSON 프로필이 아닙니다.'}`,
+        `Location file import failed: ${err && err.message ? err.message : 'Invalid JSON profile.'}`
+      ),
     };
   }
 });
@@ -1129,7 +1319,7 @@ ipcMain.handle('check-github-updates', async () => {
           release: {
             tagName,
             name: String(data.name || tagName),
-            body: String(data.body || '새로운 업데이트가 출시되었습니다.'),
+            body: String(data.body || L('새로운 업데이트가 출시되었습니다.', 'A new update is available.')),
             htmlUrl: String(data.html_url || 'https://github.com/ahbiyout-all/AhBiShare-OneClick/releases'),
             publishedAt: String(data.published_at || ''),
             assets,
@@ -1171,7 +1361,10 @@ ipcMain.handle('check-github-updates', async () => {
               .replace(/\n{3,}/g, '\n\n')
               .replace(/[ \t]{2,}/g, ' ')
               .trim()
-          : 'GitHub Releases 페이지에서 최신 릴리즈 상세 내역 및 설치 파일을 확인할 수 있습니다.';
+          : L(
+              'GitHub Releases 페이지에서 최신 릴리즈 상세 내역 및 설치 파일을 확인할 수 있습니다.',
+              'You can view the latest release details and installers on the GitHub Releases page.'
+            );
         if (tagName) {
           let fallbackAssets = [];
           try {
@@ -1186,7 +1379,7 @@ ipcMain.handle('check-github-updates', async () => {
             release: {
               tagName,
               name: rawTitle || tagName,
-              body: bodyText || '새로운 업데이트가 출시되었습니다.',
+              body: bodyText || L('새로운 업데이트가 출시되었습니다.', 'A new update is available.'),
               htmlUrl,
               publishedAt: updatedMatch ? updatedMatch[1].trim() : '',
               assets: fallbackAssets,
@@ -1198,22 +1391,34 @@ ipcMain.handle('check-github-updates', async () => {
       }
     }
   } catch (err) {
-    return { ok: false, error: err && err.message ? err.message : 'GitHub 릴리즈 조회 실패' };
+    return {
+      ok: false,
+      error: err && err.message ? err.message : L('GitHub 릴리즈 조회 실패', 'Failed to query GitHub releases'),
+    };
   }
 
-  return { ok: false, error: 'GitHub 최신 릴리즈 정보를 불러오지 못했습니다.' };
+  return {
+    ok: false,
+    error: L('GitHub 최신 릴리즈 정보를 불러오지 못했습니다.', 'Could not load the latest GitHub release info.'),
+  };
 });
 
 ipcMain.handle('open-external-url', async (_event, { url }) => {
   const safeUrl = String(url || '').trim();
   if (!/^https?:\/\//i.test(safeUrl)) {
-    return { success: false, error: '허용되지 않은 외부 URL 형식입니다.' };
+    return {
+      success: false,
+      error: L('허용되지 않은 외부 URL 형식입니다.', 'Disallowed external URL format.'),
+    };
   }
   try {
     await shell.openExternal(safeUrl);
     return { success: true };
   } catch (err) {
-    return { success: false, error: err && err.message ? err.message : '외부 브라우저 열기에 실패했습니다.' };
+    return {
+      success: false,
+      error: err && err.message ? err.message : L('외부 브라우저 열기에 실패했습니다.', 'Failed to open external browser.'),
+    };
   }
 });
 
@@ -1231,11 +1436,11 @@ function emitUpdateProgress(payload) {
 function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, onProgress, stateRef, redirectsLeft = 6) {
   return new Promise((resolve, reject) => {
     if (stateRef.cancelled) {
-      reject(new Error('사용자에 의해 다운로드가 취소되었습니다.'));
+      reject(new Error(L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.')));
       return;
     }
     if (!isAllowedGitHubDownloadUrl(urlString)) {
-      reject(new Error('허용되지 않은 업데이트 다운로드 URL입니다.'));
+      reject(new Error(L('허용되지 않은 업데이트 다운로드 URL입니다.', 'Disallowed update download URL.')));
       return;
     }
 
@@ -1256,7 +1461,7 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
           res.resume();
           if (redirectsLeft <= 0) {
             settled = true;
-            reject(new Error('리다이렉트 횟수를 초과했습니다.'));
+            reject(new Error(L('리다이렉트 횟수를 초과했습니다.', 'Too many download redirects.')));
             return;
           }
           let nextUrl = '';
@@ -1264,7 +1469,7 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
             nextUrl = new URL(res.headers.location, urlString).toString();
           } catch {
             settled = true;
-            reject(new Error('잘못된 리다이렉트 URL입니다.'));
+            reject(new Error(L('잘못된 리다이렉트 URL입니다.', 'Invalid redirect URL.')));
             return;
           }
           settled = true;
@@ -1278,7 +1483,7 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
         if (status < 200 || status >= 300) {
           res.resume();
           settled = true;
-          reject(new Error(`다운로드 HTTP 오류 (${status})`));
+          reject(new Error(L(`다운로드 HTTP 오류 (${status})`, `Download HTTP error (${status})`)));
           return;
         }
 
@@ -1314,7 +1519,7 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
 
         res.on('data', (chunk) => {
           if (stateRef.cancelled) {
-            failWithClose(new Error('사용자에 의해 다운로드가 취소되었습니다.'));
+            failWithClose(new Error(L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.')));
             return;
           }
           downloadedBytes += chunk.length;
@@ -1328,14 +1533,22 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
 
         res.on('aborted', () => {
           failWithClose(
-            new Error(stateRef.cancelled ? '사용자에 의해 다운로드가 취소되었습니다.' : '다운로드 연결이 중단되었습니다.')
+            new Error(
+              stateRef.cancelled
+                ? L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.')
+                : L('다운로드 연결이 중단되었습니다.', 'Download connection was aborted.')
+            )
           );
         });
 
         res.on('close', () => {
           if (!settled && !res.complete) {
             failWithClose(
-              new Error(stateRef.cancelled ? '사용자에 의해 다운로드가 취소되었습니다.' : '다운로드가 완료되기 전에 연결이 종료되었습니다.')
+              new Error(
+                stateRef.cancelled
+                  ? L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.')
+                  : L('다운로드가 완료되기 전에 연결이 종료되었습니다.', 'Connection closed before download completed.')
+              )
             );
           }
         });
@@ -1348,12 +1561,12 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
             if (settled) return;
             if (stateRef.cancelled) {
               settled = true;
-              reject(new Error('사용자에 의해 다운로드가 취소되었습니다.'));
+              reject(new Error(L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.')));
               return;
             }
             if (!res.complete) {
               settled = true;
-              reject(new Error('다운로드 스트림이 불완전하게 종료되었습니다.'));
+              reject(new Error(L('다운로드 스트림이 불완전하게 종료되었습니다.', 'Download stream ended incomplete.')));
               return;
             }
             settled = true;
@@ -1367,12 +1580,12 @@ function downloadFileHttpsWithProgress(urlString, destFilePath, expectedSize, on
 
     stateRef.req = req;
     req.on('timeout', () => {
-      req.destroy(new Error('업데이트 파일 다운로드 응답 시간이 초과되었습니다.'));
+      req.destroy(new Error(L('업데이트 파일 다운로드 응답 시간이 초과되었습니다.', 'Update file download timed out.')));
     });
     req.on('error', (err) => {
       if (settled) return;
       settled = true;
-      reject(stateRef.cancelled ? new Error('사용자에 의해 다운로드가 취소되었습니다.') : err);
+      reject(stateRef.cancelled ? new Error(L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.')) : err);
     });
   });
 }
@@ -1384,6 +1597,7 @@ ipcMain.handle('get-update-runtime-info', async () => {
     app,
     execPath: process.execPath,
     osBuild: osInfo.osBuild,
+    locale: currentAppLocale,
   });
 });
 
@@ -1409,14 +1623,17 @@ ipcMain.handle('cancel-portable-update', async () => {
     percent: 0,
     downloadedBytes: 0,
     totalBytes: 0,
-    message: '업데이트 다운로드가 취소되었습니다.',
+    message: L('업데이트 다운로드가 취소되었습니다.', 'Update download was cancelled.'),
   });
   return { success: true, cancelled: true };
 });
 
 ipcMain.handle('install-portable-update', async (_event, payload) => {
   if (activeUpdateDownload || isPortableReplacementQueued) {
-    return { success: false, error: '이미 업데이트 다운로드 또는 교체가 진행 중입니다.' };
+    return {
+      success: false,
+      error: L('이미 업데이트 다운로드 또는 교체가 진행 중입니다.', 'An update download or replacement is already in progress.'),
+    };
   }
 
   const osInfo = getWindowsOsDetails();
@@ -1425,12 +1642,18 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
     app,
     execPath: process.execPath,
     osBuild: osInfo.osBuild,
+    locale: currentAppLocale,
   });
 
   if (!runtime.canSelfReplace || !runtime.portableExePath) {
     return {
       success: false,
-      error: runtime.reason || '포터블 EXE 실행 환경이 아니므로 자동 교체를 실행할 수 없습니다.',
+      error:
+        runtime.reason ||
+        L(
+          '포터블 EXE 실행 환경이 아니므로 자동 교체를 실행할 수 없습니다.',
+          'Auto-replacement is unavailable outside a portable EXE environment.'
+        ),
     };
   }
 
@@ -1439,10 +1662,16 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
   const expectedSize = Number(payload?.expectedSize) || 0;
 
   if (!isAllowedGitHubDownloadUrl(downloadUrl)) {
-    return { success: false, error: '신뢰할 수 있는 GitHub 공식 릴리즈 다운로드 주소가 아닙니다.' };
+    return {
+      success: false,
+      error: L('신뢰할 수 있는 GitHub 공식 릴리즈 다운로드 주소가 아닙니다.', 'Not a trusted official GitHub Release download URL.'),
+    };
   }
   if (!safeAssetName || safeAssetName.toLowerCase().includes('setup')) {
-    return { success: false, error: '포터블 교체용 실행 파일(.exe)만 자동 교체를 지원합니다.' };
+    return {
+      success: false,
+      error: L('포터블 교체용 실행 파일(.exe)만 자동 교체를 지원합니다.', 'Auto-replacement only supports portable executable (.exe) files.'),
+    };
   }
 
   let stagingDir = '';
@@ -1480,7 +1709,7 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       percent: 0,
       downloadedBytes: 0,
       totalBytes: expectedSize,
-      message: `${safeAssetName} 내려받는 중...`,
+      message: L(`${safeAssetName} 내려받는 중...`, `Downloading ${safeAssetName}...`),
     });
 
     const dlRes = await downloadFileHttpsWithProgress(
@@ -1493,7 +1722,10 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
           percent,
           downloadedBytes,
           totalBytes,
-          message: totalBytes > 0 ? `${safeAssetName} 내려받는 중... (${percent}%)` : `${safeAssetName} 내려받는 중...`,
+          message:
+            totalBytes > 0
+              ? L(`${safeAssetName} 내려받는 중... (${percent}%)`, `Downloading ${safeAssetName}... (${percent}%)`)
+              : L(`${safeAssetName} 내려받는 중...`, `Downloading ${safeAssetName}...`),
         });
       },
       downloadState
@@ -1501,7 +1733,11 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
 
     if (downloadState.cancelled) {
       cleanupStaging();
-      return { success: false, cancelled: true, error: '사용자에 의해 다운로드가 취소되었습니다.' };
+      return {
+        success: false,
+        cancelled: true,
+        error: L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.'),
+      };
     }
 
     emitUpdateProgress({
@@ -1509,10 +1745,13 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       percent: 100,
       downloadedBytes: dlRes.downloadedBytes,
       totalBytes: dlRes.totalBytes || dlRes.downloadedBytes,
-      message: '다운로드 파일 무결성(PE 실행 헤더) 검증 중...',
+      message: L(
+        '다운로드 파일 무결성(PE 실행 헤더) 검증 중...',
+        'Verifying downloaded file integrity (PE executable header)...'
+      ),
     });
 
-    const verifyRes = validateDownloadedExecutable(partFilePath, dlRes.totalBytes || expectedSize);
+    const verifyRes = validateDownloadedExecutable(partFilePath, dlRes.totalBytes || expectedSize, currentAppLocale);
     if (!verifyRes.valid) {
       cleanupStaging();
       emitUpdateProgress({
@@ -1520,9 +1759,12 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
         percent: 0,
         downloadedBytes: dlRes.downloadedBytes,
         totalBytes: dlRes.totalBytes,
-        message: verifyRes.error || '다운로드된 파일 검증에 실패했습니다.',
+        message: verifyRes.error || L('다운로드된 파일 검증에 실패했습니다.', 'Downloaded file verification failed.'),
       });
-      return { success: false, error: verifyRes.error || '다운로드된 파일 검증 실패' };
+      return {
+        success: false,
+        error: verifyRes.error || L('다운로드된 파일 검증 실패', 'Downloaded file verification failed'),
+      };
     }
 
     fs.renameSync(partFilePath, stagedExePath);
@@ -1539,16 +1781,23 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
 
     if (downloadState.cancelled) {
       cleanupStaging();
-      return { success: false, cancelled: true, error: '사용자에 의해 다운로드가 취소되었습니다.' };
+      return {
+        success: false,
+        cancelled: true,
+        error: L('사용자에 의해 다운로드가 취소되었습니다.', 'Download was cancelled by the user.'),
+      };
     }
 
     // Re-verify real write-safety on portable USB directory before closing app or modifying existing EXE
-    const preSpawnWriteCheck = probeDirectoryWriteSafety(runtime.portableDir);
+    const preSpawnWriteCheck = probeDirectoryWriteSafety(runtime.portableDir, currentAppLocale);
     if (!preSpawnWriteCheck.writable) {
       cleanupStaging();
       const preSpawnErr =
         preSpawnWriteCheck.writeError ||
-        '포터블 USB 폴더가 쓰기 금지(읽기 전용) 상태로 변경되어 기존 실행 파일을 보호하기 위해 교체를 중단했습니다.';
+        L(
+          '포터블 USB 폴더가 쓰기 금지(읽기 전용) 상태로 변경되어 기존 실행 파일을 보호하기 위해 교체를 중단했습니다.',
+          'Portable USB folder became write-protected (read-only); replacement aborted to protect existing executable.'
+        );
       emitUpdateProgress({
         phase: 'error',
         percent: 0,
@@ -1568,7 +1817,10 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       percent: 100,
       downloadedBytes: dlRes.downloadedBytes,
       totalBytes: dlRes.downloadedBytes,
-      message: `기존 포터블(${runtime.currentExeName}) 종료·제거 후 ${safeAssetName} 교체·재실행 중...`,
+      message: L(
+        `기존 포터블(${runtime.currentExeName}) 종료·제거 후 ${safeAssetName} 교체·재실행 중...`,
+        `Closing ${runtime.currentExeName}, replacing with ${safeAssetName}, and relaunching...`
+      ),
     });
 
     let exitTimer = null;
@@ -1583,7 +1835,10 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
     );
     if (!updaterProc || !updaterProc.pid) {
       cleanupStaging();
-      const spawnErrMsg = '포터블 교체 PowerShell 업데이터 프로세스를 시작하지 못했습니다.';
+      const spawnErrMsg = L(
+        '포터블 교체 PowerShell 업데이터 프로세스를 시작하지 못했습니다.',
+        'Failed to start the PowerShell portable update process.'
+      );
       emitUpdateProgress({
         phase: 'error',
         percent: 0,
@@ -1607,7 +1862,10 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
         percent: 0,
         downloadedBytes: dlRes.downloadedBytes,
         totalBytes: dlRes.downloadedBytes,
-        message: `포터블 교체 백그라운드 실행 오류: ${spawnErr && spawnErr.message ? spawnErr.message : '알 수 없는 오류'}`,
+        message: L(
+          `포터블 교체 백그라운드 실행 오류: ${spawnErr && spawnErr.message ? spawnErr.message : '알 수 없는 오류'}`,
+          `Portable replacement background error: ${spawnErr && spawnErr.message ? spawnErr.message : 'Unknown error'}`
+        ),
       });
     });
     updaterProc.unref();
@@ -1628,7 +1886,10 @@ ipcMain.handle('install-portable-update', async (_event, payload) => {
       targetExePath,
     };
   } catch (err) {
-    const errMsg = err && err.message ? err.message : '포터블 자동 업데이트 중 오류가 발생했습니다.';
+    const errMsg =
+      err && err.message
+        ? err.message
+        : L('포터블 자동 업데이트 중 오류가 발생했습니다.', 'An error occurred during portable auto-update.');
     const wasCancelled = downloadState.cancelled;
     cleanupStaging();
     if (!wasCancelled) {

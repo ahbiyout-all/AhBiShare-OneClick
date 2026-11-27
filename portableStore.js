@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { pickLocaleText } = require('./localeHelper');
 
 const PORTABLE_FILE_NAME = 'AhBiShare_OneClick.portable.json';
 const TOKEN_PREFIX = 'ABSHARE://';
@@ -131,7 +132,8 @@ function buildRehydratedConnectionCode(entry, username, password) {
   return encodeTokenPayload(payload);
 }
 
-function classifyUsbWriteError(err, contextLabel = 'USB 파일 쓰기') {
+function classifyUsbWriteError(err, contextLabel = '', locale = 'ko') {
+  const effectiveContext = contextLabel || pickLocaleText(locale, 'USB 파일 쓰기', 'USB file write');
   const code = String(err?.code || '').toUpperCase();
   const rawMsg = String(err?.message || '');
   const lowerMsg = rawMsg.toLowerCase();
@@ -140,60 +142,84 @@ function classifyUsbWriteError(err, contextLabel = 'USB 파일 쓰기') {
     return {
       code: code || 'EROFS',
       writeProtected: true,
-      message:
+      message: pickLocaleText(
+        locale,
         'USB 또는 저장 장치가 쓰기 금지(읽기 전용) 상태입니다. USB 물리 쓰기 금지 스위치 또는 Windows 쓰기 금지(WriteProtect) 정책을 확인하세요.',
+        'The USB drive or storage device is write-protected (read-only). Check the physical write-protect switch or Windows WriteProtect policy.'
+      ),
     };
   }
   if (code === 'EPERM' || code === 'EACCES') {
     return {
       code,
       writeProtected: true,
-      message:
+      message: pickLocaleText(
+        locale,
         'USB 폴더 쓰기 권한이 차단되었거나 쓰기 금지(읽기 전용·보안 프로그램 차단) 상태입니다. 쓰기 금지 해제 또는 다른 폴더를 선택하세요.',
+        'Write access to the USB folder is blocked or read-only (security software or policy). Remove write protection or choose another folder.'
+      ),
     };
   }
   if (code === 'ENOSPC') {
     return {
       code,
       writeProtected: false,
-      message: 'USB 저장 공간(디스크 용량)이 부족하여 안전하게 기록할 수 없습니다. 여유 공간을 확보한 뒤 다시 시도하세요.',
+      message: pickLocaleText(
+        locale,
+        'USB 저장 공간(디스크 용량)이 부족하여 안전하게 기록할 수 없습니다. 여유 공간을 확보한 뒤 다시 시도하세요.',
+        'Insufficient disk space on the USB drive. Free up space and try again.'
+      ),
     };
   }
   if (code === 'EBUSY' || code === 'EMFILE' || code === 'ENFILE') {
     return {
       code,
       writeProtected: false,
-      message: 'USB 파일이 다른 프로그램이나 백신에 의해 사용 중(잠금)입니다. 잠시 후 다시 시도하세요.',
+      message: pickLocaleText(
+        locale,
+        'USB 파일이 다른 프로그램이나 백신에 의해 사용 중(잠금)입니다. 잠시 후 다시 시도하세요.',
+        'The USB file is locked or in use by another program or antivirus. Try again shortly.'
+      ),
     };
   }
   if (code === 'EIO') {
     return {
       code,
       writeProtected: false,
-      message: 'USB 입출력(I/O) 오류가 발생했습니다. USB 연결 상태를 확인한 뒤 다시 시도하세요.',
+      message: pickLocaleText(
+        locale,
+        'USB 입출력(I/O) 오류가 발생했습니다. USB 연결 상태를 확인한 뒤 다시 시도하세요.',
+        'A USB I/O error occurred. Check the USB connection and try again.'
+      ),
     };
   }
   if (code === 'ENOENT' || code === 'ENOTDIR') {
     return {
       code,
       writeProtected: false,
-      message: '대상 USB 폴더 경로를 찾을 수 없습니다. 장치 연결 상태를 확인하세요.',
+      message: pickLocaleText(
+        locale,
+        '대상 USB 폴더 경로를 찾을 수 없습니다. 장치 연결 상태를 확인하세요.',
+        'Target USB folder path not found. Check the device connection.'
+      ),
     };
   }
   return {
     code: code || 'UNKNOWN',
     writeProtected: false,
-    message: rawMsg ? `${contextLabel} 실패: ${rawMsg}` : `${contextLabel}에 실패했습니다.`,
+    message: rawMsg
+      ? pickLocaleText(locale, `${effectiveContext} 실패: ${rawMsg}`, `${effectiveContext} failed: ${rawMsg}`)
+      : pickLocaleText(locale, `${effectiveContext}에 실패했습니다.`, `${effectiveContext} failed.`),
   };
 }
 
-function probeDirectoryWriteSafety(dirPath) {
+function probeDirectoryWriteSafety(dirPath, locale = 'ko') {
   if (!dirPath) {
     return {
       writable: false,
       writeProtected: false,
       errorCode: 'ENOENT',
-      writeError: '대상 폴더 경로가 비어 있습니다.',
+      writeError: pickLocaleText(locale, '대상 폴더 경로가 비어 있습니다.', 'Target folder path is empty.'),
     };
   }
 
@@ -205,7 +231,7 @@ function probeDirectoryWriteSafety(dirPath) {
         writable: false,
         writeProtected: false,
         errorCode: 'ENOTDIR',
-        writeError: '대상 경로가 유효한 폴더가 아닙니다.',
+        writeError: pickLocaleText(locale, '대상 경로가 유효한 폴더가 아닙니다.', 'Target path is not a valid folder.'),
       };
     }
 
@@ -232,7 +258,7 @@ function probeDirectoryWriteSafety(dirPath) {
     try {
       if (probePath && fs.existsSync(probePath)) fs.unlinkSync(probePath);
     } catch {}
-    const classified = classifyUsbWriteError(err, 'USB 쓰기 안전 점검');
+    const classified = classifyUsbWriteError(err, pickLocaleText(locale, 'USB 쓰기 안전 점검', 'USB write safety probe'), locale);
     return {
       writable: false,
       writeProtected: classified.writeProtected,
@@ -242,11 +268,11 @@ function probeDirectoryWriteSafety(dirPath) {
   }
 }
 
-function checkDirectoryWritable(dirPath) {
-  return probeDirectoryWriteSafety(dirPath);
+function checkDirectoryWritable(dirPath, locale = 'ko') {
+  return probeDirectoryWriteSafety(dirPath, locale);
 }
 
-function resolvePortableLocation({ env = process.env, app = null, baseDir = __dirname } = {}) {
+function resolvePortableLocation({ env = process.env, app = null, baseDir = __dirname, locale = 'ko' } = {}) {
   let mode = 'dev-fs';
   let directory = path.resolve(baseDir || __dirname);
 
@@ -259,7 +285,7 @@ function resolvePortableLocation({ env = process.env, app = null, baseDir = __di
   }
 
   const filePath = path.join(directory, PORTABLE_FILE_NAME);
-  const writeCheck = checkDirectoryWritable(directory);
+  const writeCheck = checkDirectoryWritable(directory, locale);
 
   return {
     supported: true,
@@ -281,7 +307,7 @@ function emptyDocument() {
   };
 }
 
-function sanitizeHostPolicySnapshot(snap) {
+function sanitizeHostPolicySnapshot(snap, locale = 'ko') {
   if (!snap || typeof snap !== 'object' || !snap.hostName) return null;
   const out = {
     hostName: String(snap.hostName),
@@ -353,7 +379,10 @@ function sanitizeHostPolicySnapshot(snap) {
         hostName: String(snap.rawRegistrySnapshot.hostName || out.hostName),
         ...(snap.rawRegistrySnapshot.targetIp ? { targetIp: String(snap.rawRegistrySnapshot.targetIp) } : {}),
         sourceType: String(snap.rawRegistrySnapshot.sourceType || 'usb_live_capture'),
-        sourceLabel: String(snap.rawRegistrySnapshot.sourceLabel || 'USB 호스트 실측 레지스트리'),
+        sourceLabel: String(
+          snap.rawRegistrySnapshot.sourceLabel ||
+            pickLocaleText(locale, 'USB 호스트 실측 레지스트리', 'USB Host Live Registry')
+        ),
         fetchedAt: String(snap.rawRegistrySnapshot.fetchedAt || out.capturedAt),
         ...(snap.rawRegistrySnapshot.remoteRpcNote
           ? { remoteRpcNote: String(snap.rawRegistrySnapshot.remoteRpcNote) }
@@ -365,12 +394,12 @@ function sanitizeHostPolicySnapshot(snap) {
   return out;
 }
 
-function sanitizeHostPoliciesMap(rawMap) {
+function sanitizeHostPoliciesMap(rawMap, locale = 'ko') {
   if (!rawMap || typeof rawMap !== 'object') return undefined;
   const out = {};
   let count = 0;
   for (const [k, v] of Object.entries(rawMap)) {
-    const clean = sanitizeHostPolicySnapshot(v);
+    const clean = sanitizeHostPolicySnapshot(v, locale);
     if (clean) {
       out[String(k || clean.hostName)] = clean;
       count++;
@@ -465,7 +494,7 @@ function sanitizeTroubleshootWizardSteps(rawSteps, defaultSide) {
   return clean;
 }
 
-function sanitizeTroubleshootTickets(rawList) {
+function sanitizeTroubleshootTickets(rawList, locale = 'ko') {
   if (!Array.isArray(rawList)) return undefined;
   const out = [];
   const seenIds = new Set();
@@ -493,7 +522,10 @@ function sanitizeTroubleshootTickets(rawList) {
       authMode,
       ...(typeof item.isLegacyOs === 'boolean' ? { isLegacyOs: item.isLegacyOs } : {}),
       errorCode: String(item.errorCode || 'Mount Diagnostic').trim().slice(0, 64),
-      errorTitle: stripSensitiveCredentialText(item.errorTitle || '연결/공유 오류', 180),
+      errorTitle: stripSensitiveCredentialText(
+        item.errorTitle || pickLocaleText(locale, '연결/공유 오류', 'Connection/Share Error'),
+        180
+      ),
       rawErrorSummary: stripSensitiveCredentialText(item.rawErrorSummary || '', 500),
       recommendedSide,
       hostSteps: sanitizeTroubleshootWizardSteps(item.hostSteps, 'host'),
@@ -509,7 +541,7 @@ function sanitizeTroubleshootTickets(rawList) {
   return out.length > 0 ? out : undefined;
 }
 
-function prepareDiskDocument(doc) {
+function prepareDiskDocument(doc, locale = 'ko') {
   const nowIso = new Date().toISOString();
   const inputShares = Array.isArray(doc?.shares) ? doc.shares : [];
   const serializedShares = [];
@@ -552,9 +584,9 @@ function prepareDiskDocument(doc) {
     serializedShares.push(diskEntry);
   }
 
-  const hostPolicies = sanitizeHostPoliciesMap(doc?.hostPolicies);
+  const hostPolicies = sanitizeHostPoliciesMap(doc?.hostPolicies, locale);
   const pendingHostActions = sanitizePendingHostActionsMap(doc?.pendingHostActions);
-  const troubleshootTickets = sanitizeTroubleshootTickets(doc?.troubleshootTickets);
+  const troubleshootTickets = sanitizeTroubleshootTickets(doc?.troubleshootTickets, locale);
   const out = {
     schemaVersion: 1,
     updatedAt: doc?.updatedAt || nowIso,
@@ -575,7 +607,7 @@ function prepareDiskDocument(doc) {
   return out;
 }
 
-function hydrateRuntimeDocument(diskDoc) {
+function hydrateRuntimeDocument(diskDoc, locale = 'ko') {
   const shares = [];
   const inputShares = Array.isArray(diskDoc?.shares) ? diskDoc.shares : [];
 
@@ -621,9 +653,9 @@ function hydrateRuntimeDocument(diskDoc) {
     });
   }
 
-  const hostPolicies = sanitizeHostPoliciesMap(diskDoc?.hostPolicies);
+  const hostPolicies = sanitizeHostPoliciesMap(diskDoc?.hostPolicies, locale);
   const pendingHostActions = sanitizePendingHostActionsMap(diskDoc?.pendingHostActions);
-  const troubleshootTickets = sanitizeTroubleshootTickets(diskDoc?.troubleshootTickets);
+  const troubleshootTickets = sanitizeTroubleshootTickets(diskDoc?.troubleshootTickets, locale);
   const runtimeDoc = {
     schemaVersion: 1,
     updatedAt: String(diskDoc?.updatedAt || ''),
@@ -658,7 +690,7 @@ function isTransientWinLockError(err) {
   return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
 }
 
-function withFileLockSync(lockPath, fn) {
+function withFileLockSync(lockPath, fn, locale = 'ko') {
   const maxWaitMs = 400;
   const retryDelayMs = 10;
   const staleThresholdMs = 10000;
@@ -689,7 +721,11 @@ function withFileLockSync(lockPath, fn) {
           return {
             __lockTimeout: true,
             success: false,
-            error: '다른 저장 작업이 진행 중입니다. 잠시 후 다시 시도하세요.',
+            error: pickLocaleText(
+              locale,
+              '다른 저장 작업이 진행 중입니다. 잠시 후 다시 시도하세요.',
+              'Another save operation is in progress. Please try again shortly.'
+            ),
           };
         }
         sleepSyncMs(retryDelayMs);
@@ -725,21 +761,29 @@ function fsyncDirectoryBestEffort(dirPath) {
   }
 }
 
-function writeBufferFsyncSync(targetPath, buf, flags = 'wx') {
+function writeBufferFsyncSync(targetPath, buf, flags = 'wx', locale = 'ko') {
   const fd = fs.openSync(targetPath, flags, 0o600);
   try {
     let offset = 0;
     while (offset < buf.length) {
       const written = fs.writeSync(fd, buf, offset, buf.length - offset);
       if (written <= 0) {
-        throw new Error('파일 바이트 기록이 완료되지 않았습니다.');
+        throw new Error(
+          pickLocaleText(locale, '파일 바이트 기록이 완료되지 않았습니다.', 'File byte write did not complete.')
+        );
       }
       offset += written;
     }
     fs.fsyncSync(fd);
     const stat = fs.fstatSync(fd);
     if (stat.size !== buf.length) {
-      throw new Error(`임시 파일 크기 불일치 (${stat.size} !== ${buf.length})`);
+      throw new Error(
+        pickLocaleText(
+          locale,
+          `임시 파일 크기 불일치 (${stat.size} !== ${buf.length})`,
+          `Temporary file size mismatch (${stat.size} !== ${buf.length})`
+        )
+      );
     }
   } finally {
     fs.closeSync(fd);
@@ -781,7 +825,7 @@ function readUtf8WithRetrySync(filePath) {
   throw lastErr;
 }
 
-function atomicWriteBuffer(filePath, rawBuf) {
+function atomicWriteBuffer(filePath, rawBuf, locale = 'ko') {
   const buf = Buffer.isBuffer(rawBuf) ? rawBuf : Buffer.from(String(rawBuf || ''), 'utf8');
   const dir = path.dirname(filePath);
   const baseName = path.basename(filePath);
@@ -790,7 +834,7 @@ function atomicWriteBuffer(filePath, rawBuf) {
   const tmpPath = path.join(dir, `.${baseName}.${process.pid}.${Date.now()}.${tmpWriteSequence}.${nonce}.tmp`);
 
   try {
-    writeBufferFsyncSync(tmpPath, buf, 'wx');
+    writeBufferFsyncSync(tmpPath, buf, 'wx', locale);
     try {
       renameWithRetrySync(tmpPath, filePath);
     } catch (renameErr) {
@@ -802,7 +846,7 @@ function atomicWriteBuffer(filePath, rawBuf) {
           fs.copyFileSync(filePath, backupPath);
         }
         try {
-          writeBufferFsyncSync(filePath, buf, 'w');
+          writeBufferFsyncSync(filePath, buf, 'w', locale);
         } catch (fallbackErr) {
           if (hadExisting && fs.existsSync(backupPath)) {
             try {
@@ -822,11 +866,11 @@ function atomicWriteBuffer(filePath, rawBuf) {
     fsyncDirectoryBestEffort(dir);
     const committedStat = fs.statSync(filePath);
     if (committedStat.size !== buf.length) {
-      throw new Error(`저장된 파일 크기 검증 실패 (${committedStat.size} !== ${buf.length})`);
+      throw new Error(`File size verification mismatch (${committedStat.size} !== ${buf.length})`);
     }
     return { success: true, writeProtected: false };
   } catch (err) {
-    const classified = classifyUsbWriteError(err, 'USB 파일 쓰기');
+    const classified = classifyUsbWriteError(err, pickLocaleText(locale, 'USB 파일 쓰기', 'USB file write'), locale);
     return {
       success: false,
       writeProtected: classified.writeProtected,
@@ -840,9 +884,9 @@ function atomicWriteBuffer(filePath, rawBuf) {
   }
 }
 
-function atomicWriteJson(filePath, payloadObj) {
+function atomicWriteJson(filePath, payloadObj, locale = 'ko') {
   const content = JSON.stringify(payloadObj, null, 2);
-  return atomicWriteBuffer(filePath, Buffer.from(content, 'utf8'));
+  return atomicWriteBuffer(filePath, Buffer.from(content, 'utf8'), locale);
 }
 
 const LOCATIONS_DIR_NAME = 'locations';
@@ -855,7 +899,7 @@ function resolveSafeBackupDir(baseDir) {
   return path.resolve(baseDir, BACKUP_DIR_NAME);
 }
 
-function resolveSafeBackupFilePath(baseDir, fileName) {
+function resolveSafeBackupFilePath(baseDir, fileName, locale = 'ko') {
   const backupDir = resolveSafeBackupDir(baseDir);
   const rawName = String(fileName || '').trim();
   if (
@@ -865,11 +909,11 @@ function resolveSafeBackupFilePath(baseDir, fileName) {
     !rawName.toLowerCase().endsWith(BACKUP_FILE_EXT) ||
     /[\0\r\n/\\]/.test(rawName)
   ) {
-    throw new Error('허용되지 않은 백업 파일 이름입니다.');
+    throw new Error(pickLocaleText(locale, '허용되지 않은 백업 파일 이름입니다.', 'Invalid backup file name.'));
   }
   const filePath = path.resolve(backupDir, rawName);
   if (!filePath.startsWith(backupDir + path.sep)) {
-    throw new Error('허용되지 않은 백업 파일 경로입니다.');
+    throw new Error(pickLocaleText(locale, '허용되지 않은 백업 파일 경로입니다.', 'Disallowed backup file path.'));
   }
   return { backupDir, fileName: rawName, filePath };
 }
@@ -898,12 +942,12 @@ function getLocationFileName(profileId, locationName) {
   return `${sanitizeLocationId(profileId, locationName)}${LOCATION_FILE_EXT}`;
 }
 
-function resolveSafeLocationFilePath(baseDir, profileId, locationName) {
+function resolveSafeLocationFilePath(baseDir, profileId, locationName, locale = 'ko') {
   const locDir = path.resolve(baseDir, LOCATIONS_DIR_NAME);
   const fileName = getLocationFileName(profileId, locationName);
   const filePath = path.resolve(locDir, fileName);
   if (!filePath.startsWith(locDir + path.sep)) {
-    throw new Error('허용되지 않은 사용장소 파일 경로입니다.');
+    throw new Error(pickLocaleText(locale, '허용되지 않은 사용장소 파일 경로입니다.', 'Disallowed location profile file path.'));
   }
   return { locDir, fileName, filePath };
 }
@@ -1028,14 +1072,15 @@ function hydrateLocationHostPreset(rawPreset) {
   };
 }
 
-function prepareLocationProfileForDisk(rawProfile) {
+function prepareLocationProfileForDisk(rawProfile, locale = 'ko') {
   const nowIso = new Date().toISOString();
-  const locationName = String(rawProfile?.locationName || '이름 없는 장소').trim() || '이름 없는 장소';
+  const defaultLocName = pickLocaleText(locale, '이름 없는 장소', 'Untitled Location');
+  const locationName = String(rawProfile?.locationName || defaultLocName).trim() || defaultLocName;
   const profileId = sanitizeLocationId(rawProfile?.profileId, locationName);
   const preparedSharesDoc = prepareDiskDocument({
     updatedAt: nowIso,
     shares: Array.isArray(rawProfile?.savedShares) ? rawProfile.savedShares : [],
-  });
+  }, locale);
   const hostPreset = prepareLocationHostPresetForDisk(rawProfile?.hostPreset);
   const clientTargets = prepareLocationClientTargetsForDisk(rawProfile?.clientTargets);
   const netHint = rawProfile?.networkHint && typeof rawProfile.networkHint === 'object'
@@ -1063,19 +1108,23 @@ function prepareLocationProfileForDisk(rawProfile) {
   };
 }
 
-function hydrateLocationProfile(diskProfile) {
+function hydrateLocationProfile(diskProfile, locale = 'ko') {
   if (!diskProfile || typeof diskProfile !== 'object') {
-    throw new Error('올바르지 않은 사용장소 프로필 형식입니다.');
+    throw new Error(
+      pickLocaleText(locale, '올바르지 않은 사용장소 프로필 형식입니다.', 'Invalid location profile format.')
+    );
   }
   const locationName = String(diskProfile.locationName || '').trim();
   if (!locationName) {
-    throw new Error('사용장소 이름(locationName)이 누락된 파일입니다.');
+    throw new Error(
+      pickLocaleText(locale, '사용장소 이름(locationName)이 누락된 파일입니다.', 'Missing locationName in location profile file.')
+    );
   }
   const profileId = sanitizeLocationId(diskProfile.profileId, locationName);
   const hydratedSharesDoc = hydrateRuntimeDocument({
     updatedAt: diskProfile.updatedAt || '',
     shares: Array.isArray(diskProfile.savedShares) ? diskProfile.savedShares : [],
-  });
+  }, locale);
   const hostPreset = hydrateLocationHostPreset(diskProfile.hostPreset);
   const clientTargets = hydrateLocationClientTargets(diskProfile.clientTargets);
   const netHint = diskProfile.networkHint && typeof diskProfile.networkHint === 'object'
@@ -1118,7 +1167,9 @@ function toLocationProfileSummary(profile, fileName) {
 }
 
 function createPortableStore(options = {}) {
-  const getLocation = () => resolvePortableLocation(options);
+  const getLocale = () => (typeof options.getLocale === 'function' ? options.getLocale() : options.locale || 'ko');
+  const locText = (ko, en) => pickLocaleText(getLocale(), ko, en);
+  const getLocation = () => resolvePortableLocation({ ...options, locale: getLocale() });
 
   const loadPortableData = () => {
     const loc = getLocation();
@@ -1135,7 +1186,7 @@ function createPortableStore(options = {}) {
     try {
       raw = readUtf8WithRetrySync(loc.filePath);
     } catch (readErr) {
-      const classified = classifyUsbWriteError(readErr, 'USB 포터블 데이터 읽기');
+      const classified = classifyUsbWriteError(readErr, locText('USB 포터블 데이터 읽기', 'USB portable data read'), getLocale());
       return {
         success: false,
         document: emptyDocument(),
@@ -1150,7 +1201,7 @@ function createPortableStore(options = {}) {
 
     try {
       const parsed = JSON.parse(raw);
-      const doc = hydrateRuntimeDocument(parsed);
+      const doc = hydrateRuntimeDocument(parsed, getLocale());
       return {
         success: true,
         document: doc,
@@ -1184,13 +1235,14 @@ function createPortableStore(options = {}) {
   };
 
   const savePortableData = (doc) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const lockPath = path.join(loc.directory, `.${PORTABLE_FILE_NAME}.lock`);
-    const diskDoc = prepareDiskDocument(doc);
+    const diskDoc = prepareDiskDocument(doc, activeLocale);
     return withFileLockSync(lockPath, () => {
-      const writeRes = atomicWriteJson(loc.filePath, diskDoc);
+      const writeRes = atomicWriteJson(loc.filePath, diskDoc, activeLocale);
       if (!writeRes.success) {
-        const hydratedFallback = hydrateRuntimeDocument(diskDoc);
+        const hydratedFallback = hydrateRuntimeDocument(diskDoc, activeLocale);
         return {
           success: false,
           document: hydratedFallback,
@@ -1207,9 +1259,9 @@ function createPortableStore(options = {}) {
       let committedDoc;
       try {
         const verifiedRaw = fs.readFileSync(loc.filePath, 'utf8').replace(/^\uFEFF/, '');
-        committedDoc = hydrateRuntimeDocument(JSON.parse(verifiedRaw));
+        committedDoc = hydrateRuntimeDocument(JSON.parse(verifiedRaw), activeLocale);
       } catch (verifyErr) {
-        const hydratedFallback = hydrateRuntimeDocument(diskDoc);
+        const hydratedFallback = hydrateRuntimeDocument(diskDoc, activeLocale);
         return {
           success: false,
           document: hydratedFallback,
@@ -1217,7 +1269,10 @@ function createPortableStore(options = {}) {
             ...loc,
             writable: false,
             hasExistingFile: fs.existsSync(loc.filePath),
-            writeError: `저장 후 무결성 검증 실패: ${verifyErr && verifyErr.message ? verifyErr.message : 'JSON 파싱 오류'}`,
+            writeError: locText(
+              `저장 후 무결성 검증 실패: ${verifyErr && verifyErr.message ? verifyErr.message : 'JSON 파싱 오류'}`,
+              `Post-save integrity check failed: ${verifyErr && verifyErr.message ? verifyErr.message : 'JSON parse error'}`
+            ),
           },
         };
       }
@@ -1232,10 +1287,11 @@ function createPortableStore(options = {}) {
           lastSyncedAt: diskDoc.updatedAt,
         },
       };
-    });
+    }, activeLocale);
   };
 
   const listLocationProfiles = () => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
     const profiles = [];
@@ -1248,7 +1304,7 @@ function createPortableStore(options = {}) {
           try {
             const raw = fs.readFileSync(fullPath, 'utf8').replace(/^\uFEFF/, '');
             const parsed = JSON.parse(raw);
-            const hydrated = hydrateLocationProfile(parsed);
+            const hydrated = hydrateLocationProfile(parsed, activeLocale);
             profiles.push(toLocationProfileSummary(hydrated, entry));
           } catch {}
         }
@@ -1264,7 +1320,8 @@ function createPortableStore(options = {}) {
   };
 
   const findAllLocationFilesByProfileId = (directory, profileId) => {
-    const { locDir, filePath: exactPath } = resolveSafeLocationFilePath(directory, profileId, profileId);
+    const activeLocale = getLocale();
+    const { locDir, filePath: exactPath } = resolveSafeLocationFilePath(directory, profileId, profileId, activeLocale);
     const matches = [];
     if (fs.existsSync(exactPath)) {
       matches.push(exactPath);
@@ -1281,7 +1338,7 @@ function createPortableStore(options = {}) {
           try {
             const raw = fs.readFileSync(candidatePath, 'utf8').replace(/^\uFEFF/, '');
             const parsed = JSON.parse(raw);
-            const hydrated = hydrateLocationProfile(parsed);
+            const hydrated = hydrateLocationProfile(parsed, activeLocale);
             if (
               hydrated.profileId === targetRaw ||
               (targetSanitized && sanitizeLocationId(hydrated.profileId, '') === targetSanitized)
@@ -1301,17 +1358,23 @@ function createPortableStore(options = {}) {
   };
 
   const saveLocationProfile = (rawProfile) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
-    const diskProfile = prepareLocationProfileForDisk(rawProfile);
+    const diskProfile = prepareLocationProfileForDisk(rawProfile, activeLocale);
     const { locDir, fileName, filePath } = resolveSafeLocationFilePath(
       loc.directory,
       diskProfile.profileId,
-      diskProfile.locationName
+      diskProfile.locationName,
+      activeLocale
     );
     try {
       fs.mkdirSync(locDir, { recursive: true });
     } catch (err) {
-      const classified = classifyUsbWriteError(err, '사용장소 보관 폴더 생성');
+      const classified = classifyUsbWriteError(
+        err,
+        locText('사용장소 보관 폴더 생성', 'Create location storage folder'),
+        activeLocale
+      );
       return {
         success: false,
         writeProtected: classified.writeProtected,
@@ -1325,7 +1388,10 @@ function createPortableStore(options = {}) {
       if (existingMatches.length > 0 && loc.writable) {
         createBackupSnapshot({
           trigger: 'auto_before_modify',
-          reason: `사용장소 '${diskProfile.locationName}' 수정 직전 자동 백업`,
+          reason: locText(
+            `사용장소 '${diskProfile.locationName}' 수정 직전 자동 백업`,
+            `Auto backup before editing location '${diskProfile.locationName}'`
+          ),
         });
       }
     } catch {}
@@ -1336,22 +1402,27 @@ function createPortableStore(options = {}) {
         (candidate) => path.resolve(candidate) !== path.resolve(filePath)
       );
 
-      const writeRes = atomicWriteJson(filePath, diskProfile);
+      const writeRes = atomicWriteJson(filePath, diskProfile, activeLocale);
       if (!writeRes.success) {
         return {
           success: false,
-          error: writeRes.error || '사용장소 프로필 저장에 실패했습니다.',
+          error:
+            writeRes.error ||
+            locText('사용장소 프로필 저장에 실패했습니다.', 'Failed to save location profile.'),
         };
       }
 
       let verifiedProfile;
       try {
         const verifiedRaw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
-        verifiedProfile = hydrateLocationProfile(JSON.parse(verifiedRaw));
+        verifiedProfile = hydrateLocationProfile(JSON.parse(verifiedRaw), activeLocale);
       } catch (verifyErr) {
         return {
           success: false,
-          error: `사용장소 프로필 저장 후 무결성 검증 실패: ${verifyErr && verifyErr.message ? verifyErr.message : '파일 검증 오류'}`,
+          error: locText(
+            `사용장소 프로필 저장 후 무결성 검증 실패: ${verifyErr && verifyErr.message ? verifyErr.message : '파일 검증 오류'}`,
+            `Location profile post-save integrity verification failed: ${verifyErr && verifyErr.message ? verifyErr.message : 'Verification error'}`
+          ),
         };
       }
 
@@ -1368,29 +1439,37 @@ function createPortableStore(options = {}) {
         summary: toLocationProfileSummary(verifiedProfile, fileName),
         filePath,
       };
-    });
+    }, activeLocale);
   };
 
   const loadLocationProfile = (profileId) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const filePath = findLocationFileByProfileId(loc.directory, profileId);
     if (!filePath || !fs.existsSync(filePath)) {
-      return { success: false, error: '해당 사용장소 프로필 파일을 찾을 수 없습니다.' };
+      return {
+        success: false,
+        error: locText('해당 사용장소 프로필 파일을 찾을 수 없습니다.', 'Location profile file not found.'),
+      };
     }
     try {
       const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
       const parsed = JSON.parse(raw);
-      const hydrated = hydrateLocationProfile(parsed);
+      const hydrated = hydrateLocationProfile(parsed, activeLocale);
       return { success: true, profile: hydrated, filePath };
     } catch (err) {
       return {
         success: false,
-        error: `사용장소 프로필 읽기 실패: ${err && err.message ? err.message : '파일 손상'}`,
+        error: locText(
+          `사용장소 프로필 읽기 실패: ${err && err.message ? err.message : '파일 손상'}`,
+          `Failed to read location profile: ${err && err.message ? err.message : 'File corrupted'}`
+        ),
       };
     }
   };
 
   const deleteLocationProfile = (profileId) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const locDir = path.resolve(loc.directory, LOCATIONS_DIR_NAME);
 
@@ -1406,7 +1485,10 @@ function createPortableStore(options = {}) {
         } catch {}
         createBackupSnapshot({
           trigger: 'auto_before_delete',
-          reason: `사용장소 '${locLabel}' 삭제 직전 자동 백업`,
+          reason: locText(
+            `사용장소 '${locLabel}' 삭제 직전 자동 백업`,
+            `Auto backup before deleting location '${locLabel}'`
+          ),
         });
       }
     } catch {}
@@ -1415,7 +1497,10 @@ function createPortableStore(options = {}) {
     return withFileLockSync(lockPath, () => {
       const matches = findAllLocationFilesByProfileId(loc.directory, profileId);
       if (matches.length === 0) {
-        return { success: false, error: '삭제할 사용장소 파일이 존재하지 않습니다.' };
+        return {
+          success: false,
+          error: locText('삭제할 사용장소 파일이 존재하지 않습니다.', 'Location profile file to delete does not exist.'),
+        };
       }
       try {
         for (const matchPath of matches) {
@@ -1423,14 +1508,18 @@ function createPortableStore(options = {}) {
         }
         return { success: true };
       } catch (err) {
-        const classified = classifyUsbWriteError(err, '사용장소 파일 삭제');
+        const classified = classifyUsbWriteError(
+          err,
+          locText('사용장소 파일 삭제', 'Delete location profile file'),
+          activeLocale
+        );
         return {
           success: false,
           writeProtected: classified.writeProtected,
           error: classified.message,
         };
       }
-    });
+    }, activeLocale);
   };
 
   const LOG_DIR_NAME = 'log';
@@ -1455,12 +1544,12 @@ function createPortableStore(options = {}) {
     return `AhBiShare_${formatLocalLogDate(date)}.log`;
   }
 
-  function resolveSafeLogFilePath(baseDir, date = new Date()) {
+  function resolveSafeLogFilePath(baseDir, date = new Date(), locale = 'ko') {
     const logDir = path.resolve(baseDir, LOG_DIR_NAME);
     const fileName = getAppLogFileName(date);
     const filePath = path.resolve(logDir, fileName);
     if (!filePath.startsWith(logDir + path.sep)) {
-      throw new Error('허용되지 않은 로그 파일 경로입니다.');
+      throw new Error(pickLocaleText(locale, '허용되지 않은 로그 파일 경로입니다.', 'Disallowed log file path.'));
     }
     return { logDir, fileName, filePath };
   }
@@ -1471,9 +1560,10 @@ function createPortableStore(options = {}) {
   }
 
   const appendAppLog = (entry = {}) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const now = new Date();
-    const { logDir, fileName, filePath } = resolveSafeLogFilePath(loc.directory, now);
+    const { logDir, fileName, filePath } = resolveSafeLogFilePath(loc.directory, now, activeLocale);
 
     const rawStatus = String(entry.status || 'info').toLowerCase().trim();
     const levelTag =
@@ -1484,13 +1574,19 @@ function createPortableStore(options = {}) {
           : rawStatus === 'success'
             ? 'SUCCESS'
             : 'INFO';
-    const roleText = sanitizeSingleLineLogText(entry.role || '시스템', 80) || '시스템';
+    const defaultRole = locText('시스템', 'System');
+    const roleText = sanitizeSingleLineLogText(entry.role || defaultRole, 80) || defaultRole;
     const hostText = sanitizeSingleLineLogText(entry.hostName || '', 64);
     const summaryText = sanitizeSingleLineLogText(entry.summary || '', 600);
     const detailText = entry.detail ? sanitizeSingleLineLogText(entry.detail, 700) : '';
 
     if (!summaryText && !detailText) {
-      return { success: false, directory: logDir, filePath, error: '기록할 로그 내용이 비어 있습니다.' };
+      return {
+        success: false,
+        directory: logDir,
+        filePath,
+        error: locText('기록할 로그 내용이 비어 있습니다.', 'Log entry content is empty.'),
+      };
     }
 
     const lineParts = [`[${formatLocalLogTimestamp(now)}]`];
@@ -1506,7 +1602,7 @@ function createPortableStore(options = {}) {
     try {
       fs.mkdirSync(logDir, { recursive: true });
     } catch (err) {
-      const classified = classifyUsbWriteError(err, '로그 폴더 생성');
+      const classified = classifyUsbWriteError(err, locText('로그 폴더 생성', 'Create log folder'), activeLocale);
       return {
         success: false,
         directory: logDir,
@@ -1527,7 +1623,7 @@ function createPortableStore(options = {}) {
         filePath,
       };
     } catch (err) {
-      const classified = classifyUsbWriteError(err, '로그 파일 기록');
+      const classified = classifyUsbWriteError(err, locText('로그 파일 기록', 'Write log file'), activeLocale);
       return {
         success: false,
         directory: logDir,
@@ -1540,8 +1636,9 @@ function createPortableStore(options = {}) {
   };
 
   const getAppLogInfo = (opts = {}) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
-    const { logDir, fileName, filePath } = resolveSafeLogFilePath(loc.directory, new Date());
+    const { logDir, fileName, filePath } = resolveSafeLogFilePath(loc.directory, new Date(), activeLocale);
     const limit = Math.max(10, Math.min(300, Number(opts?.limit) || 100));
     const files = [];
     let recentLines = [];
@@ -1621,13 +1718,13 @@ function createPortableStore(options = {}) {
     return crypto.createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex').slice(0, 16);
   }
 
-  function collectEncryptedBundleFromDisk(loc) {
-    let portableDocument = prepareDiskDocument(emptyDocument());
+  function collectEncryptedBundleFromDisk(loc, locale = getLocale()) {
+    let portableDocument = prepareDiskDocument(emptyDocument(), locale);
     if (fs.existsSync(loc.filePath)) {
       try {
         const rawPortable = readUtf8WithRetrySync(loc.filePath);
         const parsedPortable = JSON.parse(rawPortable);
-        portableDocument = prepareDiskDocument(parsedPortable);
+        portableDocument = prepareDiskDocument(parsedPortable, locale);
       } catch {}
     }
 
@@ -1644,7 +1741,7 @@ function createPortableStore(options = {}) {
             const raw = fs.readFileSync(fullPath, 'utf8').replace(/^\uFEFF/, '');
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== 'object' || !parsed.locationName) continue;
-            const diskLoc = prepareLocationProfileForDisk(parsed);
+            const diskLoc = prepareLocationProfileForDisk(parsed, locale);
             if (parsed.updatedAt) {
               diskLoc.updatedAt = String(parsed.updatedAt);
             }
@@ -1670,7 +1767,7 @@ function createPortableStore(options = {}) {
       filePath,
       createdAt: String(parsed?.createdAt || new Date().toISOString()),
       trigger: String(parsed?.trigger || 'manual'),
-      reason: String(parsed?.reason || '데이터 백업'),
+      reason: String(parsed?.reason || locText('데이터 백업', 'Data Backup')),
       createdByHostName: String(parsed?.createdByHostName || ''),
       contentHash: String(parsed?.contentHash || ''),
       sizeBytes: Number(sizeBytes) || 0,
@@ -1678,7 +1775,7 @@ function createPortableStore(options = {}) {
     };
   }
 
-  function readBackupEntriesSorted(backupDir) {
+  function readBackupEntriesSorted(backupDir, locale = getLocale()) {
     const items = [];
     if (!fs.existsSync(backupDir)) return items;
     try {
@@ -1686,7 +1783,7 @@ function createPortableStore(options = {}) {
         if (!entry.toLowerCase().endsWith(BACKUP_FILE_EXT)) continue;
         let fullPath;
         try {
-          ({ filePath: fullPath } = resolveSafeBackupFilePath(path.dirname(backupDir), entry));
+          ({ filePath: fullPath } = resolveSafeBackupFilePath(path.dirname(backupDir), entry, locale));
         } catch {
           continue;
         }
@@ -1720,6 +1817,7 @@ function createPortableStore(options = {}) {
   }
 
   const ensureBackupDirectory = () => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const backupDir = resolveSafeBackupDir(loc.directory);
     if (!loc.writable) {
@@ -1728,19 +1826,19 @@ function createPortableStore(options = {}) {
         directory: backupDir,
         writable: false,
         writeProtected: Boolean(loc.writeProtected),
-        error: loc.writeError || '앱 실행 폴더가 쓰기 불가 상태입니다.',
+        error: loc.writeError || locText('앱 실행 폴더가 쓰기 불가 상태입니다.', 'Application directory is not writable.'),
       };
     }
     try {
       fs.mkdirSync(backupDir, { recursive: true });
-      const probe = probeDirectoryWriteSafety(backupDir);
+      const probe = probeDirectoryWriteSafety(backupDir, activeLocale);
       if (!probe.writable) {
         return {
           success: false,
           directory: backupDir,
           writable: false,
           writeProtected: Boolean(probe.writeProtected),
-          error: probe.writeError || '백업 폴더 쓰기 안전 점검 실패',
+          error: probe.writeError || locText('백업 폴더 쓰기 안전 점검 실패', 'Backup folder write safety check failed'),
         };
       }
       return {
@@ -1750,7 +1848,11 @@ function createPortableStore(options = {}) {
         writeProtected: false,
       };
     } catch (err) {
-      const classified = classifyUsbWriteError(err, '백업 폴더 생성');
+      const classified = classifyUsbWriteError(
+        err,
+        locText('백업 폴더 생성', 'Create backup folder'),
+        activeLocale
+      );
       return {
         success: false,
         directory: backupDir,
@@ -1782,6 +1884,7 @@ function createPortableStore(options = {}) {
   };
 
   function createBackupSnapshot(options = {}) {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const ensured = ensureBackupDirectory();
     if (!ensured.success) {
@@ -1797,14 +1900,14 @@ function createPortableStore(options = {}) {
     const reason = String(
       options.reason ||
         (trigger === 'auto_before_delete'
-          ? '삭제 직전 자동 보호 백업'
+          ? locText('삭제 직전 자동 보호 백업', 'Auto protection backup before deletion')
           : trigger === 'auto_before_modify'
-            ? '설정 변경 직전 자동 보호 백업'
+            ? locText('설정 변경 직전 자동 보호 백업', 'Auto protection backup before configuration change')
             : trigger === 'auto_before_reset'
-              ? '일괄 정리·초기화 직전 자동 보호 백업'
+              ? locText('일괄 정리·초기화 직전 자동 보호 백업', 'Auto protection backup before bulk reset')
               : trigger === 'auto_before_restore'
-                ? '백업 복원 직전 자동 안전 백업'
-                : '사용자 수동 백업')
+                ? locText('백업 복원 직전 자동 안전 백업', 'Auto safety backup before restore')
+                : locText('사용자 수동 백업', 'Manual user backup'))
     ).trim();
     const hostName = String(options.hostName || '').trim();
     const allowDuplicate = Boolean(options.allowDuplicate);
@@ -1848,7 +1951,7 @@ function createPortableStore(options = {}) {
       const suffix = crypto.randomBytes(3).toString('hex');
       const backupId = `bak-${formatBackupFileStamp(now)}-${suffix}`;
       const fileName = `AhBiShare_Backup_${formatBackupFileStamp(now)}_${suffix}${BACKUP_FILE_EXT}`;
-      const { filePath } = resolveSafeBackupFilePath(loc.directory, fileName);
+      const { filePath } = resolveSafeBackupFilePath(loc.directory, fileName, activeLocale);
 
       const snapshotDoc = {
         schemaVersion: 1,
@@ -1864,13 +1967,15 @@ function createPortableStore(options = {}) {
         locationProfiles: bundle.locationProfiles,
       };
 
-      const writeRes = atomicWriteJson(filePath, snapshotDoc);
+      const writeRes = atomicWriteJson(filePath, snapshotDoc, activeLocale);
       if (!writeRes.success) {
         return {
           success: false,
           directory: ensured.directory,
           writeProtected: Boolean(writeRes.writeProtected),
-          error: writeRes.error || '백업 스냅샷 저장에 실패했습니다.',
+          error:
+            writeRes.error ||
+            locText('백업 스냅샷 저장에 실패했습니다.', 'Failed to save backup snapshot.'),
         };
       }
 
@@ -1880,7 +1985,7 @@ function createPortableStore(options = {}) {
       } catch {}
 
       // Rotate older snapshots beyond BACKUP_MAX_SNAPSHOTS (keep newest 20)
-      const afterEntries = readBackupEntriesSorted(ensured.directory);
+      const afterEntries = readBackupEntriesSorted(ensured.directory, activeLocale);
       let prunedCount = 0;
       for (let i = BACKUP_MAX_SNAPSHOTS; i < afterEntries.length; i += 1) {
         try {
@@ -1898,22 +2003,28 @@ function createPortableStore(options = {}) {
         snapshot: toBackupSummary(snapshotDoc, fileName, filePath, statSize),
         prunedCount,
       };
-    });
+    }, activeLocale);
   }
 
   const restoreBackupSnapshot = (backupIdOrFileName, options = {}) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const backupDir = resolveSafeBackupDir(loc.directory);
-    const probe = probeDirectoryWriteSafety(loc.directory);
+    const probe = probeDirectoryWriteSafety(loc.directory, activeLocale);
     if (!probe.writable) {
       return {
         success: false,
         writeProtected: Boolean(probe.writeProtected),
-        error: probe.writeError || '대상 폴더가 쓰기 금지 상태이므로 백업을 복원할 수 없습니다.',
+        error:
+          probe.writeError ||
+          locText(
+            '대상 폴더가 쓰기 금지 상태이므로 백업을 복원할 수 없습니다.',
+            'Target folder is write-protected, so backup cannot be restored.'
+          ),
       };
     }
 
-    const entries = readBackupEntriesSorted(backupDir);
+    const entries = readBackupEntriesSorted(backupDir, activeLocale);
     const needle = String(backupIdOrFileName || '').trim();
     const matched = entries.find(
       (e) => e.summary.backupId === needle || e.summary.fileName === needle
@@ -1921,7 +2032,7 @@ function createPortableStore(options = {}) {
     if (!matched) {
       return {
         success: false,
-        error: '선택한 백업 스냅샷 파일을 찾을 수 없습니다.',
+        error: locText('선택한 백업 스냅샷 파일을 찾을 수 없습니다.', 'Selected backup snapshot file was not found.'),
       };
     }
 
@@ -1934,12 +2045,15 @@ function createPortableStore(options = {}) {
     let preparedPortable;
     let preparedLocations;
     try {
-      preparedPortable = prepareDiskDocument(hydrateRuntimeDocument(rawPortable || emptyDocument()));
-      preparedLocations = rawLocations.map((lp) => prepareLocationProfileForDisk(hydrateLocationProfile(lp)));
+      preparedPortable = prepareDiskDocument(hydrateRuntimeDocument(rawPortable || emptyDocument(), activeLocale), activeLocale);
+      preparedLocations = rawLocations.map((lp) => prepareLocationProfileForDisk(hydrateLocationProfile(lp, activeLocale), activeLocale));
     } catch (parseErr) {
       return {
         success: false,
-        error: `백업 스냅샷 데이터 검증 실패: ${parseErr && parseErr.message ? parseErr.message : '형식 오류'}`,
+        error: locText(
+          `백업 스냅샷 데이터 검증 실패: ${parseErr && parseErr.message ? parseErr.message : '형식 오류'}`,
+          `Backup snapshot data validation failed: ${parseErr && parseErr.message ? parseErr.message : 'Format error'}`
+        ),
       };
     }
 
@@ -1947,7 +2061,10 @@ function createPortableStore(options = {}) {
     if (!options.skipSafetyBackup) {
       const preRes = createBackupSnapshot({
         trigger: 'auto_before_restore',
-        reason: `백업('${targetSummary.reason || targetSummary.fileName}') 복원 직전 자동 안전 백업`,
+        reason: locText(
+          `백업('${targetSummary.reason || targetSummary.fileName}') 복원 직전 자동 안전 백업`,
+          `Auto safety backup before restoring '${targetSummary.reason || targetSummary.fileName}'`
+        ),
         hostName: options.hostName || '',
       });
       if (preRes.success && preRes.snapshot) {
@@ -1958,20 +2075,22 @@ function createPortableStore(options = {}) {
     // 1. Atomically restore AhBiShare_OneClick.portable.json
     const portableLockPath = path.join(loc.directory, `.${PORTABLE_FILE_NAME}.lock`);
     const portableRestoreRes = withFileLockSync(portableLockPath, () => {
-      const writeRes = atomicWriteJson(loc.filePath, preparedPortable);
+      const writeRes = atomicWriteJson(loc.filePath, preparedPortable, activeLocale);
       if (!writeRes.success) {
         return {
           success: false,
           writeProtected: Boolean(writeRes.writeProtected),
-          error: writeRes.error || '포터블 설정 복원 쓰기에 실패했습니다.',
+          error:
+            writeRes.error ||
+            locText('포터블 설정 복원 쓰기에 실패했습니다.', 'Failed to write restored portable configuration.'),
         };
       }
       const verifiedRaw = fs.readFileSync(loc.filePath, 'utf8').replace(/^\uFEFF/, '');
       return {
         success: true,
-        document: hydrateRuntimeDocument(JSON.parse(verifiedRaw)),
+        document: hydrateRuntimeDocument(JSON.parse(verifiedRaw), activeLocale),
       };
-    });
+    }, activeLocale);
 
     if (!portableRestoreRes.success) {
       return portableRestoreRes;
@@ -1982,7 +2101,11 @@ function createPortableStore(options = {}) {
     try {
       fs.mkdirSync(locDir, { recursive: true });
     } catch (err) {
-      const classified = classifyUsbWriteError(err, '사용장소 폴더 생성');
+      const classified = classifyUsbWriteError(
+        err,
+        locText('사용장소 폴더 생성', 'Create location folder'),
+        activeLocale
+      );
       return {
         success: false,
         writeProtected: classified.writeProtected,
@@ -2008,17 +2131,18 @@ function createPortableStore(options = {}) {
         const { fileName, filePath } = resolveSafeLocationFilePath(
           loc.directory,
           diskLoc.profileId,
-          diskLoc.locationName
+          diskLoc.locationName,
+          activeLocale
         );
-        const wRes = atomicWriteJson(filePath, diskLoc);
+        const wRes = atomicWriteJson(filePath, diskLoc, activeLocale);
         if (wRes.success) {
-          const hydratedLoc = hydrateLocationProfile(diskLoc);
+          const hydratedLoc = hydrateLocationProfile(diskLoc, activeLocale);
           summaries.push(toLocationProfileSummary(hydratedLoc, fileName));
         }
       }
       summaries.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
       return summaries;
-    });
+    }, activeLocale);
 
     return {
       success: true,
@@ -2036,11 +2160,15 @@ function createPortableStore(options = {}) {
   };
 
   const deleteBackupSnapshot = (backupIdOrFileName) => {
+    const activeLocale = getLocale();
     const loc = getLocation();
     const backupDir = resolveSafeBackupDir(loc.directory);
     const lockPath = path.join(backupDir, '.backup.lock');
     if (!fs.existsSync(backupDir)) {
-      return { success: false, error: '백업 폴더가 존재하지 않습니다.' };
+      return {
+        success: false,
+        error: locText('백업 폴더가 존재하지 않습니다.', 'Backup folder does not exist.'),
+      };
     }
     return withFileLockSync(lockPath, () => {
       const entries = readBackupEntriesSorted(backupDir);
@@ -2049,7 +2177,10 @@ function createPortableStore(options = {}) {
         (e) => e.summary.backupId === needle || e.summary.fileName === needle
       );
       if (!matched) {
-        return { success: false, error: '삭제할 백업 스냅샷을 찾을 수 없습니다.' };
+        return {
+          success: false,
+          error: locText('삭제할 백업 스냅샷을 찾을 수 없습니다.', 'Backup snapshot to delete was not found.'),
+        };
       }
       try {
         if (fs.existsSync(matched.summary.filePath)) {
@@ -2057,14 +2188,18 @@ function createPortableStore(options = {}) {
         }
         return { success: true, deletedBackupId: matched.summary.backupId };
       } catch (err) {
-        const classified = classifyUsbWriteError(err, '백업 파일 삭제');
+        const classified = classifyUsbWriteError(
+          err,
+          locText('백업 파일 삭제', 'Delete backup file'),
+          activeLocale
+        );
         return {
           success: false,
           writeProtected: classified.writeProtected,
           error: classified.message,
         };
       }
-    });
+    }, activeLocale);
   };
 
   return {

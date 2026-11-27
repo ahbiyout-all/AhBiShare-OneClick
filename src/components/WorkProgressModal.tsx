@@ -9,6 +9,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import { PipelineStep } from '@/types/share';
+import { useI18n } from '@/i18n/I18nContext';
+import { tx } from '@/i18n/localeState';
 
 export type ProgressJobStatus = 'running' | 'success' | 'error';
 
@@ -36,12 +38,12 @@ const AUTO_CLOSE_DELAY_MS = 1500;
 function formatElapsedSeconds(ms: number): string {
   const safeMs = Math.max(0, ms);
   if (safeMs < 60_000) {
-    return `${(safeMs / 1000).toFixed(1)}초`;
+    return tx(`${(safeMs / 1000).toFixed(1)}초`, `${(safeMs / 1000).toFixed(1)}s`);
   }
   const totalSec = safeMs / 1000;
   const mins = Math.floor(totalSec / 60);
   const secs = (totalSec % 60).toFixed(1).padStart(4, '0');
-  return `${mins}분 ${secs}초`;
+  return tx(`${mins}분 ${secs}초`, `${mins}m ${secs}s`);
 }
 
 function formatStepDuration(ms?: number): string {
@@ -51,6 +53,7 @@ function formatStepDuration(ms?: number): string {
 }
 
 export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClose, onOpenDiagnostics }) => {
+  const { tx: txLocal } = useI18n();
   const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now());
   const [remainingAutoCloseMs, setRemainingAutoCloseMs] = useState<number>(AUTO_CLOSE_DELAY_MS);
   const activeStepRef = useRef<HTMLLIElement | null>(null);
@@ -261,7 +264,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
               className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0"
             >
               <Lock className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>실행 중 잠금</span>
+              <span>{txLocal('실행 중 잠금', 'Locked While Running')}</span>
             </span>
           ) : (
             <button
@@ -269,7 +272,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
               type="button"
               onClick={onClose}
               className="p-1.5 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-md cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 shrink-0"
-              aria-label="진행 창 닫기"
+              aria-label={txLocal('진행 창 닫기', 'Close progress dialog')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -352,20 +355,23 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
               }`}
             >
               {isRunning
-                ? runningStep?.title || 'Windows 네트워크 및 공유 구성을 처리하고 있습니다...'
+                ? runningStep?.title || txLocal('Windows 네트워크 및 공유 구성을 처리하고 있습니다...', 'Processing Windows network and share settings...')
                 : isSuccess
-                  ? job.summary || '모든 작업 단계가 정상적으로 완료되었습니다.'
-                  : job.errorDetail || failedStep?.error || '작업 실행 중 오류가 발생했습니다.'}
+                  ? job.summary || txLocal('모든 작업 단계가 정상적으로 완료되었습니다.', 'All operation steps completed successfully.')
+                  : job.errorDetail || failedStep?.error || txLocal('작업 실행 중 오류가 발생했습니다.', 'An error occurred during execution.')}
             </p>
 
             {/* Unboxed Tabular Metadata Row */}
             <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 tabular-data">
-              <span>경과 시간 {formatElapsedSeconds(elapsedMs)}</span>
+              <span>{txLocal(`경과 시간 ${formatElapsedSeconds(elapsedMs)}`, `Elapsed ${formatElapsedSeconds(elapsedMs)}`)}</span>
               {totalSteps > 0 && (
                 <>
                   <span aria-hidden="true">·</span>
                   <span>
-                    진행 {isError ? `${completedSteps}/${totalSteps} (중단)` : `${completedSteps} / ${totalSteps} 단계`}
+                    {txLocal('진행', 'Progress')}{' '}
+                    {isError
+                      ? txLocal(`${completedSteps}/${totalSteps} (중단)`, `${completedSteps}/${totalSteps} (Stopped)`)
+                      : txLocal(`${completedSteps} / ${totalSteps} 단계`, `${completedSteps} / ${totalSteps} steps`)}
                   </span>
                 </>
               )}
@@ -373,7 +379,10 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
                 <>
                   <span aria-hidden="true">·</span>
                   <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                    {(remainingAutoCloseMs / 1000).toFixed(1)}초 후 자동 닫힘
+                    {txLocal(
+                      `${(remainingAutoCloseMs / 1000).toFixed(1)}초 후 자동 닫힘`,
+                      `Closing in ${(remainingAutoCloseMs / 1000).toFixed(1)}s`
+                    )}
                   </span>
                 </>
               )}
@@ -385,7 +394,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {job.steps.length === 0 ? (
             <div className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
-              실행 단계를 준비하고 있습니다...
+              {txLocal('실행 단계를 준비하고 있습니다...', 'Preparing execution steps...')}
             </div>
           ) : (
             <ul
@@ -431,12 +440,12 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
                         </span>
                         <span className="tabular-data text-[11px] shrink-0 text-slate-500 dark:text-slate-400">
                           {step.status === 'running'
-                            ? '실행 중'
+                            ? txLocal('실행 중', 'Running')
                             : step.status === 'success'
-                              ? durationLabel || '완료'
+                              ? durationLabel || txLocal('완료', 'Done')
                               : step.status === 'error'
-                                ? '실패'
-                                : '대기'}
+                                ? txLocal('실패', 'Failed')
+                                : txLocal('대기', 'Pending')}
                         </span>
                       </div>
 
@@ -463,12 +472,18 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
         <div className="px-6 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/40 flex items-center justify-between gap-4 shrink-0">
           {isRunning ? (
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              중복 실행 방지를 위해 작업이 완료될 때까지 창을 닫을 수 없습니다.
+              {txLocal(
+                '중복 실행 방지를 위해 작업이 완료될 때까지 창을 닫을 수 없습니다.',
+                'This window remains locked until the operation finishes to prevent concurrent runs.'
+              )}
             </p>
           ) : isSuccess ? (
             <>
               <span className="text-xs text-slate-500 dark:text-slate-400 tabular-data">
-                완료됨 · {(remainingAutoCloseMs / 1000).toFixed(1)}초 후 자동 닫힘
+                {txLocal(
+                  `완료됨 · ${(remainingAutoCloseMs / 1000).toFixed(1)}초 후 자동 닫힘`,
+                  `Completed · Closing in ${(remainingAutoCloseMs / 1000).toFixed(1)}s`
+                )}
               </span>
               <button
                 id="btn-progress-close-now"
@@ -476,13 +491,13 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
                 onClick={onClose}
                 className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
-                바로 닫기
+                {txLocal('바로 닫기', 'Close Now')}
               </button>
             </>
           ) : (
             <>
               <span className="text-xs text-red-600 dark:text-red-400 font-medium">
-                오류 내용을 확인한 뒤 조치해 주세요.
+                {txLocal('오류 내용을 확인한 뒤 조치해 주세요.', 'Review the error details before retrying.')}
               </span>
               <div className="flex items-center gap-2">
                 {onOpenDiagnostics && (
@@ -496,7 +511,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
                     }}
                     className="px-3.5 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 shadow-sm"
                   >
-                    해결 가이드 & 진단 열기
+                    {txLocal('해결 가이드 & 진단 열기', 'Open Resolution & Diagnostics')}
                   </button>
                 )}
                 <button
@@ -505,7 +520,7 @@ export const WorkProgressModal: React.FC<WorkProgressModalProps> = ({ job, onClo
                   onClick={onClose}
                   className="px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
                 >
-                  확인 및 닫기
+                  {txLocal('확인 및 닫기', 'Confirm & Close')}
                 </button>
               </div>
             </>

@@ -1,4 +1,5 @@
 import { HostConfig, ClientTargetConfig, LegacyRollbackSnapshot, PolicyPatchMode, WindowsNetworkEra } from '@/types/share';
+import { tx } from '@/i18n/localeState';
 
 function escapePsSingle(val: string): string {
   return (val || '').replace(/'/g, "''");
@@ -154,8 +155,11 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
   return [
     {
       id: 'h_profile',
-      title: '네트워크 프로필 개인(Private) 전환',
-      detail: '공용(Public) 차단 해제를 위해 활성 네트워크를 개인 네트워크로 전환합니다.',
+      title: tx('네트워크 프로필 개인(Private) 전환', 'Switch Network Profile to Private'),
+      detail: tx(
+        '공용(Public) 차단 해제를 위해 활성 네트워크를 개인 네트워크로 전환합니다.',
+        'Switches active network connections from Public to Private to unblock SMB discovery and sharing.'
+      ),
       script: `
         if (Get-Command Get-NetConnectionProfile -ErrorAction SilentlyContinue) {
           Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -ne 'DomainAuthenticated' } | ForEach-Object {
@@ -167,8 +171,11 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
     },
     {
       id: 'h_firewall',
-      title: '방화벽 파일 및 프린터 공유 포트(445/139) 개방',
-      detail: 'Windows Defender 방화벽 SMB 인바운드 규칙을 활성화합니다.',
+      title: tx('방화벽 파일 및 프린터 공유 포트(445/139) 개방', 'Open Firewall Ports for File & Printer Sharing (445/139)'),
+      detail: tx(
+        'Windows Defender 방화벽 SMB 인바운드 규칙을 활성화합니다.',
+        'Enables Windows Defender Firewall inbound SMB sharing rules.'
+      ),
       script: `
         netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes 2>$null | Out-Null
         netsh advfirewall firewall set rule group="파일 및 프린터 공유" new enable=Yes 2>$null | Out-Null
@@ -186,15 +193,18 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
         } else {
           netsh advfirewall firewall delete rule name="AhBiShare-SMB-445" 2>$null | Out-Null
           netsh advfirewall firewall add rule name="AhBiShare-SMB-445" dir=in action=allow protocol=TCP localport=445 profile=any | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "방화벽 TCP 445 규칙 추가 실패 (관리자 권한 확인 필요)" }
+          if ($LASTEXITCODE -ne 0) { throw "${escapePsSingle(tx('방화벽 TCP 445 규칙 추가 실패 (관리자 권한 확인 필요)', 'Failed to add TCP 445 firewall rule (Administrator privileges required)'))}" }
         }
         Write-Output "Firewall rules opened (TCP 445/139)"
       `.trim(),
     },
     {
       id: 'h_services',
-      title: 'SMB 서버 및 네트워크 탐색 서비스 가동',
-      detail: 'LanmanServer, FDResPub, fdPHost, SSDPSrv를 자동 시작으로 활성화합니다.',
+      title: tx('SMB 서버 및 네트워크 탐색 서비스 가동', 'Start SMB Server & Network Discovery Services'),
+      detail: tx(
+        'LanmanServer, FDResPub, fdPHost, SSDPSrv를 자동 시작으로 활성화합니다.',
+        'Configures LanmanServer, FDResPub, fdPHost, and SSDPSrv for Automatic startup and starts them.'
+      ),
       script: `
         $svcs = @('LanmanServer', 'fdPHost', 'FDResPub', 'SSDPSrv')
         foreach ($s in $svcs) {
@@ -210,13 +220,19 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
       id: 'h_auth',
       title: config.authMode === 'guest'
         ? (osEra === 'win11_24h2' || osEra === 'win11_25_26h2'
-            ? 'Win11 24H2~26H2 호환 게스트 정책 및 SMB 서명 완화'
-            : '간편 무비밀번호(Guest/익명) 정책 적용')
-        : '전용 보안 공유 계정 구성 및 암호 보호 활성화',
+            ? tx('Win11 24H2~26H2 호환 게스트 정책 및 SMB 서명 완화', 'Win11 24H2-26H2 Compatible Guest Policy & Relaxed SMB Signing')
+            : tx('간편 무비밀번호(Guest/익명) 정책 적용', 'Apply Passwordless Guest / Anonymous Sharing Policy'))
+        : tx('전용 보안 공유 계정 구성 및 암호 보호 활성화', 'Configure Dedicated Secure Share Account & Password Protection'),
       detail:
         config.authMode === 'guest'
-          ? 'LSA 익명 허용, SMB 서명 완화, Guest 활성화 후 LanmanServer를 즉시 반영합니다 (재부팅 불필요).'
-          : `전용 계정(${config.username || 'AhBiShare'}) 생성·갱신 및 익명/게스트 접근 차단을 적용합니다.`,
+          ? tx(
+              'LSA 익명 허용, SMB 서명 완화, Guest 활성화 후 LanmanServer를 즉시 반영합니다 (재부팅 불필요).',
+              'Enables LSA anonymous access, relaxes SMB signing, activates Guest, and refreshes LanmanServer immediately (no reboot required).'
+            )
+          : tx(
+              `전용 계정(${config.username || 'AhBiShare'}) 생성·갱신 및 익명/게스트 접근 차단을 적용합니다.`,
+              `Creates/updates dedicated account (${config.username || 'AhBiShare'}) and restricts anonymous/guest access.`
+            ),
       script:
         config.authMode === 'guest'
           ? `
@@ -321,7 +337,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               & net.exe user $guestName /active:yes 2>$null | Out-Null
             }
             if ($nuCode -ne 0) {
-              throw ("Guest 빈 암호 활성화 실패 (코드 " + $nuCode + ", MinimumPasswordLength 정책 확인 필요): " + $nuErrOut)
+              throw ("${escapePsSingle(tx('Guest 빈 암호 활성화 실패 (코드 ', 'Failed to enable blank-password Guest (code '))}" + $nuCode + "${escapePsSingle(tx(', MinimumPasswordLength 정책 확인 필요): ', ', check MinimumPasswordLength policy): '))}" + $nuErrOut)
             }
             Set-AhBiGuestNetworkLogonPolicy $true
             Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
@@ -352,7 +368,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               }
               $nuCode = $LASTEXITCODE
               try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-              if ($nuCode -ne 0) { throw ("로컬 공유 계정 생성/갱신 실패 (" + $p_user + "): " + $script:__nuOut) }
+              if ($nuCode -ne 0) { throw ("${escapePsSingle(tx('로컬 공유 계정 생성/갱신 실패 (', 'Failed to create/update local share account ('))}" + $p_user + "): " + $script:__nuOut) }
             }
             $hasOtherGuestShare = $false
             try {
@@ -406,8 +422,11 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
     },
     {
       id: 'h_ntfs',
-      title: '공유 폴더 생성 및 NTFS 파일 시스템 권한 주입',
-      detail: `대상 폴더(${normalizedFolder}) 존재 확인 후 ACL을 설정합니다.`,
+      title: tx('공유 폴더 생성 및 NTFS 파일 시스템 권한 주입', 'Create Share Folder & Apply NTFS File System ACLs'),
+      detail: tx(
+        `대상 폴더(${normalizedFolder}) 존재 확인 후 ACL을 설정합니다.`,
+        `Verifies or creates target folder (${normalizedFolder}) and applies NTFS ACLs.`
+      ),
       script:
         config.authMode === 'guest'
           ? `
@@ -419,7 +438,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
             $script:__out = (& icacls.exe $p_icacls /grant "*S-1-1-0:${ntfsGrant}" /T /C /Q 2>&1) -join ' '
             $icaclsExit = $LASTEXITCODE
             try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-            if ($icaclsExit -ne 0) { throw ("icacls Everyone ACL 설정 실패 (" + $p_folder + "): " + $script:__out) }
+            if ($icaclsExit -ne 0) { throw ("${escapePsSingle(tx('icacls Everyone ACL 설정 실패 (', 'Failed to apply icacls Everyone ACL ('))}" + $p_folder + "): " + $script:__out) }
             try { [Console]::OutputEncoding = [System.Text.Encoding]::Default } catch {}
             (& icacls.exe $p_icacls /grant "*S-1-5-7:${ntfsGrant}" /T /C /Q 2>&1) | Out-Null
             (& icacls.exe $p_icacls /grant "*S-1-5-32-546:${ntfsGrant}" /T /C /Q 2>&1) | Out-Null
@@ -436,14 +455,17 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
             $script:__out = (& icacls.exe $p_icacls /grant "$($p_user):${ntfsGrant}" /T /C /Q 2>&1) -join ' '
             $icaclsExit = $LASTEXITCODE
             try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-            if ($icaclsExit -ne 0) { throw ("icacls 계정 ACL 설정 실패 (" + $p_user + "): " + $script:__out) }
+            if ($icaclsExit -ne 0) { throw ("${escapePsSingle(tx('icacls 계정 ACL 설정 실패 (', 'Failed to apply icacls account ACL ('))}" + $p_user + "): " + $script:__out) }
             Write-Output ("NTFS ACL applied for " + $p_user + " on " + $p_folder)
           `.trim(),
     },
     {
       id: 'h_share',
-      title: 'SMB 네트워크 공유 등록 및 검증',
-      detail: `공유 이름(${config.shareName.trim() || 'AhBiShared'}) 등록 및 접속 가능 상태를 검증합니다.`,
+      title: tx('SMB 네트워크 공유 등록 및 검증', 'Register & Verify SMB Network Share'),
+      detail: tx(
+        `공유 이름(${config.shareName.trim() || 'AhBiShared'}) 등록 및 접속 가능 상태를 검증합니다.`,
+        `Registers share name (${config.shareName.trim() || 'AhBiShared'}) and verifies availability.`
+      ),
       script:
         config.authMode === 'guest'
           ? `
@@ -482,7 +504,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               $script:__netShareOut = (& net.exe share "$p_share=$p_folder" "/GRANT:Everyone,$grantLevel" 2>&1) -join ' '
               $netShareCode = $LASTEXITCODE
               try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-              if ($netShareCode -ne 0) { throw ("net share 등록 실패 (" + $p_share + "): " + $script:__netShareOut) }
+              if ($netShareCode -ne 0) { throw ("${escapePsSingle(tx('net share 등록 실패 (', 'Failed to register net share ('))}" + $p_share + "): " + $script:__netShareOut) }
             }
             Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Output ("SMB share registered: " + $p_share)
@@ -506,7 +528,7 @@ export function buildHostStepScripts(config: HostConfig, osEra?: WindowsNetworkE
               $script:__netShareOut = (& net.exe share "$p_share=$p_folder" "/GRANT:$p_user,$grantLevel" "/GRANT:Administrators,FULL" 2>&1) -join ' '
               $netShareCode = $LASTEXITCODE
               try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-              if ($netShareCode -ne 0) { throw ("net share 보안 등록 실패 (" + $p_share + "): " + $script:__netShareOut) }
+              if ($netShareCode -ne 0) { throw ("${escapePsSingle(tx('net share 보안 등록 실패 (', 'Failed to register secure net share ('))}" + $p_share + "): " + $script:__netShareOut) }
             }
             Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Output ("Secure SMB share registered: " + $p_share)
@@ -540,8 +562,11 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
   return [
     {
       id: 'c_services',
-      title: '클라이언트 워크스테이션 및 탐색 서비스 활성화',
-      detail: 'LanmanWorkstation, fdPHost, FDResPub, NetBIOS 및 UAC 연결 공유(EnableLinkedConnections)를 활성화합니다.',
+      title: tx('클라이언트 워크스테이션 및 탐색 서비스 활성화', 'Enable Client Workstation & Discovery Services'),
+      detail: tx(
+        'LanmanWorkstation, fdPHost, FDResPub, NetBIOS 및 UAC 연결 공유(EnableLinkedConnections)를 활성화합니다.',
+        'Enables LanmanWorkstation, fdPHost, FDResPub, NetBIOS, and UAC EnableLinkedConnections.'
+      ),
       script: `
         $svcs = @('LanmanWorkstation', 'fdPHost', 'FDResPub', 'Dnscache')
         foreach ($s in $svcs) {
@@ -549,7 +574,7 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
           Start-Service -Name $s -ErrorAction SilentlyContinue | Out-Null
         }
         $ws = Get-Service -Name 'LanmanWorkstation' -ErrorAction SilentlyContinue
-        if (-not $ws -or $ws.Status -ne 'Running') { throw "LanmanWorkstation(SMB 클라이언트) 서비스가 실행되지 않았습니다." }
+        if (-not $ws -or $ws.Status -ne 'Running') { throw "${escapePsSingle(tx('LanmanWorkstation(SMB 클라이언트) 서비스가 실행되지 않았습니다.', 'LanmanWorkstation (SMB Client) service is not running.'))}" }
         $nbtPath = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces"
         Get-ChildItem $nbtPath -ErrorAction SilentlyContinue | ForEach-Object {
           Set-ItemProperty -Path $_.PSPath -Name "NetbiosOptions" -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
@@ -562,13 +587,19 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
       id: 'c_policy',
       title: config.authMode === 'guest'
         ? (osEra === 'win11_25_26h2'
-            ? 'Win11 25H2/26H2 0x80070035 및 SMB 서명 차단 완화'
-            : 'Win11 24H2 0x80070035 및 비인증 게스트 차단 해제')
-        : 'SMB 클라이언트 보안·서명·NTLMv2 정책 정렬',
+            ? tx('Win11 25H2/26H2 0x80070035 및 SMB 서명 차단 완화', 'Win11 25H2/26H2 0x80070035 & SMB Signing Bypass')
+            : tx('Win11 24H2 0x80070035 및 비인증 게스트 차단 해제', 'Win11 24H2 0x80070035 & Insecure Guest Unblock'))
+        : tx('SMB 클라이언트 보안·서명·NTLMv2 정책 정렬', 'Align SMB Client Security, Signing & NTLMv2 Policies'),
       detail:
         config.authMode === 'guest'
-          ? 'GPO·레지스트리 게스트 허용, SMB 서명 완화 적용 후 워크스테이션 서비스를 즉시 재시작합니다.'
-          : 'Win 11 24H2~26H2 SMB 클라이언트 서명 협상·NTLMv2 정책을 정렬합니다.',
+          ? tx(
+              'GPO·레지스트리 게스트 허용, SMB 서명 완화 적용 후 워크스테이션 서비스를 즉시 재시작합니다.',
+              'Applies GPO/registry guest allowances and relaxed SMB signing, then restarts LanmanWorkstation immediately.'
+            )
+          : tx(
+              'Win 11 24H2~26H2 SMB 클라이언트 서명 협상·NTLMv2 정책을 정렬합니다.',
+              'Aligns Win 11 24H2-26H2 SMB client signing negotiation and NTLMv2 policies.'
+            ),
       script:
         config.authMode === 'guest'
           ? `
@@ -581,7 +612,7 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
             try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "AllowInsecureGuestAuth 레지스트리 설정 실패 (관리자 권한 필요)" }
+            if ($LASTEXITCODE -ne 0) { throw "${escapePsSingle(tx('AllowInsecureGuestAuth 레지스트리 설정 실패 (관리자 권한 필요)', 'Failed to set AllowInsecureGuestAuth registry key (Administrator privileges required)'))}" }
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v BlockNTLM /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
             reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f 2>$null | Out-Null
@@ -613,8 +644,11 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
     },
     {
       id: 'c_probe',
-      title: `대상 서버(${hostRaw}) SMB 포트(445) 도달성 검증`,
-      detail: '방화벽 차단이나 IP 오입력 여부를 사전에 빠르게 검증합니다.',
+      title: tx(`대상 서버(${hostRaw}) SMB 포트(445) 도달성 검증`, `Verify Target Server (${hostRaw}) SMB Port 445 Reachability`),
+      detail: tx(
+        '방화벽 차단이나 IP 오입력 여부를 사전에 빠르게 검증합니다.',
+        'Pre-checks TCP 445 connectivity to catch firewall blocks or invalid target addresses early.'
+      ),
       script: `
         $p_host = '${host}'
         $tcp = New-Object System.Net.Sockets.TcpClient
@@ -622,7 +656,7 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
         try {
           $ar = $tcp.BeginConnect($p_host, 445, $null, $null)
           $ok = $ar.AsyncWaitHandle.WaitOne(2500, $false)
-          if (-not $ok) { throw ("TCP 445 연결 시간 초과 (" + $p_host + "): 대상 PC 방화벽 또는 전원을 확인하세요.") }
+          if (-not $ok) { throw ("${escapePsSingle(tx('TCP 445 연결 시간 초과 (', 'TCP 445 connection timed out ('))}" + $p_host + "${escapePsSingle(tx('): 대상 PC 방화벽 또는 전원을 확인하세요.', '): Check target PC firewall or power state.'))}") }
           $tcp.EndConnect($ar)
           Write-Output ("Port 445 reachable on " + $p_host)
         } finally {
@@ -633,11 +667,19 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
     },
     {
       id: 'c_cred',
-      title: config.authMode === 'account' ? '자격 증명 저장소(cmdkey) 자동 등록' : '기존 충돌 SMB 세션 일괄 정리',
+      title: config.authMode === 'account'
+        ? tx('자격 증명 저장소(cmdkey) 자동 등록', 'Auto-Register Credential Store (cmdkey)')
+        : tx('기존 충돌 SMB 세션 일괄 정리', 'Clear Conflicting Existing SMB Sessions'),
       detail:
         config.authMode === 'account'
-          ? `팝업 없는 연결을 위해 ${hostRaw} 자격 증명을 Windows Credential Manager에 저장합니다.`
-          : '대상 서버에 남은 캐시 세션으로 인한 1219 다중 연결 오류를 방지합니다.',
+          ? tx(
+              `팝업 없는 연결을 위해 ${hostRaw} 자격 증명을 Windows Credential Manager에 저장합니다.`,
+              `Saves ${hostRaw} credentials in Windows Credential Manager for prompt-free mounting.`
+            )
+          : tx(
+              '대상 서버에 남은 캐시 세션으로 인한 1219 다중 연결 오류를 방지합니다.',
+              'Clears stale cached sessions to prevent Error 1219 multiple-connection conflicts.'
+            ),
       script:
         config.authMode === 'account'
           ? `
@@ -673,7 +715,7 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
               & cmdkey.exe "/add:$p_hostAlias" "/user:$p_aliasUser" "/pass:$p_pass" 2>$null | Out-Null
             }
             try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
-            if ($cmdExit -ne 0) { throw ("cmdkey 자격 증명 등록 실패 (" + $p_host + "): " + $script:__cmdOut) }
+            if ($cmdExit -ne 0) { throw ("${escapePsSingle(tx('cmdkey 자격 증명 등록 실패 (', 'Failed to register cmdkey credential ('))}" + $p_host + "): " + $script:__cmdOut) }
             Write-Output ("Saved Windows credentials for " + $p_host + " (" + $p_dispUser + ")")
           `.trim()
           : `
@@ -702,8 +744,11 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
     },
     {
       id: 'c_mount',
-      title: `네트워크 드라이브(${drive}) 마운트 및 탐색기 연결`,
-      detail: `${`\\\\${hostRaw}\\${shareRaw}`} 경로를 ${drive} 드라이브로 매핑합니다.`,
+      title: tx(`네트워크 드라이브(${drive}) 마운트 및 탐색기 연결`, `Mount Network Drive (${drive}) & Open Explorer`),
+      detail: tx(
+        `${`\\\\${hostRaw}\\${shareRaw}`} 경로를 ${drive} 드라이브로 매핑합니다.`,
+        `Maps ${`\\\\${hostRaw}\\${shareRaw}`} to drive ${drive}.`
+      ),
       script: `
         $p_drive = '${drive}'
         $p_host = '${host}'
@@ -723,7 +768,7 @@ export function buildClientStepScripts(config: ClientTargetConfig, osEra?: Windo
           Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$p_drive'" -ErrorAction SilentlyContinue
         }
         if ($vol -and $vol.DriveType -ne 4) {
-          throw ("드라이브 문자 " + $p_drive + "는 로컬 디스크에서 이미 사용 중입니다. 다른 드라이브 문자(Y:, X: 등)를 선택하세요.")
+          throw ("${escapePsSingle(tx('드라이브 문자 ', 'Drive letter '))}" + $p_drive + "${escapePsSingle(tx('는 로컬 디스크에서 이미 사용 중입니다. 다른 드라이브 문자(Y:, X: 등)를 선택하세요.', ' is already used by a local disk. Choose another drive letter (e.g., Y:, X:).'))}")
         }
 
         function Clear-HostAndDriveConflicts {
@@ -859,7 +904,7 @@ public class AhBiMprNet {
             }
             $msg = ''
             try { $msg = (New-Object System.ComponentModel.Win32Exception([int]$rc)).Message } catch {}
-            return New-Object PSObject -Property @{ Code = [int]$rc; Output = ('시스템 오류 ' + $rc + ': ' + $msg).Trim() }
+            return New-Object PSObject -Property @{ Code = [int]$rc; Output = ('${escapePsSingle(tx('시스템 오류 ', 'System error '))}' + $rc + ': ' + $msg).Trim() }
           } catch {
             return New-Object PSObject -Property @{ Code = -1; Output = $_.Exception.Message }
           }
@@ -1021,23 +1066,23 @@ public class AhBiMprNet {
           $diagOut = ($lastOut -replace '\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b', ' ') -replace '(?:^|\\|\\s*)(?:WNet-Guest|HostGuestNet|HostGuest|WNet-DefaultNull|WNet-Null|WNetAlias|AliasNet|WNetBare|WNet|Guest|Anonymous|Default|New-SmbMapping):', ' '
           $hint = ''
           if ($diagOut -match '(?<![.\\d])85(?![.\\d])|이미 사용|already in use|already assigned') {
-            $hint = ' [원인: 선택한 드라이브 문자(' + $p_drive + ')가 다른 세션에서 사용 중입니다. Y:/X: 등 다른 드라이브 문자를 선택하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 선택한 드라이브 문자(', '[Cause: Selected drive letter ('))}' + $p_drive + '${escapePsSingle(tx(')가 다른 세션에서 사용 중입니다. Y:/X: 등 다른 드라이브 문자를 선택하세요.]', ') is already in use by another session. Pick another letter such as Y: or X:.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])1219(?![.\\d])|다중 연결|Multiple connections') {
-            $hint = ' [원인: 대상 PC(' + $p_host + ')에 다른 계정의 기존 연결 세션이 남아 있습니다. 실행 창/탐색기 열려 있는 UNC 연결을 닫고 재시도하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 대상 PC(', '[Cause: Target PC ('))}' + $p_host + '${escapePsSingle(tx(')에 다른 계정의 기존 연결 세션이 남아 있습니다. 실행 창/탐색기 열려 있는 UNC 연결을 닫고 재시도하세요.]', ') still has an existing connection session with different credentials. Close open Explorer UNC windows and retry.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])1385(?![.\\d])|로그온 유형|logon type') {
-            $hint = ' [원인: 호스트 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)에 Guest 네트워크 로그온이 차단되어 있습니다. 호스트 PC에서 최신 AhBiShare로 무비밀번호 공유를 재개설(또는 안전 호환 패치)하거나 [보안 계정 모드]로 연결하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 호스트 PC의 로컬 보안 정책(SeDenyNetworkLogonRight)에 Guest 네트워크 로그온이 차단되어 있습니다. 호스트 PC에서 최신 AhBiShare로 무비밀번호 공유를 재개설(또는 안전 호환 패치)하거나 [보안 계정 모드]로 연결하세요.]', '[Cause: Host Local Security Policy (SeDenyNetworkLogonRight) blocks Guest network logon. Re-create passwordless share on host with AhBiShare or connect with Account Auth Mode.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])1223(?![.\\d])|사용자 이름 입력|작업을 취소|canceled by the user') {
-            $hint = ' [원인: 호스트 PC가 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다. 호스트에서 공유를 재개설하거나 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 호스트 PC가 게스트·익명 접근을 거부하고 계정 인증을 요구했습니다. 호스트에서 공유를 재개설하거나 [보안 계정 모드]로 아이디/암호를 입력해 연결하세요.]', '[Cause: Host rejected guest/anonymous access and requested account authentication. Re-open share on host or enter credentials in Account Auth Mode.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])1272(?![.\\d])|(?<![.\\d])384(?![.\\d])|0x80070035|게스트|guest') {
-            $hint = ' [원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌 또는 호스트 Guest 빈 암호 제한. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: Win 11 24H2~26H2 게스트 차단/서명 정책 충돌 또는 호스트 Guest 빈 암호 제한. 호스트·클라이언트 양쪽 OS 호환성 매트릭스에서 안전 호환 패치를 적용하세요.]', '[Cause: Win 11 24H2-26H2 guest block/signing policy or host blank-password restriction. Apply Safe Compatibility Patch in the OS Matrix on both PCs.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])1326(?![.\\d])|(?<![.\\d])86(?![.\\d])|(?<![.\\d])5(?![.\\d])|액세스|거부|로그온|암호|password is not correct') {
-            $hint = ' [원인: 호스트 forceguest=1(Guest 전용 강제), 최소 암호 길이(MinimumPasswordLength>0), 계정 ID/암호 불일치 또는 OS 복제 PC의 중복 Machine SID(Win11 24H2~25H2 KB5065426 · Event 6167) 충돌 가능성이 있습니다. 호스트에서 무비밀번호 차단 해제/재개설 또는 중복 SID KIR 패치를 확인하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 호스트 forceguest=1(Guest 전용 강제), 최소 암호 길이(MinimumPasswordLength>0), 계정 ID/암호 불일치 또는 OS 복제 PC의 중복 Machine SID(Win11 24H2~25H2 KB5065426 · Event 6167) 충돌 가능성이 있습니다. 호스트에서 무비밀번호 차단 해제/재개설 또는 중복 SID KIR 패치를 확인하세요.]', '[Cause: Possible host forceguest=1, MinimumPasswordLength>0, wrong credentials, or cloned-PC Duplicate Machine SID (Win11 24H2-25H2 KB5065426 / Event 6167). Check host guest unlock or Duplicate SID KIR patch.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])58(?![.\\d])|지정한 서버가 요청한 작업|cannot perform the requested operation') {
-            $hint = ' [원인: 대상 서버의 SMB 전송 암호화·서명 강제 또는 SMB 프로토콜 버전 불일치(Error 58). 호스트/클라이언트에서 구형 OS 호환 브릿지 정렬을 실행하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 대상 서버의 SMB 전송 암호화·서명 강제 또는 SMB 프로토콜 버전 불일치(Error 58). 호스트/클라이언트에서 구형 OS 호환 브릿지 정렬을 실행하세요.]', '[Cause: Target server mandatory SMB encryption/signing or protocol mismatch (Error 58). Run Legacy OS Compatibility Bridge on host/client.]'))}'
           } elseif ($diagOut -match '(?<![.\\d])53(?![.\\d])|(?<![.\\d])67(?![.\\d])|네트워크 경로') {
-            $hint = ' [원인: 네트워크 경로(' + $p_unc + ') 또는 공유 이름을 찾을 수 없습니다. 호스트 방화벽/공유 이름을 확인하세요.]'
+            $hint = ' ${escapePsSingle(tx('[원인: 네트워크 경로(', '[Cause: Network path ('))}' + $p_unc + '${escapePsSingle(tx(') 또는 공유 이름을 찾을 수 없습니다. 호스트 방화벽/공유 이름을 확인하세요.]', ') or share name not found. Check host firewall and share name.]'))}'
           }
-          throw ("네트워크 드라이브 생성 실패 (코드 " + $lastCode + "): " + $lastOut + $hint)
+          throw ("${escapePsSingle(tx('네트워크 드라이브 생성 실패 (코드 ', 'Failed to map network drive (code '))}" + $lastCode + "): " + $lastOut + $hint)
         }
 
         try {
@@ -1697,10 +1742,10 @@ export function buildRawSecurityRegistryScript(remoteHostTarget?: string): strin
             $remoteReachable = $true
             $remoteRaw = $resObj
           } else {
-            $remoteError = '원격 레지스트리 응답 없음'
+            $remoteError = '${escapePsSingle(tx('원격 레지스트리 응답 없음', 'No response from remote registry'))}'
           }
         } else {
-          $remoteError = '원격 RPC 레지스트리(TCP 135/445 · RemoteRegistry) 응답 시간 초과'
+          $remoteError = '${escapePsSingle(tx('원격 RPC 레지스트리(TCP 135/445 · RemoteRegistry) 응답 시간 초과', 'Remote RPC Registry (TCP 135/445 · RemoteRegistry) request timed out'))}'
         }
         Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
@@ -1735,15 +1780,15 @@ export function buildOsCompatibilityPatchScript(
 
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Print" /v RpcAuthnLevelPrivacyEnabled /t REG_DWORD /d 0 /f | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "Failed to set RpcAuthnLevelPrivacyEnabled (Admin required)" }
-      $actions += '프린터 RPC 개인정보 인증 완화 (RpcAuthnLevelPrivacyEnabled=0 · 0x0000011b 해결)'
+      $actions += '${escapePsSingle(tx('프린터 RPC 개인정보 인증 완화 (RpcAuthnLevelPrivacyEnabled=0 · 0x0000011b 해결)', 'Relaxed printer RPC privacy level (RpcAuthnLevelPrivacyEnabled=0 · fixes 0x0000011b)'))}'
 
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC" /v RpcUseNamedPipeProtocol /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC" /v RpcProtocols /t REG_DWORD /d 7 /f | Out-Null
-      $actions += 'RPC over Named Pipes 활성화 (RpcUseNamedPipeProtocol=1, RpcProtocols=7 · 0x00000709 해결)'
+      $actions += '${escapePsSingle(tx('RPC over Named Pipes 활성화 (RpcUseNamedPipeProtocol=1, RpcProtocols=7 · 0x00000709 해결)', 'Enabled RPC over Named Pipes (RpcUseNamedPipeProtocol=1, RpcProtocols=7 · fixes 0x00000709)'))}'
 
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\PointAndPrint" /v NoWarningNoElevationOnInstall /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\PointAndPrint" /v UpdatePromptSettings /t REG_DWORD /d 2 /f | Out-Null
-      $actions += 'Point and Print LAN 공유 프린터 드라이버 자동 설치 허용 정렬'
+      $actions += '${escapePsSingle(tx('Point and Print LAN 공유 프린터 드라이버 자동 설치 허용 정렬', 'Allowed Point and Print automatic LAN shared printer driver installation'))}'
 
       netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes 2>$null | Out-Null
       netsh advfirewall firewall set rule group="파일 및 프린터 공유" new enable=Yes 2>$null | Out-Null
@@ -1753,10 +1798,10 @@ export function buildOsCompatibilityPatchScript(
       $sp = Get-Service -Name 'Spooler' -ErrorAction SilentlyContinue
       if ($sp -and $sp.Status -eq 'Running') {
         $restarted += 'Spooler'
-        $actions += 'Print Spooler(Spooler) 서비스 즉시 재시작 및 RPC 정책 반영 완료'
+        $actions += '${escapePsSingle(tx('Print Spooler(Spooler) 서비스 즉시 재시작 및 RPC 정책 반영 완료', 'Restarted Print Spooler (Spooler) service immediately and applied RPC policy'))}'
       } else {
         $spoolerFailed = $true
-        $actions += 'Spooler 서비스 즉시 재시작 실패 (프로세스 잠금 · 재부팅 권장)'
+        $actions += '${escapePsSingle(tx('Spooler 서비스 즉시 재시작 실패 (프로세스 잠금 · 재부팅 권장)', 'Spooler immediate restart failed (process locked; reboot recommended)'))}'
       }
 
       @{
@@ -1777,21 +1822,21 @@ export function buildOsCompatibilityPatchScript(
       $spoolerFailed = $false
 
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Print" /v RpcAuthnLevelPrivacyEnabled /t REG_DWORD /d 1 /f | Out-Null
-      $actions += '프린터 RPC 개인정보 인증 강제(RpcAuthnLevelPrivacyEnabled=1) 복원'
+      $actions += '${escapePsSingle(tx('프린터 RPC 개인정보 인증 강제(RpcAuthnLevelPrivacyEnabled=1) 복원', 'Restored printer RPC privacy enforcement (RpcAuthnLevelPrivacyEnabled=1)'))}'
 
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC" /v RpcUseNamedPipeProtocol /t REG_DWORD /d 0 /f | Out-Null
       reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\RPC" /v RpcProtocols /f 2>$null | Out-Null
-      $actions += 'RPC over TCP 기본 보안 전송 정책으로 복원'
+      $actions += '${escapePsSingle(tx('RPC over TCP 기본 보안 전송 정책으로 복원', 'Restored default secure RPC over TCP transport policy'))}'
 
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\PointAndPrint" /v NoWarningNoElevationOnInstall /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\PointAndPrint" /v UpdatePromptSettings /t REG_DWORD /d 0 /f | Out-Null
-      $actions += 'Point and Print 관리자 드라이버 설치 제한 복원'
+      $actions += '${escapePsSingle(tx('Point and Print 관리자 드라이버 설치 제한 복원', 'Restored Point and Print administrator driver installation restriction'))}'
 
       Restart-Service -Name 'Spooler' -Force -ErrorAction SilentlyContinue | Out-Null
       $sp = Get-Service -Name 'Spooler' -ErrorAction SilentlyContinue
       if ($sp -and $sp.Status -eq 'Running') {
         $restarted += 'Spooler'
-        $actions += 'Print Spooler 서비스 새로고침 완료'
+        $actions += '${escapePsSingle(tx('Print Spooler 서비스 새로고침 완료', 'Print Spooler service refreshed'))}'
       } else {
         $spoolerFailed = $true
       }
@@ -1812,12 +1857,12 @@ export function buildOsCompatibilityPatchScript(
       $actions = @()
       $restarted = @()
       & netsh.exe winsock reset 2>&1 | Out-Null
-      $actions += 'Winsock 카탈로그 초기화 (netsh winsock reset)'
+      $actions += '${escapePsSingle(tx('Winsock 카탈로그 초기화 (netsh winsock reset)', 'Reset Winsock catalog (netsh winsock reset)'))}'
       & netsh.exe int ip reset 2>&1 | Out-Null
-      $actions += 'TCP/IP 프로토콜 스택 초기화 (netsh int ip reset)'
+      $actions += '${escapePsSingle(tx('TCP/IP 프로토콜 스택 초기화 (netsh int ip reset)', 'Reset TCP/IP protocol stack (netsh int ip reset)'))}'
       & ipconfig.exe /flushdns 2>&1 | Out-Null
       & arp.exe -d * 2>$null | Out-Null
-      $actions += 'DNS & ARP 테이블 캐시 플러시 완료'
+      $actions += '${escapePsSingle(tx('DNS & ARP 테이블 캐시 플러시 완료', 'Flushed DNS & ARP table cache'))}'
       foreach ($svc in @('LanmanWorkstation', 'LanmanServer', 'FDResPub')) {
         Set-Service -Name $svc -StartupType Automatic -ErrorAction SilentlyContinue | Out-Null
         Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue | Out-Null
@@ -1838,10 +1883,10 @@ export function buildOsCompatibilityPatchScript(
       ${PS_JSON_HELPER}
       $actions = @()
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw "LocalAccountTokenFilterPolicy 설정 실패 (관리자 권한 필요)" }
+      if ($LASTEXITCODE -ne 0) { throw "${escapePsSingle(tx('LocalAccountTokenFilterPolicy 설정 실패 (관리자 권한 필요)', 'Failed to set LocalAccountTokenFilterPolicy (Administrator privileges required)'))}" }
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v EnableLinkedConnections /t REG_DWORD /d 1 /f 2>$null | Out-Null
-      $actions += 'UAC 원격 토큰 필터 완화 활성화 (LocalAccountTokenFilterPolicy=1 · 오류 5 방지)'
-      $actions += '관리자/일반 토큰 간 네트워크 드라이브 공유(EnableLinkedConnections=1) 확인 완료'
+      $actions += '${escapePsSingle(tx('UAC 원격 토큰 필터 완화 활성화 (LocalAccountTokenFilterPolicy=1 · 오류 5 방지)', 'Enabled UAC remote token filter relaxation (LocalAccountTokenFilterPolicy=1 · prevents Error 5)'))}'
+      $actions += '${escapePsSingle(tx('관리자/일반 토큰 간 네트워크 드라이브 공유(EnableLinkedConnections=1) 확인 완료', 'Verified shared network drives across elevated/standard tokens (EnableLinkedConnections=1)'))}'
       @{
         appliedActions = $actions
         restartedServices = @()
@@ -1858,7 +1903,7 @@ export function buildOsCompatibilityPatchScript(
       ${PS_JSON_HELPER}
       $actions = @()
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 0 /f | Out-Null
-      $actions += 'UAC 원격 토큰 필터 기본 보안 복원 (LocalAccountTokenFilterPolicy=0)'
+      $actions += '${escapePsSingle(tx('UAC 원격 토큰 필터 기본 보안 복원 (LocalAccountTokenFilterPolicy=0)', 'Restored default UAC remote token filter protection (LocalAccountTokenFilterPolicy=0)'))}'
       @{
         appliedActions = $actions
         restartedServices = @()
@@ -1876,8 +1921,8 @@ export function buildOsCompatibilityPatchScript(
       $actions = @()
       $restarted = @()
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Policies\\Microsoft\\FeatureManagement\\Overrides" /v 1517186191 /t REG_DWORD /d 0 /f | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw "KIR Duplicate SID Override(1517186191=0) 설정 실패 (관리자 권한 필요)" }
-      $actions += 'Win11 24H2~25H2 중복 Machine SID(KB5065426 · Event 6167) 차단 우회 KIR(Overrides\\1517186191=0) 적용 완료 (커널 반영을 위해 재부팅 필요)'
+      if ($LASTEXITCODE -ne 0) { throw "${escapePsSingle(tx('KIR Duplicate SID Override(1517186191=0) 설정 실패 (관리자 권한 필요)', 'Failed to set KIR Duplicate SID Override (1517186191=0) (Administrator privileges required)'))}" }
+      $actions += '${escapePsSingle(tx('Win11 24H2~25H2 중복 Machine SID(KB5065426 · Event 6167) 차단 우회 KIR(Overrides\\1517186191=0) 적용 완료 (커널 반영을 위해 재부팅 필요)', 'Applied Win11 24H2-25H2 Duplicate Machine SID (KB5065426 / Event 6167) KIR bypass (Overrides\\1517186191=0 · reboot required)'))}'
       foreach ($svc in @('LanmanWorkstation', 'LanmanServer')) {
         Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue | Out-Null
         $restarted += $svc
@@ -1901,17 +1946,17 @@ export function buildOsCompatibilityPatchScript(
       if (Get-Command Get-WindowsOptionalFeature -ErrorAction SilentlyContinue) {
         $feat = Get-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol-Client' -ErrorAction SilentlyContinue
         if ($feat -and "$($feat.State)" -eq 'Enabled') {
-          $actions += 'SMB 1.0/CIFS 클라이언트(SMB1Protocol-Client) 기능이 이미 활성화되어 있습니다.'
+          $actions += '${escapePsSingle(tx('SMB 1.0/CIFS 클라이언트(SMB1Protocol-Client) 기능이 이미 활성화되어 있습니다.', 'SMB 1.0/CIFS Client (SMB1Protocol-Client) feature is already enabled.'))}'
         } else {
           Enable-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol-Client' -All -NoRestart -ErrorAction Stop | Out-Null
           $smb1Changed = $true
-          $actions += '구형 NAS·복합기용 SMB 1.0/CIFS 클라이언트 선택적 기능(SMB1Protocol-Client) 설치 완료'
+          $actions += '${escapePsSingle(tx('구형 NAS·복합기용 SMB 1.0/CIFS 클라이언트 선택적 기능(SMB1Protocol-Client) 설치 완료', 'Installed SMB 1.0/CIFS Client optional feature (SMB1Protocol-Client) for legacy NAS/MFP'))}'
         }
       } else {
         & sc.exe config mrxsmb10 start= auto 2>$null | Out-Null
         & sc.exe start mrxsmb10 2>$null | Out-Null
         $smb1Changed = $true
-        $actions += '레거시 SMB 1.0 클라이언트 드라이버(mrxsmb10) 시작 설정 완료'
+        $actions += '${escapePsSingle(tx('레거시 SMB 1.0 클라이언트 드라이버(mrxsmb10) 시작 설정 완료', 'Configured legacy SMB 1.0 client driver (mrxsmb10) startup'))}'
       }
       @{
         appliedActions = $actions
@@ -1938,7 +1983,7 @@ export function buildOsCompatibilityPatchScript(
       if (Get-Command Get-NetConnectionProfile -ErrorAction SilentlyContinue) {
         Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -eq 'Public' } | ForEach-Object {
           Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue | Out-Null
-          $actions += ("네트워크 프로필 개인(Private) 전환: " + $_.InterfaceAlias)
+          $actions += ("${escapePsSingle(tx('네트워크 프로필 개인(Private) 전환: ', 'Switched network profile to Private: '))}" + $_.InterfaceAlias)
         }
       }
 
@@ -1952,7 +1997,7 @@ export function buildOsCompatibilityPatchScript(
         netsh advfirewall firewall delete rule name="AhBiShare-SMB-445" 2>$null | Out-Null
         netsh advfirewall firewall add rule name="AhBiShare-SMB-445" dir=in action=allow protocol=TCP localport=445 profile=any 2>$null | Out-Null
       }
-      $actions += 'TCP 445 및 파일·프린터 공유 방화벽 규칙 개방 정렬'
+      $actions += '${escapePsSingle(tx('TCP 445 및 파일·프린터 공유 방화벽 규칙 개방 정렬', 'Aligned TCP 445 & File and Printer Sharing firewall rules'))}'
 
       try {
         if (Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue) {
@@ -2009,11 +2054,11 @@ export function buildOsCompatibilityPatchScript(
         if ($pBr) { try { $pBr.StandardInput.Close() } catch {}; if (-not $pBr.WaitForExit(5000)) { try { $pBr.Kill() } catch {} } }
       } catch {}
       Set-AhBiGuestNetworkLogonPolicy $true
-      $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 및 빈 암호 허용 정렬 (오류 1385·86 방지)'
-      $actions += 'Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환을 위해 SMB 암호화·서명 강제 해제 및 비암호화 접근 허용'
+      $actions += '${escapePsSingle(tx('로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제 및 빈 암호 허용 정렬 (오류 1385·86 방지)', 'Cleared Guest SeDenyNetworkLogonRight block & allowed blank passwords (prevents Errors 1385/86)'))}'
+      $actions += '${escapePsSingle(tx('Win 7(SMB 2.1)·Win 8(SMB 3.0) 호환을 위해 SMB 암호화·서명 강제 해제 및 비암호화 접근 허용', 'Disabled mandatory SMB encryption/signing & allowed unencrypted access for Win 7/8 compatibility'))}'
 
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f | Out-Null
-      $actions += 'NTLM 인증 협상 수준 NTLMv2 고정(LmCompatibilityLevel=3) 정렬'
+      $actions += '${escapePsSingle(tx('NTLM 인증 협상 수준 NTLMv2 고정(LmCompatibilityLevel=3) 정렬', 'Pinned NTLM negotiation level to NTLMv2 (LmCompatibilityLevel=3)'))}'
 
       $nbtPath = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces'
       Get-ChildItem $nbtPath -ErrorAction SilentlyContinue | ForEach-Object {
@@ -2023,7 +2068,7 @@ export function buildOsCompatibilityPatchScript(
           $netbiosChanged = $true
         }
       }
-      if ($netbiosChanged) { $actions += 'NetBIOS over TCP/IP(NetbiosOptions=1) 활성화' }
+      if ($netbiosChanged) { $actions += '${escapePsSingle(tx('NetBIOS over TCP/IP(NetbiosOptions=1) 활성화', 'Enabled NetBIOS over TCP/IP (NetbiosOptions=1)'))}' }
 
       foreach ($svc in @('FDResPub', 'fdPHost', 'SSDPSrv')) {
         Set-Service -Name $svc -StartupType Automatic -ErrorAction SilentlyContinue | Out-Null
@@ -2035,7 +2080,7 @@ export function buildOsCompatibilityPatchScript(
         $restarted += $svc
       }
       & ipconfig.exe /flushdns 2>&1 | Out-Null
-      $actions += 'WS-Discovery 탐색 · LanmanServer · LanmanWorkstation 즉시 재시작 완료'
+      $actions += '${escapePsSingle(tx('WS-Discovery 탐색 · LanmanServer · LanmanWorkstation 즉시 재시작 완료', 'Restarted WS-Discovery, LanmanServer & LanmanWorkstation immediately'))}'
 
       @{
         appliedActions = $actions
@@ -2057,17 +2102,17 @@ export function buildOsCompatibilityPatchScript(
       if (Get-Command Get-WindowsOptionalFeature -ErrorAction SilentlyContinue) {
         $feat = Get-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -ErrorAction SilentlyContinue
         if ($feat -and "$($feat.State)" -eq 'Enabled') {
-          $actions += 'SMB 1.0/CIFS 프로토콜(SMB1Protocol) 기능이 이미 활성화되어 있습니다.'
+          $actions += '${escapePsSingle(tx('SMB 1.0/CIFS 프로토콜(SMB1Protocol) 기능이 이미 활성화되어 있습니다.', 'SMB 1.0/CIFS Protocol (SMB1Protocol) feature is already enabled.'))}'
         } else {
           Enable-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -All -NoRestart -ErrorAction Stop | Out-Null
           $smb1Changed = $true
-          $actions += '구형 Win 7·XP 호환용 SMB 1.0/CIFS 서버·클라이언트 기능(SMB1Protocol) 활성화 완료'
+          $actions += '${escapePsSingle(tx('구형 Win 7·XP 호환용 SMB 1.0/CIFS 서버·클라이언트 기능(SMB1Protocol) 활성화 완료', 'Enabled SMB 1.0/CIFS Server & Client feature (SMB1Protocol) for legacy Win 7/XP'))}'
         }
       } else {
         & sc.exe config mrxsmb10 start= auto 2>$null | Out-Null
         & sc.exe start mrxsmb10 2>$null | Out-Null
         $smb1Changed = $true
-        $actions += '레거시 SMB 1.0 드라이버(mrxsmb10) 자동 시작 구성 완료'
+        $actions += '${escapePsSingle(tx('레거시 SMB 1.0 드라이버(mrxsmb10) 자동 시작 구성 완료', 'Configured legacy SMB 1.0 driver (mrxsmb10) auto-start'))}'
       }
       try {
         if (Get-Command Set-SmbServerConfiguration -ErrorAction SilentlyContinue) {
@@ -2080,7 +2125,7 @@ export function buildOsCompatibilityPatchScript(
         Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue | Out-Null
         $restarted += $svc
       }
-      $actions += 'SMB 1.0 레지스트리 활성화 및 서비스 갱신 (커널 적재를 위해 재부팅 필수)'
+      $actions += '${escapePsSingle(tx('SMB 1.0 레지스트리 활성화 및 서비스 갱신 (커널 적재를 위해 재부팅 필수)', 'Enabled SMB 1.0 registry & refreshed services (reboot required to load kernel driver)'))}'
       @{
         appliedActions = $actions
         restartedServices = $restarted
@@ -2118,8 +2163,14 @@ export function buildOsCompatibilityPatchScript(
           : '$false')
       : '$false';
     const actionHeader = hasSnap
-      ? `사전 캡처 스냅샷(${rollbackSnapshot?.capturedAt || ''}) 기준 SMB 서명·암호화·게스트·NTLMv(${lmDword})·UAC 상태 복원 완료`
-      : 'SMB 서명 강제 · 비인증 게스트 차단 · UAC 원격 토큰 보호 표준 원복 완료';
+      ? tx(
+          `사전 캡처 스냅샷(${rollbackSnapshot?.capturedAt || ''}) 기준 SMB 서명·암호화·게스트·NTLMv(${lmDword})·UAC 상태 복원 완료`,
+          `Restored SMB signing, encryption, guest, NTLMv(${lmDword}) & UAC states from pre-patch snapshot (${rollbackSnapshot?.capturedAt || ''})`
+        )
+      : tx(
+          'SMB 서명 강제 · 비인증 게스트 차단 · UAC 원격 토큰 보호 표준 원복 완료',
+          'Restored mandatory SMB signing, insecure guest blocking, and standard UAC remote token protection'
+        );
 
     return `
       ${PS_JSON_HELPER}
@@ -2187,9 +2238,9 @@ export function buildOsCompatibilityPatchScript(
           & sc.exe config mrxsmb10 start= demand 2>$null | Out-Null
         }
         $smb1Changed = $true
-        $actions += '레거시 SMB 1.0 프로토콜 비활성화(Disable-WindowsOptionalFeature SMB1Protocol) 완료'
+        $actions += '${escapePsSingle(tx('레거시 SMB 1.0 프로토콜 비활성화(Disable-WindowsOptionalFeature SMB1Protocol) 완료', 'Disabled legacy SMB 1.0 protocol (Disable-WindowsOptionalFeature SMB1Protocol)'))}'
       }`
-          : `$actions += '패치 이전부터 SMB 1.0이 활성 상태였던 환경으로 확인되어 기존 SMB 1.0 상태를 유지했습니다.'`
+          : `$actions += '${escapePsSingle(tx('패치 이전부터 SMB 1.0이 활성 상태였던 환경으로 확인되어 기존 SMB 1.0 상태를 유지했습니다.', 'SMB 1.0 was already enabled prior to patching, so its existing state was preserved.'))}'`
       }
 
       foreach ($svc in @('LanmanWorkstation', 'LanmanServer')) {
@@ -2226,13 +2277,13 @@ export function buildOsCompatibilityPatchScript(
       } catch {}
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v RequireSecuritySignature /t REG_DWORD /d 1 /f 2>$null | Out-Null
-      $actions += 'Server/Client SMB 보안 서명 강제(RequireSecuritySignature=$true) 복원'
+      $actions += '${escapePsSingle(tx('Server/Client SMB 보안 서명 강제(RequireSecuritySignature=$true) 복원', 'Restored mandatory Server/Client SMB signing (RequireSecuritySignature=$true)'))}'
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 0 /f 2>$null | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 1 /f 2>$null | Out-Null
       reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 0 /f 2>$null | Out-Null
       Set-AhBiGuestNetworkLogonPolicy $false
-      $actions += '비인증 게스트 로그온(서비스·GPO·SeDenyNetworkLogonRight), 익명 세션 및 UAC 원격 토큰 필터 차단 복원'
+      $actions += '${escapePsSingle(tx('비인증 게스트 로그온(서비스·GPO·SeDenyNetworkLogonRight), 익명 세션 및 UAC 원격 토큰 필터 차단 복원', 'Restored blocking for insecure guest logons, anonymous sessions, and UAC remote token filtering'))}'
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f | Out-Null
@@ -2241,7 +2292,7 @@ export function buildOsCompatibilityPatchScript(
         $lmKey = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name 'LmCompatibilityLevel' -ErrorAction SilentlyContinue
         if ($lmKey -and $null -ne $lmKey.LmCompatibilityLevel -and [int]$lmKey.LmCompatibilityLevel -lt 3) {
           reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f 2>$null | Out-Null
-          $actions += 'NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원'
+          $actions += '${escapePsSingle(tx('NTLM 인증 협상 수준을 NTLMv2 전용(LmCompatibilityLevel=3)으로 복원', 'Restored NTLM negotiation level to NTLMv2-only (LmCompatibilityLevel=3)'))}'
         }
       } catch {}
       if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
@@ -2252,7 +2303,7 @@ export function buildOsCompatibilityPatchScript(
         $guestStrictName = if ($guestStrictWmi) { $guestStrictWmi.Name } else { 'Guest' }
         & net.exe user $guestStrictName /active:no 2>$null | Out-Null
       }
-      $actions += 'LSA 익명 접근 차단, 빈 암호 제한 및 Guest(*-501) 계정 비활성 복원'
+      $actions += '${escapePsSingle(tx('LSA 익명 접근 차단, 빈 암호 제한 및 Guest(*-501) 계정 비활성 복원', 'Restored LSA anonymous block, blank password limit, and disabled Guest (*-501) account'))}'
       foreach ($svc in @('LanmanWorkstation', 'LanmanServer')) {
         Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue | Out-Null
         $restarted += $svc
@@ -2283,7 +2334,7 @@ export function buildOsCompatibilityPatchScript(
     if (Get-Command Get-NetConnectionProfile -ErrorAction SilentlyContinue) {
       Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -eq 'Public' } | ForEach-Object {
         Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue | Out-Null
-        $actions += ("네트워크 프로필 개인(Private) 전환: " + $_.InterfaceAlias)
+        $actions += ("${escapePsSingle(tx('네트워크 프로필 개인(Private) 전환: ', 'Switched network profile to Private: '))}" + $_.InterfaceAlias)
       }
     }
 
@@ -2297,7 +2348,7 @@ export function buildOsCompatibilityPatchScript(
       netsh advfirewall firewall delete rule name="AhBiShare-SMB-445" 2>$null | Out-Null
       netsh advfirewall firewall add rule name="AhBiShare-SMB-445" dir=in action=allow protocol=TCP localport=445 profile=any 2>$null | Out-Null
     }
-    $actions += 'TCP 445 인바운드 및 파일 공유 방화벽 규칙 정렬'
+    $actions += '${escapePsSingle(tx('TCP 445 인바운드 및 파일 공유 방화벽 규칙 정렬', 'Aligned TCP 445 inbound and file sharing firewall rules'))}'
 
     try {
       if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) {
@@ -2350,13 +2401,13 @@ export function buildOsCompatibilityPatchScript(
       if ($pScG) { try { $pScG.StandardInput.Close() } catch {}; if (-not $pScG.WaitForExit(5000)) { try { $pScG.Kill() } catch {} } }
     } catch {}
     Set-AhBiGuestNetworkLogonPolicy $true
-    $actions += '로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제, minpwlen:0 및 Classic(forceguest=0) 빈 암호 허용 정렬'
-    $actions += 'Win 11 24H2~26H2 SMB 서명 강제·BlockNTLM 완화 및 게스트 로그온 · LinkedConnections 호환 허용'
+    $actions += '${escapePsSingle(tx('로컬 보안 정책(SeDenyNetworkLogonRight)의 Guest 네트워크 로그온 차단 해제, minpwlen:0 및 Classic(forceguest=0) 빈 암호 허용 정렬', 'Cleared Guest SeDenyNetworkLogonRight block, set minpwlen:0 & Classic (forceguest=0) blank passwords'))}'
+    $actions += '${escapePsSingle(tx('Win 11 24H2~26H2 SMB 서명 강제·BlockNTLM 완화 및 게스트 로그온 · LinkedConnections 호환 허용', 'Relaxed Win 11 24H2-26H2 SMB signing & BlockNTLM and enabled guest logon + LinkedConnections'))}'
 
     $lsa = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -ErrorAction SilentlyContinue
     if (-not $lsa -or $null -eq $lsa.LmCompatibilityLevel -or [int]$lsa.LmCompatibilityLevel -lt 3) {
       reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v LmCompatibilityLevel /t REG_DWORD /d 3 /f | Out-Null
-      $actions += 'NTLMv2 인증 협상 수준(LmCompatibilityLevel=3) 정렬'
+      $actions += '${escapePsSingle(tx('NTLMv2 인증 협상 수준(LmCompatibilityLevel=3) 정렬', 'Aligned NTLMv2 negotiation level (LmCompatibilityLevel=3)'))}'
     }
 
     $nbtPath = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces'
@@ -2367,7 +2418,7 @@ export function buildOsCompatibilityPatchScript(
         $netbiosChanged = $true
       }
     }
-    if ($netbiosChanged) { $actions += '비활성화된 어댑터 NetBIOS over TCP/IP(NetbiosOptions=1) 복구' }
+    if ($netbiosChanged) { $actions += '${escapePsSingle(tx('비활성화된 어댑터 NetBIOS over TCP/IP(NetbiosOptions=1) 복구', 'Re-enabled NetBIOS over TCP/IP (NetbiosOptions=1) on disabled adapters'))}' }
 
     foreach ($svc in @('FDResPub', 'fdPHost', 'SSDPSrv')) {
       Set-Service -Name $svc -StartupType Automatic -ErrorAction SilentlyContinue | Out-Null
@@ -2379,7 +2430,7 @@ export function buildOsCompatibilityPatchScript(
       $restarted += $svc
     }
     & ipconfig.exe /flushdns 2>&1 | Out-Null
-    $actions += 'LanmanWorkstation · LanmanServer 즉시 재시작 및 DNS 캐시 플러시'
+    $actions += '${escapePsSingle(tx('LanmanWorkstation · LanmanServer 즉시 재시작 및 DNS 캐시 플러시', 'Restarted LanmanWorkstation & LanmanServer immediately and flushed DNS cache'))}'
 
     @{
       appliedActions = $actions
@@ -2698,14 +2749,14 @@ export function buildHostGuestUnlockPsScript(
           try { $procBat.StandardInput.Close() } catch {}
           if ($procBat.WaitForExit(15000)) {
             $batCode = $procBat.ExitCode
-            $actions += ('upgradedHostGuestUnblock.bat 비블로킹 실행 완료 (종료 코드 ' + $batCode + ')')
+            $actions += ('upgradedHostGuestUnblock.bat ${escapePsSingle(tx('비블로킹 실행 완료 (종료 코드 ', 'non-blocking execution complete (exit code '))}' + $batCode + ')')
           } else {
             try { $procBat.Kill() } catch {}
-            $actions += 'upgradedHostGuestUnblock.bat 실행 타임아웃(15s) 후 PowerShell 폴백 계속'
+            $actions += '${escapePsSingle(tx('upgradedHostGuestUnblock.bat 실행 타임아웃(15s) 후 PowerShell 폴백 계속', 'upgradedHostGuestUnblock.bat timed out (15s); continuing PowerShell fallback'))}'
           }
         }
       } catch {
-        $actions += ('upgradedHostGuestUnblock.bat 호출 예외: ' + $_.Exception.Message)
+        $actions += ('${escapePsSingle(tx('upgradedHostGuestUnblock.bat 호출 예외: ', 'upgradedHostGuestUnblock.bat launch exception: '))}' + $_.Exception.Message)
       } finally {
         if ($batLogPath -and (Test-Path -LiteralPath $batLogPath)) {
           Remove-Item -LiteralPath $batLogPath -Force -ErrorAction SilentlyContinue
@@ -2727,7 +2778,7 @@ export function buildHostGuestUnlockPsScript(
     reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v RequireEncryption /t REG_DWORD /d 0 /f 2>$null | Out-Null
     try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -BlockNTLM $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
     try { if (Get-Command Set-SmbClientConfiguration -ErrorAction SilentlyContinue) { Set-SmbClientConfiguration -RequireEncryption $false -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } } catch {}
-    $actions += 'LSA LimitBlankPasswordUse=0 · Classic(forceguest=0) · BlockNTLM=0 · RestrictNullSessAccess=0 해제'
+    $actions += 'LSA LimitBlankPasswordUse=0 · Classic(forceguest=0) · BlockNTLM=0 · RestrictNullSessAccess=0'
 
     try {
       $nsKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters'
@@ -2744,7 +2795,7 @@ export function buildHostGuestUnlockPsScript(
       }
       if ($addedShares.Count -gt 0) {
         Set-ItemProperty -Path $nsKey -Name NullSessionShares -Value $newNs -ErrorAction SilentlyContinue | Out-Null
-        $actions += ('NullSessionShares 등록: ' + ($addedShares -join ', '))
+        $actions += ('${escapePsSingle(tx('NullSessionShares 등록: ', 'Added NullSessionShares: '))}' + ($addedShares -join ', '))
       }
     } catch {}
 
@@ -2762,7 +2813,7 @@ export function buildHostGuestUnlockPsScript(
         try { $pMin.StandardInput.Close() } catch {}
         if (-not $pMin.WaitForExit(5000)) { try { $pMin.Kill() } catch {} }
       }
-      $actions += '최소 암호 길이(net accounts /minpwlen:0) 초기화 완료'
+      $actions += '${escapePsSingle(tx('최소 암호 길이(net accounts /minpwlen:0) 초기화 완료', 'Cleared minimum password length (net accounts /minpwlen:0)'))}'
     } catch {}
 
     if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
@@ -2788,7 +2839,7 @@ export function buildHostGuestUnlockPsScript(
           }
         } catch {}
         Enable-LocalUser -Name $guest.Name -ErrorAction SilentlyContinue
-        $actions += ('로컬 ' + $guest.Name + ' 계정 활성화 및 빈 암호 초기화')
+        $actions += ('${escapePsSingle(tx('로컬 ', 'Local '))}' + $guest.Name + '${escapePsSingle(tx(' 계정 활성화 및 빈 암호 초기화', ' account enabled & blank password set'))}')
       }
     } else {
       try {
@@ -2808,7 +2859,7 @@ export function buildHostGuestUnlockPsScript(
           if (-not $pLeg.WaitForExit(5000)) { try { $pLeg.Kill() } catch {} }
         }
       } catch {}
-      $actions += 'net user Guest 빈 암호 활성화'
+      $actions += '${escapePsSingle(tx('net user Guest 빈 암호 활성화', 'Activated Guest blank-password account via net user'))}'
     }
 
     if (Get-Command Enable-NetFirewallRule -ErrorAction SilentlyContinue) {
@@ -2823,19 +2874,19 @@ export function buildHostGuestUnlockPsScript(
       netsh advfirewall firewall delete rule name="AhBiShare-SMB-445" 2>$null | Out-Null
       netsh advfirewall firewall add rule name="AhBiShare-SMB-445" dir=in action=allow protocol=TCP localport=445 profile=any 2>$null | Out-Null
     }
-    $actions += '방화벽 TCP 445 및 파일 공유 인바운드 규칙 개방'
+    $actions += '${escapePsSingle(tx('방화벽 TCP 445 및 파일 공유 인바운드 규칙 개방', 'Opened TCP 445 & file sharing firewall inbound rules'))}'
 
     Set-AhBiGuestNetworkLogonPolicy $true
-    $actions += 'SeDenyNetworkLogonRight 게스트 거부 제거'
+    $actions += '${escapePsSingle(tx('SeDenyNetworkLogonRight 게스트 거부 제거', 'Removed Guest from SeDenyNetworkLogonRight'))}'
 
     Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
-    $actions += 'LanmanServer 서비스 즉시 새로고침'
+    $actions += '${escapePsSingle(tx('LanmanServer 서비스 즉시 새로고침', 'Refreshed LanmanServer service immediately'))}'
 
     @{
       success = $true
       shareName = '${safeShare}'
       appliedActions = $actions
-      message = '호스트 PC 무비밀번호 공유 정책이 완전히 개방되었습니다. (오류 86/1223 해결)'
+      message = '${escapePsSingle(tx('호스트 PC 무비밀번호 공유 정책이 완전히 개방되었습니다. (오류 86/1223 해결)', 'Host PC passwordless sharing policy is now completely unlocked (fixes Error 86/1223).'))}'
     } | ConvertTo-AhBiJson
   `.trim();
 }
@@ -2855,13 +2906,13 @@ export function buildHostEmptyPasswordBlockPsScript(): string {
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v restrictanonymous /t REG_DWORD /d 1 /f | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v forceguest /t REG_DWORD /d 0 /f 2>$null | Out-Null
     reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters" /v RestrictNullSessAccess /t REG_DWORD /d 1 /f 2>$null | Out-Null
-    $actions += 'LSA LimitBlankPasswordUse=1(빈 암호 계정 네트워크 차단) · 익명/Null 세션 차단 복원'
+    $actions += '${escapePsSingle(tx('LSA LimitBlankPasswordUse=1(빈 암호 계정 네트워크 차단) · 익명/Null 세션 차단 복원', 'Restored LSA LimitBlankPasswordUse=1 (block blank-password network logon) & anonymous/null session restrictions'))}'
 
     if (Get-Command Disable-LocalUser -ErrorAction SilentlyContinue) {
       $guestAcc = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like '*-501' } | Select-Object -First 1
       if ($guestAcc) {
         Disable-LocalUser -Name $guestAcc.Name -ErrorAction SilentlyContinue | Out-Null
-        $actions += ('로컬 Guest 계정(' + $guestAcc.Name + ') 비활성화 완료')
+        $actions += ('${escapePsSingle(tx('로컬 Guest 계정(', 'Disabled local Guest account ('))}' + $guestAcc.Name + '${escapePsSingle(tx(') 비활성화 완료', ')'))}')
       }
     } else {
       try {
@@ -2880,22 +2931,22 @@ export function buildHostEmptyPasswordBlockPsScript(): string {
           try { $pDis.StandardInput.Close() } catch {}
           if (-not $pDis.WaitForExit(5000)) { try { $pDis.Kill() } catch {} }
         }
-        $actions += ('net user ' + $gLegacyName + ' /active:no 비활성화 완료')
+        $actions += ('net user ' + $gLegacyName + ' /active:no')
       } catch {}
     }
 
     Set-AhBiGuestNetworkLogonPolicy $false
-    $actions += 'SeDenyNetworkLogonRight에 Guest(*S-1-5-32-546) 거부 규칙 복원'
+    $actions += '${escapePsSingle(tx('SeDenyNetworkLogonRight에 Guest(*S-1-5-32-546) 거부 규칙 복원', 'Restored Guest (*S-1-5-32-546) deny rule in SeDenyNetworkLogonRight'))}'
 
     Restart-Service -Name LanmanServer -Force -ErrorAction SilentlyContinue | Out-Null
-    $actions += 'LanmanServer 서비스 즉시 새로고침'
+    $actions += '${escapePsSingle(tx('LanmanServer 서비스 즉시 새로고침', 'Refreshed LanmanServer service immediately'))}'
 
     @{
       success = $true
       blocked = $true
       limitBlankPasswordUse = 1
       appliedActions = $actions
-      message = '빈 암호 계정(Guest 및 로컬 계정) 네트워크 로그온 차단이 활성화되었습니다. (LimitBlankPasswordUse=1)'
+      message = '${escapePsSingle(tx('빈 암호 계정(Guest 및 로컬 계정) 네트워크 로그온 차단이 활성화되었습니다. (LimitBlankPasswordUse=1)', 'Network logon blocking for blank-password accounts (Guest & local accounts) enabled (LimitBlankPasswordUse=1).'))}'
     } | ConvertTo-AhBiJson
   `.trim();
 }
@@ -2999,7 +3050,7 @@ export function buildLocationPreflightScript(
           $null = [System.IO.Directory]::GetDirectories($fp)
           $aclReadable = $true
           if ($aclObj -and $aclObj.Owner) {
-            $aclDetail = ("소유자: " + "$($aclObj.Owner)")
+            $aclDetail = ("${escapePsSingle(tx('소유자: ', 'Owner: '))}" + "$($aclObj.Owner)")
           }
         } catch {
           $aclReadable = $false
@@ -3017,7 +3068,7 @@ export function buildLocationPreflightScript(
             $aclParent = Get-Acl -LiteralPath $probe -ErrorAction Stop
             $aclReadable = -not $isReadOnlyDrive
             if ($aclParent -and $aclParent.Owner) {
-              $aclDetail = ("상위 경로(" + $probe + ") 소유자: " + "$($aclParent.Owner)")
+              $aclDetail = ("${escapePsSingle(tx('상위 경로(', 'Parent path ('))}" + $probe + "${escapePsSingle(tx(') 소유자: ', ') owner: '))}" + "$($aclParent.Owner)")
             }
           } catch {
             $aclReadable = $false

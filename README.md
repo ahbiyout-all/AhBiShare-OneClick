@@ -119,4 +119,4 @@ Windows 환경에서 루트 `build.bat`을 실행하면 의존성 확인, `lint`
 - **소속회사**: [(주)청운정보시스템 (cisnet.co.kr)](https://www.cisnet.co.kr)
 - **GitHub 저장소**: https://github.com/ahbiyout-all/AhBiShare-OneClick
 - **공식 구글 블로그**: https://ahbiyoutvibe.blogspot.com/
-- **라이선스**: [MIT License](LICENSE)
+- **라이선스 · 고지**: [MIT License](LICENSE) · [NOTICE](NOTICE) · [Third-Party Notices](THIRD-PARTY-NOTICES.md)

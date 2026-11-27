@@ -2,14 +2,15 @@
   "name": "ahbishare-oneclick",
   "version": "1.3.1",
   "private": true,
+  "license": "MIT",
   "main": "main.js",
   "description": "AhBiShare OneClick - 1-Click Host & Client LAN Shared Folder Setup & Legacy Windows Compatibility Utility",
   "engines": {
     "node": ">=22.12.0"
   },
   "author": {
-    "name": "AhBiYout · (주)청운정보시스템 (cisnet.co.kr)",
-    "url": "https://www.cisnet.co.kr"
+    "name": "AhBiYout",
+    "url": "https://github.com/ahbiyout-all/AhBiShare-OneClick"
   },
   "homepage": "https://github.com/ahbiyout-all/AhBiShare-OneClick",
   "scripts": {
@@ -56,14 +57,30 @@
       "preload.js",
       "portableStore.js",
       "portableUpdater.js",
+      "localeHelper.js",
       "package.json",
       "icon.ico",
-      "public/config.json"
+      "public/config.json",
+      "LICENSE",
+      "NOTICE",
+      "THIRD-PARTY-NOTICES.md"
     ],
     "extraResources": [
       {
         "from": "scripts/upgradedHostGuestUnblock.bat",
         "to": "scripts/upgradedHostGuestUnblock.bat"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICE",
+        "to": "NOTICE"
+      },
+      {
+        "from": "THIRD-PARTY-NOTICES.md",
+        "to": "THIRD-PARTY-NOTICES.md"
       }
     ],
     "directories": {

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ShieldCheck, RotateCcw, Lock, RefreshCw } from 'lucide-react';
 import { LocalNetworkInfo, OsNetworkPolicyStatus, PolicyPatchMode } from '@/types/share';
 import { SecurityRollbackReport } from '@/components/SecurityRollbackReport';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface RollbackPanelProps {
   netInfo: LocalNetworkInfo;
@@ -32,6 +33,7 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
   onRestoreDefaults,
   onNotify,
 }) => {
+  const { tx } = useI18n();
   const [busyScope, setBusyScope] = useState<'host' | 'client' | 'full' | null>(null);
   const [feedback, setFeedback] = useState<{
     scope: 'host' | 'client' | 'full';
@@ -64,10 +66,13 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-            공유 정책 보안 원복 (Rollback)
+            {tx('공유 정책 보안 원복 (Rollback)', 'Security Policy Rollback')}
           </h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            파일 공유 작업이 끝난 후 열려 있던 공유폴더·방화벽 포트·무인증 게스트 정책을 Windows 기본 보안 상태로 되돌리고 10개 핵심 항목을 검증합니다.
+            {tx(
+              '파일 공유 작업이 끝난 후 열려 있던 공유폴더·방화벽 포트·무인증 게스트 정책을 Windows 기본 보안 상태로 되돌리고 10개 핵심 항목을 검증합니다.',
+              'After file sharing is complete, revert open shared folders, firewall ports, and unauthenticated guest policies to Windows security defaults and verify 10 core checks.'
+            )}
           </p>
         </div>
 
@@ -81,7 +86,7 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
               className="px-3.5 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
-              {isRefreshing ? '새로고침 중...' : '새로고침'}
+              {isRefreshing ? tx('새로고침 중...', 'Refreshing...') : tx('새로고침', 'Refresh')}
             </button>
           )}
           <button
@@ -92,7 +97,9 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
             className="px-4 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
           >
             <Lock className="w-3.5 h-3.5" />
-            {busyScope === 'full' ? '전체 보안 원복 중...' : '전체(호스트+클라이언트+표준보안) 원복'}
+            {busyScope === 'full'
+              ? tx('전체 보안 원복 중...', 'Running full rollback...')
+              : tx('전체(호스트+클라이언트+표준보안) 원복', 'Full Rollback (Host + Client + Standard Security)')}
           </button>
         </div>
       </div>
@@ -114,12 +121,29 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-slate-900 dark:text-white">
               <ShieldCheck className="w-5 h-5 text-indigo-500" />
-              <h3 className="font-display text-base font-semibold">메인 PC (호스트) 보안 원복</h3>
+              <h3 className="font-display text-base font-semibold">
+                {tx('메인 PC (호스트) 보안 원복', 'Main PC (Host) Security Rollback')}
+              </h3>
             </div>
             <ul className="text-sm text-slate-600 dark:text-slate-400 space-y-1.5 pt-2">
-              <li>• C$, ADMIN$, IPC$를 제외한 모든 사용자 공유폴더 즉시 해제</li>
-              <li>• 방화벽 TCP 445 임시 규칙(AhBiShare-SMB-445) 삭제</li>
-              <li>• Guest 계정(*-501) OFF, LSA 빈 암호·익명 차단 및 SMB 서버 서명 복구</li>
+              <li>
+                {tx(
+                  '• C$, ADMIN$, IPC$를 제외한 모든 사용자 공유폴더 즉시 해제',
+                  '• Immediately remove all user shared folders except C$, ADMIN$, and IPC$'
+                )}
+              </li>
+              <li>
+                {tx(
+                  '• 방화벽 TCP 445 임시 규칙(AhBiShare-SMB-445) 삭제',
+                  '• Remove temporary TCP 445 firewall rule (AhBiShare-SMB-445)'
+                )}
+              </li>
+              <li>
+                {tx(
+                  '• Guest 계정(*-501) OFF, LSA 빈 암호·익명 차단 및 SMB 서버 서명 복구',
+                  '• Disable Guest (*-501), block LSA blank passwords/anonymous access, and restore SMB server signing'
+                )}
+              </li>
             </ul>
           </div>
           <button
@@ -130,7 +154,9 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
             className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 rounded-lg inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
           >
             <RotateCcw className="w-4 h-4" />
-            {busyScope === 'host' ? '원복 중...' : '호스트 공유 종료 및 원복'}
+            {busyScope === 'host'
+              ? tx('원복 중...', 'Rolling back...')
+              : tx('호스트 공유 종료 및 원복', 'Close Host Shares & Rollback')}
           </button>
         </div>
 
@@ -138,12 +164,29 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-slate-900 dark:text-white">
               <ShieldCheck className="w-5 h-5 text-indigo-500" />
-              <h3 className="font-display text-base font-semibold">클라이언트 PC (접속자) 보안 원복</h3>
+              <h3 className="font-display text-base font-semibold">
+                {tx('클라이언트 PC (접속자) 보안 원복', 'Client PC Security Rollback')}
+              </h3>
             </div>
             <ul className="text-sm text-slate-600 dark:text-slate-400 space-y-1.5 pt-2">
-              <li>• 연결된 모든 네트워크 드라이브 세션 일괄 해제</li>
-              <li>• 비인증 게스트 접속(AllowInsecureGuestAuth=0) 차단 복원</li>
-              <li>• Windows 11 SMB 클라이언트 서명 검증 정책 활성화</li>
+              <li>
+                {tx(
+                  '• 연결된 모든 네트워크 드라이브 세션 일괄 해제',
+                  '• Disconnect all mapped network drive sessions'
+                )}
+              </li>
+              <li>
+                {tx(
+                  '• 비인증 게스트 접속(AllowInsecureGuestAuth=0) 차단 복원',
+                  '• Restore unauthenticated guest block (AllowInsecureGuestAuth=0)'
+                )}
+              </li>
+              <li>
+                {tx(
+                  '• Windows 11 SMB 클라이언트 서명 검증 정책 활성화',
+                  '• Re-enable Windows 11 SMB client signing verification'
+                )}
+              </li>
             </ul>
           </div>
           <button
@@ -154,7 +197,9 @@ export const RollbackPanel: React.FC<RollbackPanelProps> = ({
             className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 rounded-lg inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
           >
             <RotateCcw className="w-4 h-4" />
-            {busyScope === 'client' ? '원복 중...' : '클라이언트 연결 해제 및 원복'}
+            {busyScope === 'client'
+              ? tx('원복 중...', 'Rolling back...')
+              : tx('클라이언트 연결 해제 및 원복', 'Disconnect Drives & Rollback')}
           </button>
         </div>
       </div>

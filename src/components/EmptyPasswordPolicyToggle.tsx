@@ -1,5 +1,6 @@
 import React from 'react';
 import { ShieldAlert, ShieldCheck, KeyRound, Download, Loader2 } from 'lucide-react';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface EmptyPasswordPolicyToggleProps {
   isBlocked: boolean;
@@ -24,6 +25,7 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
   onToggle,
   onDownloadBat,
 }) => {
+  const { tx } = useI18n();
   const switchDisabled = isBusy || isDisabled;
   const needsGuestUnlockHint = authMode === 'guest' && isBlocked;
 
@@ -40,14 +42,25 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
             ) : (
               <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
             )}
-            <span>빈 암호 계정 차단 (Block Empty-Password Accounts)</span>
+            <span>
+              {tx(
+                '빈 암호 계정 차단 (Block Empty-Password Accounts)',
+                'Block Empty-Password Accounts (LimitBlankPasswordUse)'
+              )}
+            </span>
           </div>
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-            Guest 계정(SID *-501) 및 빈 암호 로컬 사용자 계정의 네트워크(SMB) 로그온 허용 여부를 전환합니다. 차단을 해제하면{' '}
+            {tx(
+              'Guest 계정(SID *-501) 및 빈 암호 로컬 사용자 계정의 네트워크(SMB) 로그온 허용 여부를 전환합니다. 차단을 해제하면 ',
+              'Toggles network (SMB) logon permission for Guest (SID *-501) and empty-password local accounts. Disabling the block runs '
+            )}
             <code className="tabular-data text-[11px] font-semibold text-slate-800 dark:text-slate-200">
               upgradedHostGuestUnblock.bat
             </code>{' '}
-            로직(LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · TCP 445 개방)이 비블로킹으로 즉시 실행됩니다.
+            {tx(
+              '로직(LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · TCP 445 개방)이 비블로킹으로 즉시 실행됩니다.',
+              'logic (LimitBlankPasswordUse=0, enable Guest, clear SeDenyNetworkLogonRight, open TCP 445) immediately without blocking.'
+            )}
           </p>
         </div>
 
@@ -57,7 +70,10 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
             type="button"
             role="switch"
             aria-checked={isBlocked}
-            aria-label="빈 암호 계정 차단 (Block Empty-Password Accounts)"
+            aria-label={tx(
+              '빈 암호 계정 차단 (Block Empty-Password Accounts)',
+              'Block Empty-Password Accounts'
+            )}
             disabled={switchDisabled}
             onClick={() => void onToggle(!isBlocked)}
             className="min-h-[40px] px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-900 disabled:opacity-50 inline-flex items-center gap-3 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
@@ -79,10 +95,10 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
             <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap inline-flex items-center gap-1.5">
               {isBusy && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />}
               {isBusy
-                ? '정책 적용 중...'
+                ? tx('정책 적용 중...', 'Applying policy...')
                 : isBlocked
-                  ? '차단됨 (ON · 보안)'
-                  : '허용됨 (OFF · Guest 개방)'}
+                  ? tx('차단됨 (ON · 보안)', 'Blocked (ON · Secure)')
+                  : tx('허용됨 (OFF · Guest 개방)', 'Allowed (OFF · Guest Open)')}
             </span>
           </button>
         </div>
@@ -97,26 +113,26 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
                 : 'text-amber-700 dark:text-amber-400'
             }`}
           >
-            LimitBlankPasswordUse={isBlocked ? '1 (차단)' : '0 (허용)'}
-            {!isKnown ? ' (기본값)' : ''}
+            LimitBlankPasswordUse={isBlocked ? tx('1 (차단)', '1 (Blocked)') : tx('0 (허용)', '0 (Allowed)')}
+            {!isKnown ? tx(' (기본값)', ' (Default)') : ''}
           </span>
           <span aria-hidden="true">·</span>
           <span>
             Guest(SID *-501):{' '}
             {guestAccountEnabled === true
-              ? '활성'
+              ? tx('활성', 'Active')
               : guestAccountEnabled === false
-                ? '비활성'
-                : '확인 대기'}
+                ? tx('비활성', 'Disabled')
+                : tx('확인 대기', 'Pending check')}
           </span>
           <span aria-hidden="true">·</span>
           <span>
             SeDenyNetworkLogonRight:{' '}
             {guestNetworkLogonDenied === false
-              ? '해제됨'
+              ? tx('해제됨', 'Cleared')
               : guestNetworkLogonDenied === true
-                ? '차단됨'
-                : '확인 대기'}
+                ? tx('차단됨', 'Blocked')
+                : tx('확인 대기', 'Pending check')}
           </span>
         </div>
 
@@ -127,7 +143,7 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
           className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md inline-flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap"
         >
           <Download className="w-3.5 h-3.5" />
-          .bat 복구 파일 저장
+          {tx('.bat 복구 파일 저장', 'Save .bat Recovery Script')}
         </button>
       </div>
 
@@ -135,8 +151,12 @@ export const EmptyPasswordPolicyToggle: React.FC<EmptyPasswordPolicyToggleProps>
         <div className="px-3.5 py-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
           <KeyRound className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <span>
-            현재 빈 암호 계정이 차단되어 있어 타 PC가 무비밀번호(Guest) 연결 시 오류 86이 발생할 수 있습니다. 위 스위치를 끄거나{' '}
-            <strong>원클릭 공유폴더 개설</strong>을 실행하면 자동으로 개방됩니다.
+            {tx(
+              '현재 빈 암호 계정이 차단되어 있어 타 PC가 무비밀번호(Guest) 연결 시 오류 86이 발생할 수 있습니다. 위 스위치를 끄거나 ',
+              'Empty-password accounts are currently blocked, which may trigger Error 86 on passwordless Guest connections. Turn off the switch above or run '
+            )}
+            <strong>{tx('원클릭 공유폴더 개설', 'One-Click Share Setup')}</strong>
+            {tx('을 실행하면 자동으로 개방됩니다.', ' to unlock it automatically.')}
           </span>
         </div>
       )}

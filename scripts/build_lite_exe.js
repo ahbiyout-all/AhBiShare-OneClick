@@ -90,7 +90,15 @@ function verifyLiteUnpackedDir(unpackedDir) {
     );
   }
 
-  const asarPath = path.join(unpackedDir, 'resources', 'app.asar');
+  const resourcesDir = path.join(unpackedDir, 'resources');
+  for (const noticeFile of ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md']) {
+    assert(
+      fs.existsSync(path.join(resourcesDir, noticeFile)),
+      `Bundled license/notice file missing in Lite resources/: ${noticeFile}`
+    );
+  }
+
+  const asarPath = path.join(resourcesDir, 'app.asar');
   assert(fs.existsSync(asarPath), `Missing Lite app.asar: ${asarPath}`);
   const asar = require('@electron/asar');
   const entries = asar.listPackage(asarPath);
@@ -99,7 +107,7 @@ function verifyLiteUnpackedDir(unpackedDir) {
 
   const asarSize = fs.statSync(asarPath).size;
   console.log(
-    `[PASS] Lite integrity verified: locales=[${localeFiles.join(', ')}], app.asar=${formatMb(asarSize)} (${entries.length} files, 0 node_modules), Win 7~11 runtime DLLs intact.`
+    `[PASS] Lite integrity verified: locales=[${localeFiles.join(', ')}], app.asar=${formatMb(asarSize)} (${entries.length} files, 0 node_modules), MIT/Third-Party notices & Win 7~11 runtime DLLs intact.`
   );
 }
 

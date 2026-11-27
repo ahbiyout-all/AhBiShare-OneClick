@@ -117,4 +117,4 @@ On Windows, running root `build.bat` verifies dependencies, executes `lint` and 
 - **Organization**: [Cheongwoon Information System Co., Ltd. / (주)청운정보시스템 (cisnet.co.kr)](https://www.cisnet.co.kr)
 - **GitHub Repository**: https://github.com/ahbiyout-all/AhBiShare-OneClick
 - **Official Blog**: https://ahbiyoutvibe.blogspot.com/
-- **License**: [MIT License](LICENSE)
+- **License & Notices**: [MIT License](LICENSE) · [NOTICE](NOTICE) · [Third-Party Notices](THIRD-PARTY-NOTICES.md)

@@ -9,6 +9,7 @@ import {
   Shield,
 } from 'lucide-react';
 import { AuthMode, ShareAuthProbeResult, ShareAuthProbeVerdict, SmartAuthDetectionResult } from '@/types/share';
+import { useI18n } from '@/i18n/I18nContext';
 
 export interface ShareAuthProbeBarProps {
   idPrefix?: string;
@@ -100,6 +101,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
   onCopyHostGuestCmd,
   hostCmdCopied = false,
 }) => {
+  const { tx } = useI18n();
   const cleanHost = targetHost.trim();
   const cleanShare = shareName.trim();
   const canProbe = Boolean(cleanHost && cleanShare) && !disabled;
@@ -122,13 +124,16 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
           <span className="font-semibold text-slate-700 dark:text-slate-300">
-            인증 방식 사전 판별
+            {tx('인증 방식 사전 판별', 'Auth Mode Pre-Check')}
           </span>
           <span className="text-slate-400 dark:text-slate-500" aria-hidden="true">
             ·
           </span>
           <span className="text-slate-500 dark:text-slate-400">
-            수동 입력 시 게스트 허용 / 보안 계정 여부를 자동 확인합니다
+            {tx(
+              '수동 입력 시 게스트 허용 / 보안 계정 여부를 자동 확인합니다',
+              'Automatically detects whether Guest or Secure Account auth is required'
+            )}
           </span>
         </div>
 
@@ -144,7 +149,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
               onChange={(e) => onToggleAutoSwitch(e.target.checked)}
               className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
             />
-            탐지 시 자동 전환
+            {tx('탐지 시 자동 전환', 'Auto-switch on detect')}
           </label>
 
           <button
@@ -155,7 +160,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
             className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isProbing ? 'animate-spin text-indigo-500' : ''}`} />
-            {isProbing ? '확인 중...' : '인증 방식 확인'}
+            {isProbing ? tx('확인 중...', 'Checking...') : tx('인증 방식 확인', 'Detect Auth Mode')}
           </button>
         </div>
       </div>
@@ -169,7 +174,10 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
         >
           <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-500 shrink-0" />
           <span className="tabular-nums truncate">
-            \\{cleanHost || '-'}\{cleanShare || '-'} 공유폴더의 무비밀번호·보안 계정 여부를 확인하고 있습니다...
+            {tx(
+              `\\\\${cleanHost || '-'}\\${cleanShare || '-'} 공유폴더의 무비밀번호·보안 계정 여부를 확인하고 있습니다...`,
+              `Probing \\\\${cleanHost || '-'}\\${cleanShare || '-'} for passwordless Guest vs Secure Account access...`
+            )}
           </span>
         </div>
       )}
@@ -191,7 +199,9 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                     ·
                   </span>
                   <span className={`tabular-nums font-semibold ${tone.detailClass}`}>
-                    {probeResult.win32Code === 0 ? '응답 0' : `Win32 오류 ${probeResult.win32Code}`}
+                    {probeResult.win32Code === 0
+                      ? tx('응답 0', 'Code 0')
+                      : tx(`Win32 오류 ${probeResult.win32Code}`, `Win32 Error ${probeResult.win32Code}`)}
                   </span>
                 </>
               )}
@@ -201,7 +211,9 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                     ·
                   </span>
                   <span className="font-semibold text-indigo-700 dark:text-indigo-300">
-                    {autoSwitchedTo === 'account' ? '보안 계정으로 자동 전환됨' : '무비밀번호로 자동 전환됨'}
+                    {autoSwitchedTo === 'account'
+                      ? tx('보안 계정으로 자동 전환됨', 'Auto-switched to Secure Account')
+                      : tx('무비밀번호로 자동 전환됨', 'Auto-switched to Passwordless')}
                   </span>
                 </>
               )}
@@ -214,7 +226,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
           <p className={`text-xs leading-relaxed ${tone.detailClass}`}>{probeResult.detail}</p>
           {isHintRecommendation && smartResult?.reason && (
             <p className="text-xs font-medium text-indigo-700 dark:text-indigo-300">
-              스마트 인증 추천: {smartResult.reason}
+              {tx('스마트 인증 추천:', 'Smart Auth Recommendation:')} {smartResult.reason}
             </p>
           )}
 
@@ -226,7 +238,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                 onClick={onUndoAutoSwitch}
                 className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
               >
-                무비밀번호로 유지
+                {tx('무비밀번호로 유지', 'Keep Passwordless')}
               </button>
             )}
 
@@ -237,7 +249,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                 onClick={onUndoAutoSwitch}
                 className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
               >
-                보안 계정으로 유지
+                {tx('보안 계정으로 유지', 'Keep Secure Account')}
               </button>
             )}
 
@@ -249,7 +261,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
                 <KeyRound className="w-3.5 h-3.5" />
-                보안 계정 모드로 전환
+                {tx('보안 계정 모드로 전환', 'Switch to Secure Account')}
               </button>
             )}
 
@@ -261,7 +273,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border border-emerald-400/60 dark:border-emerald-700 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
               >
                 <Check className="w-3.5 h-3.5" />
-                무비밀번호 모드로 전환
+                {tx('무비밀번호 모드로 전환', 'Switch to Passwordless')}
               </button>
             )}
 
@@ -276,7 +288,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 >
                   <Shield className="w-3.5 h-3.5" />
-                  보안 계정 모드로 전환
+                  {tx('보안 계정 모드로 전환', 'Switch to Secure Account')}
                 </button>
               )}
 
@@ -290,7 +302,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border border-emerald-400/60 dark:border-emerald-700 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
                 >
                   <Check className="w-3.5 h-3.5" />
-                  무비밀번호 모드로 전환
+                  {tx('무비밀번호 모드로 전환', 'Switch to Passwordless')}
                 </button>
               )}
 
@@ -303,7 +315,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-900 dark:text-amber-200 bg-white dark:bg-slate-900 hover:bg-amber-50 dark:hover:bg-amber-950/40 border border-amber-400/60 dark:border-amber-700 rounded-lg whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                 >
                   <ArrowLeftRight className="w-3.5 h-3.5" />
-                  호환성 매트릭스 열기
+                  {tx('호환성 매트릭스 열기', 'Open OS Compatibility Matrix')}
                 </button>
               )}
 
@@ -319,7 +331,7 @@ export const ShareAuthProbeBar: React.FC<ShareAuthProbeBarProps> = ({
                 ) : (
                   <Copy className="w-3.5 h-3.5" />
                 )}
-                {hostCmdCopied ? '복구 명령 복사됨!' : '호스트 복구 명령 복사'}
+                {hostCmdCopied ? tx('복구 명령 복사됨!', 'Recovery Command Copied!') : tx('호스트 복구 명령 복사', 'Copy Host Recovery Command')}
               </button>
             )}
           </div>

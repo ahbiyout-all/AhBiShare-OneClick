@@ -62,9 +62,11 @@ import { LocationPreflightModal } from '@/components/LocationPreflightModal';
 import { TroubleshootHandoffBanner } from '@/components/TroubleshootHandoffBanner';
 import { TroubleshootWizardModal } from '@/components/TroubleshootWizardModal';
 import { BackupRestoreModal } from '@/components/BackupRestoreModal';
+import { LicenseNoticesModal, LicenseModalTab } from '@/components/LicenseNoticesModal';
 import { DiagnosticsModal, SuggestedPingTarget } from './components/DiagnosticsModal';
 import { UpdateModal } from './components/UpdateModal';
 import { WorkProgressModal, ProgressJobState } from './components/WorkProgressModal';
+import { useI18n } from '@/i18n/I18nContext';
 import {
   checkForUpdates,
   clearSkippedUpdateTag,
@@ -93,6 +95,7 @@ const INITIAL_PROGRESS_JOB: ProgressJobState = {
 };
 
 export const App: React.FC = () => {
+  const { locale, tx } = useI18n();
   const initialQuery = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const initialThemeParam = initialQuery?.get('theme');
   const initialRoleParam = initialQuery?.get('role');
@@ -126,6 +129,8 @@ export const App: React.FC = () => {
   const [backupStatus, setBackupStatus] = useState<BackupStoreStatus | null>(null);
   const [backupLoading, setBackupLoading] = useState(false);
   const [backupModalOpen, setBackupModalOpen] = useState(false);
+  const [licenseModalOpen, setLicenseModalOpen] = useState(false);
+  const [licenseModalTab, setLicenseModalTab] = useState<LicenseModalTab>('mit');
   const netInfoRef = useRef(netInfo);
   netInfoRef.current = netInfo;
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -375,15 +380,21 @@ export const App: React.FC = () => {
           lastNotifiedSmbSwitchRef.current = notifyKey;
           showToast(
             detectedMode === 'account'
-              ? `스마트 인증 감지(${cleanIp}): 보안 계정 인증이 감지되어 '보안 계정' 모드로 자동 전환했습니다.`
-              : `스마트 인증 감지(${cleanIp}): 무비밀번호(Guest) 접근이 허용되어 '무비밀번호' 모드로 자동 전환했습니다.`
+              ? tx(
+                  `스마트 인증 감지(${cleanIp}): 보안 계정 인증이 감지되어 '보안 계정' 모드로 자동 전환했습니다.`,
+                  `Smart Auth (${cleanIp}): Account authentication detected; switched to 'Secure Account' mode.`
+                )
+              : tx(
+                  `스마트 인증 감지(${cleanIp}): 무비밀번호(Guest) 접근이 허용되어 '무비밀번호' 모드로 자동 전환했습니다.`,
+                  `Smart Auth (${cleanIp}): Passwordless (Guest) access allowed; switched to 'Guest' mode.`
+                )
           );
         }
       } catch {
         // Silent fallback: manual probe bar remains available in ClientPanel
       }
     },
-    [showToast]
+    [showToast, tx]
   );
 
   useEffect(() => {
@@ -421,7 +432,7 @@ export const App: React.FC = () => {
     setActivityLog((prev) => [
       {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        time: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+        time: new Date().toLocaleTimeString(locale === 'en' ? 'en-US' : 'ko-KR', { hour12: false }),
         role,
         summary,
         status,
@@ -450,7 +461,7 @@ export const App: React.FC = () => {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [locale]);
 
   const startProgressJob = useCallback(
     (title: string, subtitle?: string, initialSteps: PipelineStep[] = []): string | null => {
@@ -528,22 +539,30 @@ export const App: React.FC = () => {
             clearSkippedUpdateTag();
             autoPromptedTagRef.current = res.release.tagName;
             setUpdateModalOpen(true);
-            appendLog('GitHub 업데이트', `새 릴리즈 ${res.release.tagName} 확인창 열림`, 'success');
+            appendLog(
+              tx('GitHub 업데이트', 'GitHub Updates'),
+              tx(`새 릴리즈 ${res.release.tagName} 확인창 열림`, `Opened new release prompt (${res.release.tagName})`),
+              'success'
+            );
           } else if (
             shouldAutoPromptUpdate(res.release.tagName) &&
             autoPromptedTagRef.current !== res.release.tagName
           ) {
             autoPromptedTagRef.current = res.release.tagName;
             setUpdateModalOpen(true);
-            appendLog('GitHub 업데이트', `GitHub 최신 버전(${res.release.tagName}) 자동 감지됨`, 'success');
+            appendLog(
+              tx('GitHub 업데이트', 'GitHub Updates'),
+              tx(`GitHub 최신 버전(${res.release.tagName}) 자동 감지됨`, `Detected latest GitHub release (${res.release.tagName})`),
+              'success'
+            );
           }
         } else if (manual) {
           if (res.error) {
-            showToast(`업데이트 확인 실패: ${res.error}`);
-            appendLog('GitHub 업데이트', `확인 실패: ${res.error}`, 'error');
+            showToast(tx(`업데이트 확인 실패: ${res.error}`, `Update check failed: ${res.error}`));
+            appendLog(tx('GitHub 업데이트', 'GitHub Updates'), tx(`확인 실패: ${res.error}`, `Check failed: ${res.error}`), 'error');
           } else {
-            showToast(`현재 최신 버전(v${APP_VERSION})을 사용 중입니다.`);
-            appendLog('GitHub 업데이트', `최신 버전(v${APP_VERSION}) 확인 완료`, 'success');
+            showToast(tx(`현재 최신 버전(v${APP_VERSION})을 사용 중입니다.`, `You are already on the latest version (v${APP_VERSION}).`));
+            appendLog(tx('GitHub 업데이트', 'GitHub Updates'), tx(`최신 버전(v${APP_VERSION}) 확인 완료`, `Verified latest version (v${APP_VERSION})`), 'success');
           }
         }
       } finally {
@@ -551,7 +570,7 @@ export const App: React.FC = () => {
         setIsCheckingUpdates(false);
       }
     },
-    [appendLog, showToast]
+    [appendLog, showToast, tx]
   );
 
   useEffect(() => {
@@ -626,21 +645,36 @@ export const App: React.FC = () => {
         if (!params.silent) {
           const parts: string[] = [];
           if (ticketSyncRes.summary.autoCompletedSteps > 0) {
-            parts.push(`마법사 정책 단계 ${ticketSyncRes.summary.autoCompletedSteps}건 자동 완료`);
+            parts.push(
+              tx(
+                `마법사 정책 단계 ${ticketSyncRes.summary.autoCompletedSteps}건 자동 완료`,
+                `Auto-completed ${ticketSyncRes.summary.autoCompletedSteps} wizard policy step(s)`
+              )
+            );
           }
           if (ticketSyncRes.summary.reopenedSteps > 0) {
-            parts.push(`정책 변경으로 ${ticketSyncRes.summary.reopenedSteps}단계 재적용 대기 전환`);
+            parts.push(
+              tx(
+                `정책 변경으로 ${ticketSyncRes.summary.reopenedSteps}단계 재적용 대기 전환`,
+                `Reopened ${ticketSyncRes.summary.reopenedSteps} step(s) due to policy change`
+              )
+            );
           }
           if (pendingSyncRes.resolvedTaskHosts.length > 0) {
-            parts.push(`호스트 대기 작업(${pendingSyncRes.resolvedTaskHosts.join(', ')}) 충족 정리`);
+            parts.push(
+              tx(
+                `호스트 대기 작업(${pendingSyncRes.resolvedTaskHosts.join(', ')}) 충족 정리`,
+                `Resolved pending host task(s) for ${pendingSyncRes.resolvedTaskHosts.join(', ')}`
+              )
+            );
           }
           if (parts.length > 0) {
-            appendLog('양방향 동기화', parts.join(' · '), 'success');
+            appendLog(tx('양방향 동기화', 'Two-Way Sync'), parts.join(' · '), 'success');
           }
         }
       } catch {}
     },
-    [appendLog, refreshPortableSnapshot]
+    [appendLog, refreshPortableSnapshot, tx]
   );
 
   const handleRefreshTab = useCallback(
@@ -648,7 +682,7 @@ export const App: React.FC = () => {
       if (refreshTabInFlightRef.current) return;
       refreshTabInFlightRef.current = true;
       setIsRefreshingTab(true);
-      const label = options?.tabLabel || '화면';
+      const label = options?.tabLabel || tx('화면', 'View');
       try {
         const freshNet = await shareBridge.getLocalNetworkInfo();
         setNetInfo(freshNet);
@@ -699,18 +733,25 @@ export const App: React.FC = () => {
         }
         await refreshAppLogInfo();
         await refreshBackupStatus();
-        appendLog(label, `${label} 상태(네트워크·공유·드라이브·USB 프로필) 새로고침 완료`, 'success');
-        showToast(`${label} 상태를 최신 정보로 새로고침했습니다.`);
+        appendLog(
+          label,
+          tx(
+            `${label} 상태(네트워크·공유·드라이브·USB 프로필) 새로고침 완료`,
+            `Refreshed ${label} state (network, shares, drives, USB profiles)`
+          ),
+          'success'
+        );
+        showToast(tx(`${label} 상태를 최신 정보로 새로고침했습니다.`, `Refreshed ${label} with the latest information.`));
       } catch (err) {
-        const reason = err instanceof Error ? err.message : '알 수 없는 오류';
-        appendLog(label, `새로고침 실패: ${reason}`, 'error');
-        showToast('새로고침 중 오류가 발생했습니다.');
+        const reason = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(label, tx(`새로고침 실패: ${reason}`, `Refresh failed: ${reason}`), 'error');
+        showToast(tx('새로고침 중 오류가 발생했습니다.', 'An error occurred while refreshing.'));
       } finally {
         refreshTabInFlightRef.current = false;
         setIsRefreshingTab(false);
       }
     },
-    [appendLog, refreshAppLogInfo, refreshBackupStatus, showToast, syncAllMatrixAndWizardState]
+    [appendLog, refreshAppLogInfo, refreshBackupStatus, showToast, syncAllMatrixAndWizardState, tx]
   );
 
   useEffect(() => {
@@ -729,8 +770,11 @@ export const App: React.FC = () => {
         setTroubleshootTickets(synced.portable.document.troubleshootTickets || []);
         if (sortedPortable.length > 0) {
           appendLog(
-            'USB 포터블',
-            `${synced.portable.status.fileName}에서 저장된 공유 설정 ${sortedPortable.length}건 자동 로드 완료`,
+            tx('USB 포터블', 'USB Portable'),
+            tx(
+              `${synced.portable.status.fileName}에서 저장된 공유 설정 ${sortedPortable.length}건 자동 로드 완료`,
+              `Auto-loaded ${sortedPortable.length} saved share configuration(s) from ${synced.portable.status.fileName}`
+            ),
             'success'
           );
         }
@@ -755,7 +799,7 @@ export const App: React.FC = () => {
       await refreshBackupStatus();
     };
     void bootstrap();
-  }, [appendLog, refreshLocationProfiles, refreshAppLogInfo, refreshBackupStatus, syncAllMatrixAndWizardState]);
+  }, [appendLog, refreshLocationProfiles, refreshAppLogInfo, refreshBackupStatus, syncAllMatrixAndWizardState, tx]);
 
   // 1-second timer tick for active timed shares
   useEffect(() => {
@@ -778,14 +822,17 @@ export const App: React.FC = () => {
 
       if (diffMs > 0 && diffMs <= 5 * 60_000 && !warned5MinRef.current.has(key)) {
         warned5MinRef.current.add(key);
-        const msg = `공유폴더 '${sh.shareName}'가 5분 이내에 만료됩니다.`;
+        const msg = tx(
+          `공유폴더 '${sh.shareName}'가 5분 이내에 만료됩니다.`,
+          `Share '${sh.shareName}' expires within 5 minutes.`
+        );
         showToast(msg);
-        appendLog('만료 타이머', msg, 'success');
+        appendLog(tx('만료 타이머', 'Expiry Timer'), msg, 'success');
       }
 
       if (diffMs <= 0 && !expiredHandledRef.current.has(key)) {
         expiredHandledRef.current.add(key);
-        const expiredTime = new Date(expMs).toLocaleTimeString('ko-KR', { hour12: false });
+        const expiredTime = new Date(expMs).toLocaleTimeString(locale === 'en' ? 'en-US' : 'ko-KR', { hour12: false });
         if (sh.autoRevokeOnExpiry) {
           void (async () => {
             let revoked = false;
@@ -794,11 +841,32 @@ export const App: React.FC = () => {
               setShares(updated);
               refreshPortableSnapshot(netInfo.hostname);
               revoked = true;
-              appendLog('만료 타이머', `공유폴더 '${sh.shareName}' 자동 만료로 공유 해제 완료`, 'success');
-              showToast(`'${sh.shareName}' 만료 시간이 되어 공유를 자동 해제했습니다.`);
+              appendLog(
+                tx('만료 타이머', 'Expiry Timer'),
+                tx(
+                  `공유폴더 '${sh.shareName}' 자동 만료로 공유 해제 완료`,
+                  `Automatically unshared '${sh.shareName}' upon expiry`
+                ),
+                'success'
+              );
+              showToast(
+                tx(
+                  `'${sh.shareName}' 만료 시간이 되어 공유를 자동 해제했습니다.`,
+                  `'${sh.shareName}' has expired and been automatically unshared.`
+                )
+              );
             } catch {
-              appendLog('만료 타이머', `공유폴더 '${sh.shareName}' 자동 해제 실패`, 'error');
-              showToast(`'${sh.shareName}' 자동 해제 실패: 만료 알림에서 직접 해제하세요.`);
+              appendLog(
+                tx('만료 타이머', 'Expiry Timer'),
+                tx(`공유폴더 '${sh.shareName}' 자동 해제 실패`, `Failed to auto-unshare '${sh.shareName}'`),
+                'error'
+              );
+              showToast(
+                tx(
+                  `'${sh.shareName}' 자동 해제 실패: 만료 알림에서 직접 해제하세요.`,
+                  `Failed to auto-unshare '${sh.shareName}'. Please revoke it manually from the expiry banner.`
+                )
+              );
             }
             setExpiryAlerts((prev) => [
               { shareName: sh.shareName, uncPath: sh.uncPath, autoRevoked: revoked, expiredAt: expiredTime },
@@ -806,8 +874,17 @@ export const App: React.FC = () => {
             ]);
           })();
         } else {
-          appendLog('만료 타이머', `공유폴더 '${sh.shareName}' 만료 시각(${expiredTime}) 도래`, 'success');
-          showToast(`'${sh.shareName}' 공유 만료: 1클릭 보안 원복 알림을 확인하세요.`);
+          appendLog(
+            tx('만료 타이머', 'Expiry Timer'),
+            tx(`공유폴더 '${sh.shareName}' 만료 시각(${expiredTime}) 도래`, `Share '${sh.shareName}' reached expiry (${expiredTime})`),
+            'success'
+          );
+          showToast(
+            tx(
+              `'${sh.shareName}' 공유 만료: 1클릭 보안 원복 알림을 확인하세요.`,
+              `Share '${sh.shareName}' expired. Check the 1-Click Security Rollback banner.`
+            )
+          );
           setExpiryAlerts((prev) => [
             { shareName: sh.shareName, uncPath: sh.uncPath, autoRevoked: false, expiredAt: expiredTime },
             ...prev.filter((a) => a.shareName !== sh.shareName),
@@ -815,7 +892,7 @@ export const App: React.FC = () => {
         }
       }
     }
-  }, [shares, nowMs, netInfo, refreshPortableSnapshot, appendLog, showToast]);
+  }, [shares, nowMs, netInfo, refreshPortableSnapshot, appendLog, showToast, locale, tx]);
 
   const handleInspectOsPolicy = useCallback(async () => {
     if (refreshTabInFlightRef.current) return;
@@ -830,16 +907,19 @@ export const App: React.FC = () => {
         source: 'live_inspect',
       });
       appendLog(
-        'OS 정책 검사',
-        `${formatEraShortLabel(pol.osEra, pol.osBuild, pol.osDisplayVersion)} 진단 완료 (호환 ${pol.compatibilityScore}점 · 감지 ${pol.detectedIssues.length}건)`,
+        tx('OS 정책 검사', 'OS Policy Check'),
+        tx(
+          `${formatEraShortLabel(pol.osEra, pol.osBuild, pol.osDisplayVersion)} 진단 완료 (호환 ${pol.compatibilityScore}점 · 감지 ${pol.detectedIssues.length}건)`,
+          `${formatEraShortLabel(pol.osEra, pol.osBuild, pol.osDisplayVersion)} inspection complete (Score ${pol.compatibilityScore} · ${pol.detectedIssues.length} issue(s))`
+        ),
         'success'
       );
     } catch {
-      showToast('OS 네트워크 정책 점검 중 오류가 발생했습니다.');
+      showToast(tx('OS 네트워크 정책 점검 중 오류가 발생했습니다.', 'An error occurred while inspecting OS network policy.'));
     } finally {
       setIsPolicyInspecting(false);
     }
-  }, [netInfo, appendLog, showToast, syncAllMatrixAndWizardState]);
+  }, [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, tx]);
 
   const handleToggleBlockEmptyPasswordAccounts = useCallback(
     async (block: boolean) => {
@@ -878,12 +958,12 @@ export const App: React.FC = () => {
           policy: resolvedPol,
           source: block ? 'rollback' : 'host_panel',
         });
-        appendLog('빈 암호 계정 정책', res.message, res.success ? 'success' : 'error');
+        appendLog(tx('빈 암호 계정 정책', 'Blank Password Policy'), res.message, res.success ? 'success' : 'error');
         showToast(res.message);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-        appendLog('빈 암호 계정 정책', `정책 전환 예외: ${msg}`, 'error');
-        showToast(`빈 암호 계정 정책 전환 실패: ${msg}`);
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(tx('빈 암호 계정 정책', 'Blank Password Policy'), tx(`정책 전환 예외: ${msg}`, `Policy switch exception: ${msg}`), 'error');
+        showToast(tx(`빈 암호 계정 정책 전환 실패: ${msg}`, `Failed to switch blank password policy: ${msg}`));
       } finally {
         setIsTogglingEmptyPasswordPolicy(false);
       }
@@ -895,6 +975,7 @@ export const App: React.FC = () => {
       syncAllMatrixAndWizardState,
       appendLog,
       showToast,
+      tx,
     ]
   );
 
@@ -904,24 +985,27 @@ export const App: React.FC = () => {
       const initialSteps: PipelineStep[] = [
         {
           id: 'patch-prep',
-          title: '사전 보안 상태 스냅샷 및 호환 환경 확인',
-          detail: `${modeLabel} 적용 전 현재 SMB·LSA 상태를 점검합니다.`,
+          title: tx('사전 보안 상태 스냅샷 및 호환 환경 확인', 'Pre-patch security snapshot & environment check'),
+          detail: tx(
+            `${modeLabel} 적용 전 현재 SMB·LSA 상태를 점검합니다.`,
+            `Checking current SMB and LSA state before applying ${modeLabel}.`
+          ),
           status: 'running',
         },
         {
           id: 'patch-apply',
-          title: `${modeLabel} 정책 및 서비스 반영`,
-          detail: '레지스트리 정책 적용 및 관련 Windows 서비스 새로고침',
+          title: tx(`${modeLabel} 정책 및 서비스 반영`, `Apply ${modeLabel} policy & services`),
+          detail: tx('레지스트리 정책 적용 및 관련 Windows 서비스 새로고침', 'Apply registry policies and refresh related Windows services'),
           status: 'idle',
         },
         {
           id: 'patch-verify',
-          title: 'OS 네트워크 정책 재검사 및 USB 스냅샷 동기화',
-          detail: '변경된 정책 점수와 재부팅 필요 여부를 최종 검증합니다.',
+          title: tx('OS 네트워크 정책 재검사 및 USB 스냅샷 동기화', 'Re-inspect OS network policy & sync USB snapshot'),
+          detail: tx('변경된 정책 점수와 재부팅 필요 여부를 최종 검증합니다.', 'Verify updated compatibility score and reboot recommendation.'),
           status: 'idle',
         },
       ];
-      const jobKey = startProgressJob('OS 네트워크·호환성 정책 적용', modeLabel, initialSteps);
+      const jobKey = startProgressJob(tx('OS 네트워크·호환성 정책 적용', 'Applying OS Network & Compatibility Policy'), modeLabel, initialSteps);
       if (!jobKey) return;
 
       setApplyingPatchMode(mode);
@@ -950,7 +1034,7 @@ export const App: React.FC = () => {
           source: isRollbackMode ? 'rollback' : 'matrix',
         });
         appendLog(
-          'OS 정책 적용',
+          tx('OS 정책 적용', 'Apply OS Policy'),
           `${res.summary} · ${res.rebootJudgment.title}`,
           res.success ? 'success' : 'error'
         );
@@ -969,7 +1053,10 @@ export const App: React.FC = () => {
               ...initialSteps[2],
               status: 'success',
               durationMs: 30,
-              detail: `${res.rebootJudgment.title} (호환 점수 ${res.updatedPolicy.compatibilityScore}점)`,
+              detail: tx(
+                `${res.rebootJudgment.title} (호환 점수 ${res.updatedPolicy.compatibilityScore}점)`,
+                `${res.rebootJudgment.title} (Score ${res.updatedPolicy.compatibilityScore})`
+              ),
             },
           ]);
         } else {
@@ -985,9 +1072,9 @@ export const App: React.FC = () => {
           ]);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-        appendLog('OS 정책 적용', `정책 적용 예외: ${msg}`, 'error');
-        showToast(`정책 적용 실패: ${msg}`);
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(tx('OS 정책 적용', 'Apply OS Policy'), tx(`정책 적용 예외: ${msg}`, `Policy apply exception: ${msg}`), 'error');
+        showToast(tx(`정책 적용 실패: ${msg}`, `Failed to apply policy: ${msg}`));
         failProgressJob(jobKey, msg, [
           { ...initialSteps[0], status: 'success' },
           { ...initialSteps[1], status: 'error', error: msg },
@@ -997,7 +1084,7 @@ export const App: React.FC = () => {
         setApplyingPatchMode(null);
       }
     },
-    [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
+    [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob, tx]
   );
 
   const handleSyncMatchedPolicies = useCallback(
@@ -1005,12 +1092,12 @@ export const App: React.FC = () => {
       if (modes.length === 0) return;
       const modeNames = modes.map((m) => getPolicyPatchLabel(m)).join(' · ');
       const jobKey = startProgressJob(
-        '호스트·클라이언트 정책 일괄 자동 정렬',
-        `${modes.length}종 정책 (${modeNames})`,
+        tx('호스트·클라이언트 정책 일괄 자동 정렬', 'Auto-Align Host & Client Policies'),
+        tx(`${modes.length}종 정책 (${modeNames})`, `${modes.length} policies (${modeNames})`),
         modes.map((m, idx) => ({
           id: `align-${idx}-${m}`,
-          title: `${getPolicyPatchLabel(m)} 적용`,
-          detail: '호스트·클라이언트 정책 정렬 대기',
+          title: tx(`${getPolicyPatchLabel(m)} 적용`, `Apply ${getPolicyPatchLabel(m)}`),
+          detail: tx('호스트·클라이언트 정책 정렬 대기', 'Waiting to align host and client policy'),
           status: 'idle',
         }))
       );
@@ -1040,14 +1127,17 @@ export const App: React.FC = () => {
           source: 'matrix',
         });
         appendLog(
-          '자동 정렬',
+          tx('자동 정렬', 'Auto-Align'),
           `${batch.summary} · ${batch.rebootJudgment.title}`,
           batch.success ? 'success' : 'error'
         );
         showToast(
           batch.success
             ? batch.summary
-            : '일부 호환성 정책 자동 정렬에 실패했습니다. 아래 상세 내역을 확인하세요.'
+            : tx(
+                '일부 호환성 정책 자동 정렬에 실패했습니다. 아래 상세 내역을 확인하세요.',
+                'Some compatibility policies failed to auto-align. Check the details below.'
+              )
         );
         if (batch.success) {
           completeProgressJob(jobKey, `${batch.summary} · ${batch.rebootJudgment.title}`, latestSteps);
@@ -1055,15 +1145,15 @@ export const App: React.FC = () => {
           failProgressJob(jobKey, batch.summary, latestSteps);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-        appendLog('자동 정렬', `정책 자동 정렬 예외: ${msg}`, 'error');
-        showToast(`정책 자동 정렬 실패: ${msg}`);
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(tx('자동 정렬', 'Auto-Align'), tx(`정책 자동 정렬 예외: ${msg}`, `Auto-align exception: ${msg}`), 'error');
+        showToast(tx(`정책 자동 정렬 실패: ${msg}`, `Auto-align failed: ${msg}`));
         failProgressJob(jobKey, msg, latestSteps);
       } finally {
         setIsAutoAligning(false);
       }
     },
-    [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob]
+    [netInfo, appendLog, showToast, syncAllMatrixAndWizardState, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob, tx]
   );
 
   const handleDeleteHostPolicySnapshot = useCallback(
@@ -1073,13 +1163,17 @@ export const App: React.FC = () => {
         setHostPolicySnapshots(updatedMap);
         refreshPortableSnapshot(netInfo.hostname);
         void refreshBackupStatus();
-        appendLog('OS 정책 스냅샷', `'${hostName}' 호스트 정책 스냅샷을 목록에서 삭제했습니다.`, 'success');
-        showToast(`'${hostName}' 정책 스냅샷을 삭제했습니다.`);
+        appendLog(
+          tx('OS 정책 스냅샷', 'OS Policy Snapshot'),
+          tx(`'${hostName}' 호스트 정책 스냅샷을 목록에서 삭제했습니다.`, `Removed host policy snapshot for '${hostName}'.`),
+          'success'
+        );
+        showToast(tx(`'${hostName}' 정책 스냅샷을 삭제했습니다.`, `Deleted policy snapshot for '${hostName}'.`));
       } catch {
-        showToast('호스트 정책 스냅샷 삭제 중 오류가 발생했습니다.');
+        showToast(tx('호스트 정책 스냅샷 삭제 중 오류가 발생했습니다.', 'An error occurred while deleting the host policy snapshot.'));
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleClearAllHostPolicySnapshots = useCallback(async () => {
@@ -1088,12 +1182,16 @@ export const App: React.FC = () => {
       setHostPolicySnapshots(updatedMap);
       refreshPortableSnapshot(netInfo.hostname);
       void refreshBackupStatus();
-      appendLog('OS 정책 스냅샷', '저장된 모든 호스트 정책 스냅샷 목록을 초기화했습니다.', 'success');
-      showToast('저장된 호스트 정책 스냅샷 목록을 모두 비웠습니다.');
+      appendLog(
+        tx('OS 정책 스냅샷', 'OS Policy Snapshot'),
+        tx('저장된 모든 호스트 정책 스냅샷 목록을 초기화했습니다.', 'Cleared all saved host policy snapshots.'),
+        'success'
+      );
+      showToast(tx('저장된 호스트 정책 스냅샷 목록을 모두 비웠습니다.', 'Cleared all saved host policy snapshots.'));
     } catch {
-      showToast('호스트 정책 스냅샷 목록 초기화 중 오류가 발생했습니다.');
+      showToast(tx('호스트 정책 스냅샷 목록 초기화 중 오류가 발생했습니다.', 'An error occurred while clearing host policy snapshots.'));
     }
-  }, [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]);
+  }, [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast, tx]);
 
   const myPendingHostTask = React.useMemo(() => {
     const currentLower = netInfo.hostname.trim().toLowerCase();
@@ -1116,18 +1214,24 @@ export const App: React.FC = () => {
         refreshPortableSnapshot(netInfo.hostname);
         const targetLabel = res.task.targetHostName;
         appendLog(
-          '호스트 대기 작업',
-          `'${targetLabel}' 호스트용 USB 자동 적용 작업 저장 완료 (${res.task.conflictLabels.join(' · ') || '정책 정렬'})`,
+          tx('호스트 대기 작업', 'Pending Host Task'),
+          tx(
+            `'${targetLabel}' 호스트용 USB 자동 적용 작업 저장 완료 (${res.task.conflictLabels.join(' · ') || '정책 정렬'})`,
+            `Saved USB auto-apply task for '${targetLabel}' (${res.task.conflictLabels.join(' · ') || 'Policy alignment'})`
+          ),
           'success'
         );
         showToast(
-          `'${targetLabel}' 대상 USB 자동 적용 대기 작업을 저장했습니다. 해당 PC에서 앱을 열면 1클릭으로 적용됩니다.`
+          tx(
+            `'${targetLabel}' 대상 USB 자동 적용 대기 작업을 저장했습니다. 해당 PC에서 앱을 열면 1클릭으로 적용됩니다.`,
+            `Saved pending USB task for '${targetLabel}'. Open the app on that PC to apply in one click.`
+          )
         );
       } catch {
-        showToast('호스트 대기 작업 저장 중 오류가 발생했습니다.');
+        showToast(tx('호스트 대기 작업 저장 중 오류가 발생했습니다.', 'An error occurred while saving the pending host task.'));
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast, tx]
   );
 
   const handleDeletePendingHostTask = useCallback(
@@ -1138,13 +1242,17 @@ export const App: React.FC = () => {
         setConfirmingDismissPendingTask(false);
         refreshPortableSnapshot(netInfo.hostname);
         void refreshBackupStatus();
-        appendLog('호스트 대기 작업', `'${targetHostName}' 대상 USB 대기 작업을 삭제했습니다.`, 'success');
-        showToast(`'${targetHostName}' 호스트 대기 작업을 삭제했습니다.`);
+        appendLog(
+          tx('호스트 대기 작업', 'Pending Host Task'),
+          tx(`'${targetHostName}' 대상 USB 대기 작업을 삭제했습니다.`, `Deleted pending USB task for '${targetHostName}'.`),
+          'success'
+        );
+        showToast(tx(`'${targetHostName}' 호스트 대기 작업을 삭제했습니다.`, `Deleted pending task for '${targetHostName}'.`));
       } catch {
-        showToast('호스트 대기 작업 삭제 중 오류가 발생했습니다.');
+        showToast(tx('호스트 대기 작업 삭제 중 오류가 발생했습니다.', 'An error occurred while deleting the pending host task.'));
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleApplyPendingHostTask = useCallback(
@@ -1152,30 +1260,39 @@ export const App: React.FC = () => {
       const initialSteps: PipelineStep[] = [
         ...task.modes.map((m, idx) => ({
           id: `pending-mode-${idx}-${m}`,
-          title: `[호스트 예약] ${getPolicyPatchLabel(m)} 적용`,
-          detail: '요청된 정책 패치 반영 및 SMB 서비스 갱신',
+          title: tx(`[호스트 예약] ${getPolicyPatchLabel(m)} 적용`, `[Host Queued] Apply ${getPolicyPatchLabel(m)}`),
+          detail: tx('요청된 정책 패치 반영 및 SMB 서비스 갱신', 'Apply requested policy patch and refresh SMB services'),
           status: 'idle' as const,
         })),
         ...(task.includeGuestUnlock
           ? [
               {
                 id: 'pending-guest-unlock',
-                title: '[호스트 예약] Guest 무비밀번호 정책 완전 개방 (오류 86·1223·1385)',
-                detail: 'LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · 445 방화벽 개방',
+                title: tx(
+                  '[호스트 예약] Guest 무비밀번호 정책 완전 개방 (오류 86·1223·1385)',
+                  '[Host Queued] Full Guest Passwordless Unlock (Err 86·1223·1385)'
+                ),
+                detail: tx(
+                  'LimitBlankPasswordUse=0 · Guest 활성화 · SeDenyNetworkLogonRight 정리 · 445 방화벽 개방',
+                  'LimitBlankPasswordUse=0 · Enable Guest · Clear SeDenyNetworkLogonRight · Open Port 445'
+                ),
                 status: 'idle' as const,
               },
             ]
           : []),
         {
           id: 'pending-cleanup',
-          title: '호스트 OS 정책 재검사 및 USB 대기 작업 완료 처리',
-          detail: 'USB 포터블 저장소에서 완료된 대기 작업을 정리합니다.',
+          title: tx('호스트 OS 정책 재검사 및 USB 대기 작업 완료 처리', 'Re-inspect Host OS Policy & Complete Pending USB Task'),
+          detail: tx('USB 포터블 저장소에서 완료된 대기 작업을 정리합니다.', 'Removing completed pending task from USB portable storage.'),
           status: 'idle' as const,
         },
       ];
       const jobKey = startProgressJob(
-        `원격 요청 호스트 정책 자동 적용 (${task.targetHostName})`,
-        `요청 PC: ${task.requestedByHostName} · ${task.conflictLabels.join(' · ') || '정책 정렬'}`,
+        tx(`원격 요청 호스트 정책 자동 적용 (${task.targetHostName})`, `Auto-Apply Queued Host Policy (${task.targetHostName})`),
+        tx(
+          `요청 PC: ${task.requestedByHostName} · ${task.conflictLabels.join(' · ') || '정책 정렬'}`,
+          `Requested by: ${task.requestedByHostName} · ${task.conflictLabels.join(' · ') || 'Policy alignment'}`
+        ),
         initialSteps
       );
       if (!jobKey) return;
@@ -1205,20 +1322,20 @@ export const App: React.FC = () => {
           source: 'matrix',
         });
         appendLog(
-          '호스트 대기 작업',
+          tx('호스트 대기 작업', 'Pending Host Task'),
           `${batch.summary} · ${batch.rebootJudgment.title}`,
           batch.success ? 'success' : 'error'
         );
-        showToast(batch.success ? `${batch.summary} 완료` : batch.summary);
+        showToast(batch.success ? tx(`${batch.summary} 완료`, `${batch.summary} completed`) : batch.summary);
         if (batch.success) {
           completeProgressJob(jobKey, `${batch.summary} · ${batch.rebootJudgment.title}`, latestSteps);
         } else {
           failProgressJob(jobKey, batch.summary, latestSteps);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-        appendLog('호스트 대기 작업', `대기 작업 적용 예외: ${msg}`, 'error');
-        showToast(`대기 작업 적용 실패: ${msg}`);
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(tx('호스트 대기 작업', 'Pending Host Task'), tx(`대기 작업 적용 예외: ${msg}`, `Pending task exception: ${msg}`), 'error');
+        showToast(tx(`대기 작업 적용 실패: ${msg}`, `Failed to apply pending task: ${msg}`));
         failProgressJob(jobKey, msg, latestSteps);
       } finally {
         setIsApplyingPendingHostTask(false);
@@ -1233,6 +1350,7 @@ export const App: React.FC = () => {
       updateProgressSteps,
       completeProgressJob,
       failProgressJob,
+      tx,
     ]
   );
 
@@ -1272,8 +1390,11 @@ export const App: React.FC = () => {
     setSelectedTroubleshootTicketId(primary.ticketId);
     setTroubleshootWizardOpen(true);
     appendLog(
-      'USB 오류 마법사',
-      `이 PC(${netInfo.hostname})와 일치하는 미해결 티켓(${primary.errorCode})을 감지해 해결 마법사를 자동 열었습니다.`,
+      tx('USB 오류 마법사', 'USB Troubleshoot Wizard'),
+      tx(
+        `이 PC(${netInfo.hostname})와 일치하는 미해결 티켓(${primary.errorCode})을 감지해 해결 마법사를 자동 열었습니다.`,
+        `Auto-opened Troubleshoot Wizard for unresolved ticket (${primary.errorCode}) matching this PC (${netInfo.hostname}).`
+      ),
       'success'
     );
   }, [
@@ -1289,6 +1410,7 @@ export const App: React.FC = () => {
     isClientConnecting,
     netInfo.hostname,
     appendLog,
+    tx,
   ]);
 
   const captureTroubleshootFailure = useCallback(
@@ -1326,10 +1448,16 @@ export const App: React.FC = () => {
         setSelectedTroubleshootTicketId(saved.ticket.ticketId);
         refreshPortableSnapshot(params.netInfoSnap.hostname);
         appendLog(
-          'USB 오류 티켓',
+          tx('USB 오류 티켓', 'USB Error Ticket'),
           saved.portableStatus.writable
-            ? `오류 티켓(${saved.ticket.errorCode} · ${saved.ticket.shareName})을 USB 포터블 파일에 저장했습니다.`
-            : `오류 티켓(${saved.ticket.errorCode})을 세션에 기록했습니다 (USB 읽기 전용).`,
+            ? tx(
+                `오류 티켓(${saved.ticket.errorCode} · ${saved.ticket.shareName})을 USB 포터블 파일에 저장했습니다.`,
+                `Saved error ticket (${saved.ticket.errorCode} · ${saved.ticket.shareName}) to USB portable storage.`
+              )
+            : tx(
+                `오류 티켓(${saved.ticket.errorCode})을 세션에 기록했습니다 (USB 읽기 전용).`,
+                `Recorded error ticket (${saved.ticket.errorCode}) in session (USB read-only).`
+              ),
           'success'
         );
       } catch {}
@@ -1340,6 +1468,7 @@ export const App: React.FC = () => {
       policyStatus?.duplicateSidEvent6167Detected,
       refreshPortableSnapshot,
       appendLog,
+      tx,
     ]
   );
 
@@ -1461,8 +1590,14 @@ export const App: React.FC = () => {
           setActiveSection('workspace');
           ok = true;
           message = recoveredPass
-            ? '클라이언트 인증 모드를 보안 계정 모드로 전환하고 USB 저장 자격 증명을 불러왔습니다.'
-            : '클라이언트 인증 모드를 보안 계정 모드로 전환했습니다. 계정·암호 확인 후 재연결하세요.';
+            ? tx(
+                '클라이언트 인증 모드를 보안 계정 모드로 전환하고 USB 저장 자격 증명을 불러왔습니다.',
+                'Switched client authentication to Secure Account mode and loaded USB-saved credentials.'
+              )
+            : tx(
+                '클라이언트 인증 모드를 보안 계정 모드로 전환했습니다. 계정·암호 확인 후 재연결하세요.',
+                'Switched client authentication to Secure Account mode. Verify account & password, then reconnect.'
+              );
         } else if (step.executor === 'reassign_free_drive') {
           const usedSet = new Set(mounts.map((m) => m.driveLetter.toUpperCase()));
           const currentDl = (ticket.driveLetter || clientDraftRef.current.driveLetter || 'Z:').toUpperCase();
@@ -1471,7 +1606,10 @@ export const App: React.FC = () => {
           nextDriveLetter = freeDrive;
           setClientDraft((prev) => ({ ...prev, driveLetter: freeDrive }));
           ok = true;
-          message = `사용 가능한 빈 드라이브 문자(${freeDrive})로 자동 변경했습니다.`;
+          message = tx(
+            `사용 가능한 빈 드라이브 문자(${freeDrive})로 자동 변경했습니다.`,
+            `Auto-changed to available drive letter (${freeDrive}).`
+          );
         } else if (step.executor === 'retry_mount') {
           const latestDraft = clientDraftRef.current;
           const targetHost = ticket.targetIp || ticket.targetHostName || latestDraft.targetHost;
@@ -1516,7 +1654,10 @@ export const App: React.FC = () => {
 
           if (authModeToUse === 'account' && !passToUse) {
             ok = false;
-            message = '보안 계정 모드에서는 비밀번호가 필수입니다. 암호를 입력하거나 Guest 모드로 전환하세요.';
+            message = tx(
+              '보안 계정 모드에서는 비밀번호가 필수입니다. 암호를 입력하거나 Guest 모드로 전환하세요.',
+              'Password is required in Secure Account mode. Enter a password or switch to Guest mode.'
+            );
           } else {
             const resolvedWizardAlias = (ticket.targetHostName || matchedPortable?.sourceHostName || '').trim();
             const mountCfg: ClientTargetConfig = {
@@ -1544,12 +1685,15 @@ export const App: React.FC = () => {
               } catch {}
               ok = true;
               resolvedImmediately = true;
-              message = `${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 재연결 성공`;
+              message = tx(
+                `${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 재연결 성공`,
+                `Reconnected ${mountRes.mount.uncPath} -> ${mountRes.mount.driveLetter}`
+              );
             } else {
               const failedStep = mountRes.steps.find((s) => s.status === 'error');
               ok = false;
               shouldReclassifyOnRetryFailure = true;
-              message = failedStep?.error || '네트워크 드라이브 재연결에 실패했습니다.';
+              message = failedStep?.error || tx('네트워크 드라이브 재연결에 실패했습니다.', 'Failed to reconnect network drive.');
             }
           }
         } else if (step.executor === 'retry_host_share') {
@@ -1607,20 +1751,26 @@ export const App: React.FC = () => {
             if (ticket.originRole === 'host') resolvedImmediately = true;
             message =
               effectiveAuthMode === 'account' && ticket.authMode === 'guest'
-                ? `'${shareRes.share.shareName}' 보안 계정(${hostCfg.username}) 공유 재확인 및 USB 암호화 자격 증명 동기화 완료`
-                : `'${shareRes.share.shareName}' 공유폴더 재개설(${effectiveAuthMode === 'guest' ? 'Guest' : '보안 계정'}) 및 USB 동기화 완료`;
+                ? tx(
+                    `'${shareRes.share.shareName}' 보안 계정(${hostCfg.username}) 공유 재확인 및 USB 암호화 자격 증명 동기화 완료`,
+                    `Re-verified Secure Account (${hostCfg.username}) share '${shareRes.share.shareName}' and synced encrypted USB credentials`
+                  )
+                : tx(
+                    `'${shareRes.share.shareName}' 공유폴더 재개설(${effectiveAuthMode === 'guest' ? 'Guest' : '보안 계정'}) 및 USB 동기화 완료`,
+                    `Recreated share '${shareRes.share.shareName}' (${effectiveAuthMode === 'guest' ? 'Guest' : 'Secure Account'}) and synced USB`
+                  );
           } else {
             const failedStep = shareRes.steps.find((s) => s.status === 'error');
             ok = false;
-            message = failedStep?.error || '호스트 공유폴더 재개설에 실패했습니다.';
+            message = failedStep?.error || tx('호스트 공유폴더 재개설에 실패했습니다.', 'Failed to recreate host share.');
           }
         } else {
           ok = true;
-          message = '수동 확인 완료로 표시했습니다.';
+          message = tx('수동 확인 완료로 표시했습니다.', 'Marked as manually verified.');
         }
       } catch (err) {
         ok = false;
-        message = err instanceof Error ? err.message : '단계 실행 중 예외가 발생했습니다.';
+        message = err instanceof Error ? err.message : tx('단계 실행 중 예외가 발생했습니다.', 'An exception occurred while running the step.');
       }
 
       const nowIso = new Date().toISOString();
@@ -1641,7 +1791,7 @@ export const App: React.FC = () => {
               ...item,
               status: 'skipped' as const,
               lastAttemptAt: nowIso,
-              lastMessage: '재연결 성공으로 후속/대체 단계 건너뜀',
+              lastMessage: tx('재연결 성공으로 후속/대체 단계 건너뜀', 'Skipped subsequent/alternative steps after successful reconnection'),
             };
           }
           return item;
@@ -1689,7 +1839,7 @@ export const App: React.FC = () => {
       }
       setHostPolicySnapshots(shareBridge.getHostPolicySnapshots());
       refreshPortableSnapshot(netInfo.hostname);
-      appendLog('USB 오류 마법사', `[${step.title}] ${message}`, ok ? 'success' : 'error');
+      appendLog(tx('USB 오류 마법사', 'USB Troubleshoot Wizard'), `[${step.title}] ${message}`, ok ? 'success' : 'error');
       showToast(message);
       return { success: ok, message };
     },
@@ -1703,6 +1853,7 @@ export const App: React.FC = () => {
       refreshPortableSnapshot,
       appendLog,
       showToast,
+      tx,
     ]
   );
 
@@ -1716,7 +1867,7 @@ export const App: React.FC = () => {
                 ...item,
                 status: 'skipped' as const,
                 lastAttemptAt: nowIso,
-                lastMessage: '사용자 건너뛰기 선택',
+                lastMessage: tx('사용자 건너뛰기 선택', 'Skipped by user'),
               }
             : item
         );
@@ -1732,21 +1883,25 @@ export const App: React.FC = () => {
       setTroubleshootTickets(saved.tickets);
       refreshPortableSnapshot(netInfo.hostname);
     },
-    [netInfo.hostname, refreshPortableSnapshot]
+    [netInfo.hostname, refreshPortableSnapshot, tx]
   );
 
   const handleVerifyTroubleshootTarget = useCallback(
     async (ticket: TroubleshootTicket) => {
       const target = ticket.targetIp || ticket.targetHostName || netInfo.primaryIp;
       const res = await shareBridge.pingHost(target);
-      appendLog('USB 오류 마법사', `445 도달성 점검 (${target}): ${res.detail}`, res.reachable && res.smbPortOpen ? 'success' : 'error');
+      appendLog(
+        tx('USB 오류 마법사', 'USB Troubleshoot Wizard'),
+        tx(`445 도달성 점검 (${target}): ${res.detail}`, `Port 445 reachability (${target}): ${res.detail}`),
+        res.reachable && res.smbPortOpen ? 'success' : 'error'
+      );
       return {
         reachable: res.reachable,
         smbPortOpen: res.smbPortOpen,
         detail: res.detail,
       };
     },
-    [netInfo.primaryIp, appendLog]
+    [netInfo.primaryIp, appendLog, tx]
   );
 
   const handleMarkTroubleshootResolved = useCallback(
@@ -1762,10 +1917,19 @@ export const App: React.FC = () => {
       const saved = await shareBridge.updateTroubleshootTicket(updated);
       setTroubleshootTickets(saved.tickets);
       refreshPortableSnapshot(netInfo.hostname);
-      appendLog('USB 오류 마법사', `티켓(${ticket.errorCode})을 해결 완료 상태로 표시했습니다.`, 'success');
-      showToast('해결 완료로 표시했습니다. 이력 정리 전까지 USB에 안전하게 보존됩니다.');
+      appendLog(
+        tx('USB 오류 마법사', 'USB Troubleshoot Wizard'),
+        tx(`티켓(${ticket.errorCode})을 해결 완료 상태로 표시했습니다.`, `Marked ticket (${ticket.errorCode}) as resolved.`),
+        'success'
+      );
+      showToast(
+        tx(
+          '해결 완료로 표시했습니다. 이력 정리 전까지 USB에 안전하게 보존됩니다.',
+          'Marked as resolved. Safely preserved on USB until you clear resolved history.'
+        )
+      );
     },
-    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, appendLog, showToast, tx]
   );
 
   const handleDeleteTroubleshootTicket = useCallback(
@@ -1780,10 +1944,10 @@ export const App: React.FC = () => {
       if (res.tickets.length === 0) {
         setTroubleshootWizardOpen(false);
       }
-      appendLog('USB 오류 마법사', '선택한 USB 오류 티켓을 삭제했습니다.', 'success');
-      showToast('USB 오류 티켓을 삭제했습니다.');
+      appendLog(tx('USB 오류 마법사', 'USB Troubleshoot Wizard'), tx('선택한 USB 오류 티켓을 삭제했습니다.', 'Deleted selected USB error ticket.'), 'success');
+      showToast(tx('USB 오류 티켓을 삭제했습니다.', 'Deleted USB error ticket.'));
     },
-    [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
+    [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleClearResolvedTroubleshootTickets = useCallback(async () => {
@@ -1797,9 +1961,13 @@ export const App: React.FC = () => {
     } else if (selectedTroubleshootTicketId && !res.tickets.some((t) => t.ticketId === selectedTroubleshootTicketId)) {
       setSelectedTroubleshootTicketId(res.tickets[0].ticketId);
     }
-    appendLog('USB 오류 마법사', `해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`, 'success');
-    showToast(`해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`);
-  }, [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]);
+    appendLog(
+      tx('USB 오류 마법사', 'USB Troubleshoot Wizard'),
+      tx(`해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`, `Cleared ${res.removedCount} resolved ticket(s).`),
+      'success'
+    );
+    showToast(tx(`해결 완료된 티켓 ${res.removedCount}건을 정리했습니다.`, `Cleared ${res.removedCount} resolved ticket(s).`));
+  }, [netInfo.hostname, selectedTroubleshootTicketId, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast, tx]);
 
   const handleDeletePortableHostShare = useCallback(
     async (sourceHostName: string, shareName: string) => {
@@ -1807,13 +1975,17 @@ export const App: React.FC = () => {
         await shareBridge.deletePortableHostShare(sourceHostName, shareName);
         refreshPortableSnapshot(netInfo.hostname);
         void refreshBackupStatus();
-        appendLog('USB 포터블', `${sourceHostName} · \\\\...\\${shareName} 항목을 목록에서 삭제했습니다.`, 'success');
-        showToast(`포터블 공유 항목(${shareName})을 삭제했습니다.`);
+        appendLog(
+          tx('USB 포터블', 'USB Portable'),
+          tx(`${sourceHostName} · \\\\...\\${shareName} 항목을 목록에서 삭제했습니다.`, `Removed ${sourceHostName} · \\\\...\\${shareName} from list.`),
+          'success'
+        );
+        showToast(tx(`포터블 공유 항목(${shareName})을 삭제했습니다.`, `Deleted portable share entry (${shareName}).`));
       } catch {
-        showToast('포터블 공유 항목 삭제 중 오류가 발생했습니다.');
+        showToast(tx('포터블 공유 항목 삭제 중 오류가 발생했습니다.', 'An error occurred while deleting the portable share entry.'));
       }
     },
-    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast]
+    [netInfo.hostname, refreshPortableSnapshot, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleOpenBackupModal = useCallback(async () => {
@@ -1825,20 +1997,31 @@ export const App: React.FC = () => {
     async (reason?: string): Promise<CreateBackupResult> => {
       const res = await shareBridge.createDataBackup({
         trigger: 'manual',
-        reason: reason || '사용자 수동 백업',
+        reason: reason || tx('사용자 수동 백업', 'Manual user backup'),
         hostName: netInfo.hostname,
       });
       await refreshBackupStatus();
       if (res.success && res.snapshot) {
-        appendLog('자료 백업', `수동 백업 생성 완료: ${res.snapshot.fileName} (${res.snapshot.reason})`, 'success');
-        showToast(`백업 폴더에 스냅샷을 저장했습니다: ${res.snapshot.fileName}`);
+        appendLog(
+          tx('자료 백업', 'Data Backup'),
+          tx(
+            `수동 백업 생성 완료: ${res.snapshot.fileName} (${res.snapshot.reason})`,
+            `Created manual backup: ${res.snapshot.fileName} (${res.snapshot.reason})`
+          ),
+          'success'
+        );
+        showToast(tx(`백업 폴더에 스냅샷을 저장했습니다: ${res.snapshot.fileName}`, `Saved backup snapshot: ${res.snapshot.fileName}`));
       } else {
-        appendLog('자료 백업', `백업 생성 실패: ${res.error || '알 수 없는 오류'}`, 'error');
-        showToast(res.error || '백업 생성 중 오류가 발생했습니다.');
+        appendLog(
+          tx('자료 백업', 'Data Backup'),
+          tx(`백업 생성 실패: ${res.error || '알 수 없는 오류'}`, `Backup failed: ${res.error || 'Unknown error'}`),
+          'error'
+        );
+        showToast(res.error || tx('백업 생성 중 오류가 발생했습니다.', 'An error occurred while creating backup.'));
       }
       return res;
     },
-    [netInfo.hostname, refreshBackupStatus, appendLog, showToast]
+    [netInfo.hostname, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleRestoreBackup = useCallback(
@@ -1885,12 +2068,21 @@ export const App: React.FC = () => {
         await refreshBackupStatus();
 
         const snapLabel = res.restoredSnapshot?.fileName || backupId;
-        appendLog('자료 복원', `백업 시점 복원 완료: ${snapLabel}`, 'success');
-        showToast(`선택한 백업(${snapLabel}) 시점으로 포터블 설정·사용장소·티켓을 복원했습니다.`);
+        appendLog(tx('자료 복원', 'Data Restore'), tx(`백업 시점 복원 완료: ${snapLabel}`, `Restored backup snapshot: ${snapLabel}`), 'success');
+        showToast(
+          tx(
+            `선택한 백업(${snapLabel}) 시점으로 포터블 설정·사용장소·티켓을 복원했습니다.`,
+            `Restored portable settings, location profiles, and tickets from ${snapLabel}.`
+          )
+        );
       } else {
         await refreshBackupStatus();
-        appendLog('자료 복원', `백업 복원 실패: ${res.error || '알 수 없는 오류'}`, 'error');
-        showToast(res.error || '백업 복원 중 오류가 발생했습니다.');
+        appendLog(
+          tx('자료 복원', 'Data Restore'),
+          tx(`백업 복원 실패: ${res.error || '알 수 없는 오류'}`, `Restore failed: ${res.error || 'Unknown error'}`),
+          'error'
+        );
+        showToast(res.error || tx('백업 복원 중 오류가 발생했습니다.', 'An error occurred while restoring backup.'));
       }
       return res;
     },
@@ -1904,6 +2096,7 @@ export const App: React.FC = () => {
       refreshBackupStatus,
       appendLog,
       showToast,
+      tx,
     ]
   );
 
@@ -1912,29 +2105,33 @@ export const App: React.FC = () => {
       const res = await shareBridge.deleteDataBackup(backupId);
       await refreshBackupStatus();
       if (res.success) {
-        appendLog('자료 백업', `백업 스냅샷(${backupId}) 삭제 완료`, 'success');
-        showToast('선택한 백업 스냅샷을 삭제했습니다.');
+        appendLog(tx('자료 백업', 'Data Backup'), tx(`백업 스냅샷(${backupId}) 삭제 완료`, `Deleted backup snapshot (${backupId})`), 'success');
+        showToast(tx('선택한 백업 스냅샷을 삭제했습니다.', 'Deleted selected backup snapshot.'));
         return true;
       }
-      appendLog('자료 백업', `백업 삭제 실패: ${res.error || '알 수 없는 오류'}`, 'error');
-      showToast(res.error || '백업 스냅샷 삭제에 실패했습니다.');
+      appendLog(
+        tx('자료 백업', 'Data Backup'),
+        tx(`백업 삭제 실패: ${res.error || '알 수 없는 오류'}`, `Backup deletion failed: ${res.error || 'Unknown error'}`),
+        'error'
+      );
+      showToast(res.error || tx('백업 스냅샷 삭제에 실패했습니다.', 'Failed to delete backup snapshot.'));
       return false;
     },
-    [refreshBackupStatus, appendLog, showToast]
+    [refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleOpenBackupFolder = useCallback(async () => {
     const res = await shareBridge.openBackupFolder();
-    appendLog('자료 백업', res.message, res.success ? 'success' : 'error');
+    appendLog(tx('자료 백업', 'Data Backup'), res.message, res.success ? 'success' : 'error');
     showToast(res.message);
-  }, [appendLog, showToast]);
+  }, [appendLog, showToast, tx]);
 
   const handleTriggerReboot = useCallback(async () => {
     const res = await shareBridge.requestSystemReboot();
-    appendLog('시스템 제어', res.message, res.success ? 'success' : 'error');
+    appendLog(tx('시스템 제어', 'System Control'), res.message, res.success ? 'success' : 'error');
     showToast(res.message);
     return res;
-  }, [appendLog, showToast]);
+  }, [appendLog, showToast, tx]);
 
   const handleOpenWindowsUpdate = useCallback(async () => {
     const res = await shareBridge.openWindowsUpdateSettings();
@@ -1945,18 +2142,22 @@ export const App: React.FC = () => {
   const handleExportLegacyBundle = useCallback(
     async (bundle: LegacyScriptBundle) => {
       const res = await shareBridge.exportLegacyScriptBundle(bundle);
-      appendLog('구형 OS 스크립트', res.message, res.success ? 'success' : 'error');
+      appendLog(tx('구형 OS 스크립트', 'Legacy OS Script'), res.message, res.success ? 'success' : 'error');
       return res;
     },
-    [appendLog]
+    [appendLog, tx]
   );
 
   const handleBridgeImported = useCallback(async () => {
     setShares(shareBridge.getSavedShares());
     setMounts(shareBridge.getSavedMounts());
     refreshPortableSnapshot(netInfo.hostname);
-    appendLog('교차 OS 브릿지', 'Win 10/11 ↔ Win 7/8 양방향 설정 데이터 동기화 완료', 'success');
-  }, [appendLog, netInfo.hostname, refreshPortableSnapshot]);
+    appendLog(
+      tx('교차 OS 브릿지', 'Cross-OS Bridge'),
+      tx('Win 10/11 ↔ Win 7/8 양방향 설정 데이터 동기화 완료', 'Synced bidirectional configuration between Win 10/11 and Win 7/8'),
+      'success'
+    );
+  }, [appendLog, netInfo.hostname, refreshPortableSnapshot, tx]);
 
   const handleNavigate = (section: AppSection, role?: RoleMode) => {
     setActiveSection(section);
@@ -1967,13 +2168,13 @@ export const App: React.FC = () => {
     const shareLabel = config.shareName.trim() || 'AhBiShared';
     const folderLabel = config.folderPath.trim() || 'C:\\AhBiShared';
     const jobKey = startProgressJob(
-      '공유폴더 원클릭 개설',
-      `${folderLabel} → ${shareLabel} (${config.authMode === 'guest' ? '무비밀번호 Guest' : '보안 계정'})`,
+      tx('공유폴더 원클릭 개설', '1-Click Host Share Setup'),
+      `${folderLabel} → ${shareLabel} (${config.authMode === 'guest' ? tx('무비밀번호 Guest', 'Passwordless Guest') : tx('보안 계정', 'Secure Account')})`,
       [
         {
           id: 'host-prep',
-          title: '로컬 네트워크·권한 확인 및 파이프라인 준비',
-          detail: '현재 호스트 IP, 어댑터 및 관리자 권한 상태를 확인합니다.',
+          title: tx('로컬 네트워크·권한 확인 및 파이프라인 준비', 'Verify local network, permissions & prepare pipeline'),
+          detail: tx('현재 호스트 IP, 어댑터 및 관리자 권한 상태를 확인합니다.', 'Checking host IP, adapter, and administrator privileges.'),
           status: 'running',
         },
       ]
@@ -2013,20 +2214,28 @@ export const App: React.FC = () => {
         } catch {}
         const syncNote =
           res.portableStatus && !res.portableStatus.writable
-            ? ' (주의: USB 폴더가 읽기 전용이라 파일에 저장되지 않았습니다)'
-            : ' · USB 포터블 파일 자동 동기화 완료';
-        appendLog('메인 PC', `공유폴더(${res.share.shareName}) 개설 및 연결 코드 생성 완료${syncNote}`, 'success');
+            ? tx(' (주의: USB 폴더가 읽기 전용이라 파일에 저장되지 않았습니다)', ' (Note: USB folder is read-only; not saved to file)')
+            : tx(' · USB 포터블 파일 자동 동기화 완료', ' · USB portable file auto-synced');
+        appendLog(
+          tx('메인 PC', 'Main PC'),
+          tx(`공유폴더(${res.share.shareName}) 개설 및 연결 코드 생성 완료${syncNote}`, `Created share (${res.share.shareName}) & connection code${syncNote}`),
+          'success'
+        );
         showToast(
           res.portableStatus && !res.portableStatus.writable
-            ? `'${res.share.shareName}' 개설 완료 (USB 읽기 전용으로 파일 동기화 건너뜀)`
-            : `공유폴더 '${res.share.shareName}' 개설 및 USB 포터블 파일 저장이 완료되었습니다.`
+            ? tx(`'${res.share.shareName}' 개설 완료 (USB 읽기 전용으로 파일 동기화 건너뜀)`, `Created '${res.share.shareName}' (USB read-only; file sync skipped)`)
+            : tx(`공유폴더 '${res.share.shareName}' 개설 및 USB 포터블 파일 저장이 완료되었습니다.`, `Created share '${res.share.shareName}' and saved to USB portable file.`)
         );
-        completeProgressJob(jobKey, `공유폴더 '${res.share.shareName}' 개설 완료 (${res.share.uncPath})`, res.steps);
+        completeProgressJob(
+          jobKey,
+          tx(`공유폴더 '${res.share.shareName}' 개설 완료 (${res.share.uncPath})`, `Share '${res.share.shareName}' created (${res.share.uncPath})`),
+          res.steps
+        );
       } else {
         const failedStep = res.steps.find((s) => s.status === 'error');
-        const errMsg = failedStep?.error || '공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.';
-        appendLog('메인 PC', `공유폴더(${config.shareName}) 구성 중 오류가 발생했습니다.`, 'error');
-        showToast('공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.');
+        const errMsg = failedStep?.error || tx('공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.', 'An error occurred in one or more share setup steps.');
+        appendLog(tx('메인 PC', 'Main PC'), tx(`공유폴더(${config.shareName}) 구성 중 오류가 발생했습니다.`, `Error configuring share (${config.shareName}).`), 'error');
+        showToast(tx('공유폴더 구성 중 일부 단계에서 오류가 발생했습니다.', 'An error occurred while configuring the share folder.'));
         void captureTroubleshootFailure({
           originRole: 'host',
           netInfoSnap: freshNet,
@@ -2038,9 +2247,9 @@ export const App: React.FC = () => {
         failProgressJob(jobKey, errMsg, res.steps);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-      appendLog('메인 PC', `공유폴더 구성 예외: ${msg}`, 'error');
-      showToast('공유폴더 구성 중 예외가 발생했습니다.');
+      const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+      appendLog(tx('메인 PC', 'Main PC'), tx(`공유폴더 구성 예외: ${msg}`, `Share setup exception: ${msg}`), 'error');
+      showToast(tx('공유폴더 구성 중 예외가 발생했습니다.', 'An exception occurred while configuring the share folder.'));
       void captureTroubleshootFailure({
         originRole: 'host',
         netInfoSnap: netInfo,
@@ -2058,17 +2267,17 @@ export const App: React.FC = () => {
   const handleRemoveShare = async (shareName: string) => {
     const step1: PipelineStep = {
       id: 'rm-share',
-      title: `SMB 공유 '${shareName}' 해제 실행`,
-      detail: 'Windows 공유 목록에서 해당 공유 리소스를 제거합니다.',
+      title: tx(`SMB 공유 '${shareName}' 해제 실행`, `Remove SMB share '${shareName}'`),
+      detail: tx('Windows 공유 목록에서 해당 공유 리소스를 제거합니다.', 'Removing this share resource from the Windows share list.'),
       status: 'running',
     };
     const step2: PipelineStep = {
       id: 'rm-sync',
-      title: 'USB 포터블 기록 및 LAN 피어 목록 갱신',
-      detail: '활성 공유 목록과 포터블 설정 파일을 동기화합니다.',
+      title: tx('USB 포터블 기록 및 LAN 피어 목록 갱신', 'Update USB portable log & LAN peer list'),
+      detail: tx('활성 공유 목록과 포터블 설정 파일을 동기화합니다.', 'Syncing active share list with portable configuration file.'),
       status: 'idle',
     };
-    const jobKey = startProgressJob('공유폴더 공유 해제', shareName, [step1, step2]);
+    const jobKey = startProgressJob(tx('공유폴더 공유 해제', 'Remove Share Folder'), shareName, [step1, step2]);
     if (!jobKey) return;
 
     const t0 = performance.now();
@@ -2089,16 +2298,16 @@ export const App: React.FC = () => {
         const updatedPeers = await shareBridge.scanLanPeers(netInfo);
         setPeers(updatedPeers);
       } catch {}
-      appendLog('메인 PC', `공유폴더 '${shareName}' 공유 해제 및 USB 포터블 기록 갱신`, 'success');
-      showToast(`'${shareName}' 공유가 해제되었습니다.`);
-      completeProgressJob(jobKey, `'${shareName}' 공유폴더가 정상적으로 해제되었습니다.`, [
+      appendLog(tx('메인 PC', 'Main PC'), tx(`공유폴더 '${shareName}' 공유 해제 및 USB 포터블 기록 갱신`, `Unshared '${shareName}' and updated USB portable records`), 'success');
+      showToast(tx(`'${shareName}' 공유가 해제되었습니다.`, `Unshared '${shareName}'.`));
+      completeProgressJob(jobKey, tx(`'${shareName}' 공유폴더가 정상적으로 해제되었습니다.`, `Share '${shareName}' has been removed.`), [
         { ...step1, status: 'success', durationMs: rmDuration },
         { ...step2, status: 'success', durationMs: Math.round(performance.now() - t1) },
       ]);
     } catch (err) {
-      const reason = err instanceof Error ? err.message : '알 수 없는 오류';
-      appendLog('메인 PC', `공유폴더 '${shareName}' 해제 실패: ${reason}`, 'error');
-      showToast(`'${shareName}' 공유 해제 실패: ${reason}`);
+      const reason = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+      appendLog(tx('메인 PC', 'Main PC'), tx(`공유폴더 '${shareName}' 해제 실패: ${reason}`, `Failed to unshare '${shareName}': ${reason}`), 'error');
+      showToast(tx(`'${shareName}' 공유 해제 실패: ${reason}`, `Failed to unshare '${shareName}': ${reason}`));
       failProgressJob(jobKey, reason, [
         { ...step1, status: 'error', durationMs: Math.round(performance.now() - t0), error: reason },
         step2,
@@ -2114,11 +2323,11 @@ export const App: React.FC = () => {
       setNetInfo(freshNet);
       const found = await shareBridge.scanLanPeers(freshNet);
       setPeers(found);
-      appendLog('클라이언트 PC', `LAN 탐색 완료 (${found.length}대 호스트 발견)`, 'success');
+      appendLog(tx('클라이언트 PC', 'Client PC'), tx(`LAN 탐색 완료 (${found.length}대 호스트 발견)`, `LAN scan complete (${found.length} host(s) found)`), 'success');
     } catch (err) {
-      const reason = err instanceof Error ? err.message : '알 수 없는 오류';
-      appendLog('클라이언트 PC', `LAN 탐색 실패: ${reason}`, 'error');
-      showToast('LAN 탐색 중 오류가 발생했습니다.');
+      const reason = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+      appendLog(tx('클라이언트 PC', 'Client PC'), tx(`LAN 탐색 실패: ${reason}`, `LAN scan failed: ${reason}`), 'error');
+      showToast(tx('LAN 탐색 중 오류가 발생했습니다.', 'An error occurred during LAN scan.'));
     } finally {
       setIsScanning(false);
     }
@@ -2126,13 +2335,13 @@ export const App: React.FC = () => {
 
   const handleConnectClient = async (config: ClientTargetConfig) => {
     const jobKey = startProgressJob(
-      '네트워크 드라이브 원클릭 연결',
+      tx('네트워크 드라이브 원클릭 연결', '1-Click Network Drive Mount'),
       `\\\\${config.targetHost.trim()}\\${config.shareName.trim()} → ${config.driveLetter}`,
       [
         {
           id: 'cli-prep',
-          title: '클라이언트 네트워크·자격 증명 파이프라인 초기화',
-          detail: '대상 호스트 연결 단계 구성을 준비합니다.',
+          title: tx('클라이언트 네트워크·자격 증명 파이프라인 초기화', 'Initialize client network & credential pipeline'),
+          detail: tx('대상 호스트 연결 단계 구성을 준비합니다.', 'Preparing connection steps for the target host.'),
           status: 'running',
         },
       ]
@@ -2192,18 +2401,18 @@ export const App: React.FC = () => {
           source: 'mount_retry',
           justMountedTargets: [{ targetHost: config.targetHost, shareName: config.shareName }],
         });
-        appendLog('클라이언트 PC', `${res.mount.uncPath} → ${res.mount.driveLetter} 연결 완료`, 'success');
-        showToast(`${res.mount.driveLetter} 드라이브가 성공적으로 연결되었습니다.`);
+        appendLog(tx('클라이언트 PC', 'Client PC'), tx(`${res.mount.uncPath} → ${res.mount.driveLetter} 연결 완료`, `Connected ${res.mount.uncPath} -> ${res.mount.driveLetter}`), 'success');
+        showToast(tx(`${res.mount.driveLetter} 드라이브가 성공적으로 연결되었습니다.`, `Drive ${res.mount.driveLetter} connected successfully.`));
         completeProgressJob(
           jobKey,
-          `${res.mount.uncPath} → ${res.mount.driveLetter} 드라이브 연결 완료`,
+          tx(`${res.mount.uncPath} → ${res.mount.driveLetter} 드라이브 연결 완료`, `Connected ${res.mount.uncPath} -> ${res.mount.driveLetter}`),
           res.steps
         );
       } else {
         const failedStep = res.steps.find((s) => s.status === 'error');
-        const errMsg = failedStep?.error || '네트워크 드라이브 연결에 실패했습니다. 원인 안내를 확인하세요.';
-        appendLog('클라이언트 PC', `\\\\${config.targetHost}\\${config.shareName} 연결 실패`, 'error');
-        showToast('연결에 실패했습니다. 파이프라인 단계 오류를 확인하세요.');
+        const errMsg = failedStep?.error || tx('네트워크 드라이브 연결에 실패했습니다. 원인 안내를 확인하세요.', 'Failed to connect network drive. Check the troubleshooting guide.');
+        appendLog(tx('클라이언트 PC', 'Client PC'), tx(`\\\\${config.targetHost}\\${config.shareName} 연결 실패`, `Failed to connect \\\\${config.targetHost}\\${config.shareName}`), 'error');
+        showToast(tx('연결에 실패했습니다. 파이프라인 단계 오류를 확인하세요.', 'Connection failed. Check the pipeline step error details.'));
         void captureTroubleshootFailure({
           originRole: 'client',
           netInfoSnap: netInfo,
@@ -2216,9 +2425,9 @@ export const App: React.FC = () => {
         failProgressJob(jobKey, errMsg, res.steps);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-      appendLog('클라이언트 PC', `연결 예외: ${msg}`, 'error');
-      showToast('연결 실행 중 예외가 발생했습니다.');
+      const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+      appendLog(tx('클라이언트 PC', 'Client PC'), tx(`연결 예외: ${msg}`, `Connection exception: ${msg}`), 'error');
+      showToast(tx('연결 실행 중 예외가 발생했습니다.', 'An exception occurred while connecting.'));
       void captureTroubleshootFailure({
         originRole: 'client',
         netInfoSnap: netInfo,
@@ -2239,12 +2448,12 @@ export const App: React.FC = () => {
     const bridgeStepId = 'legacy-bridge-host';
     const initialBridgeStep: PipelineStep = {
       id: bridgeStepId,
-      title: `${osTag} 호환 브릿지 정책 정렬 및 사전 스냅샷 백업`,
-      detail: 'SMB 비암호화 접근 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장',
+      title: tx(`${osTag} 호환 브릿지 정책 정렬 및 사전 스냅샷 백업`, `Align ${osTag} compatibility bridge & capture snapshot`),
+      detail: tx('SMB 비암호화 접근 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장', 'Allow unencrypted SMB · Relax signing · Pin NTLMv2 · Save snapshot'),
       status: 'running',
     };
     const jobKey = startProgressJob(
-      `구형 OS 메인 공유 개설 (${osTag})`,
+      tx(`구형 OS 메인 공유 개설 (${osTag})`, `Legacy OS Host Share Setup (${osTag})`),
       `${config.folderPath || 'C:\\AhBiShared'} → ${config.shareName || 'AhBiShared'}`,
       [initialBridgeStep]
     );
@@ -2261,7 +2470,7 @@ export const App: React.FC = () => {
       const bridgeRes = await shareBridge.applyOsCompatibilityPatch('legacy_bridge_compat', freshNet);
       const bridgeStep: PipelineStep = {
         id: bridgeStepId,
-        title: `${osTag} 호환 브릿지 정책 정렬 및 사전 스냅샷 백업`,
+        title: tx(`${osTag} 호환 브릿지 정책 정렬 및 사전 스냅샷 백업`, `Align ${osTag} compatibility bridge & capture snapshot`),
         detail: bridgeRes.summary,
         status: bridgeRes.success ? 'success' : 'error',
         durationMs: Math.round(performance.now() - t0),
@@ -2276,8 +2485,8 @@ export const App: React.FC = () => {
       updateProgressSteps(jobKey, latestSteps);
 
       if (!bridgeRes.success) {
-        appendLog('구형 OS 메인', `브릿지 정책 적용 실패: ${bridgeRes.summary}`, 'error');
-        showToast('구형 OS 호환 브릿지 적용에 실패했습니다.');
+        appendLog(tx('구형 OS 메인', 'Legacy OS Host'), tx(`브릿지 정책 적용 실패: ${bridgeRes.summary}`, `Bridge policy failed: ${bridgeRes.summary}`), 'error');
+        showToast(tx('구형 OS 호환 브릿지 적용에 실패했습니다.', 'Failed to apply legacy OS compatibility bridge.'));
         void captureTroubleshootFailure({
           originRole: 'host',
           netInfoSnap: freshNet,
@@ -2321,28 +2530,28 @@ export const App: React.FC = () => {
         } catch {}
         const syncNote =
           shareRes.portableStatus && !shareRes.portableStatus.writable
-            ? ' (주의: USB 폴더가 읽기 전용이라 파일에 저장되지 않았습니다)'
-            : ' · USB 포터블 파일 자동 동기화 완료';
+            ? tx(' (주의: USB 폴더가 읽기 전용이라 파일에 저장되지 않았습니다)', ' (Note: USB folder is read-only; not saved to file)')
+            : tx(' · USB 포터블 파일 자동 동기화 완료', ' · USB portable file auto-synced');
         appendLog(
-          '구형 OS 메인',
-          `${osTag} 브릿지 + 공유폴더(${shareRes.share.shareName}) 통합 원클릭 개설 완료${syncNote}`,
+          tx('구형 OS 메인', 'Legacy OS Host'),
+          tx(`${osTag} 브릿지 + 공유폴더(${shareRes.share.shareName}) 통합 원클릭 개설 완료${syncNote}`, `Completed ${osTag} bridge + share (${shareRes.share.shareName}) setup${syncNote}`),
           'success'
         );
         showToast(
           shareRes.portableStatus && !shareRes.portableStatus.writable
-            ? `${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 개설 완료 (USB 읽기 전용으로 파일 동기화 건너뜀)`
-            : `${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 개설을 완료했습니다.`
+            ? tx(`${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 개설 완료 (USB 읽기 전용으로 파일 동기화 건너뜀)`, `Created ${osTag} share '${shareRes.share.shareName}' (USB read-only; file sync skipped)`)
+            : tx(`${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 개설을 완료했습니다.`, `Created ${osTag} compatible share '${shareRes.share.shareName}'.`)
         );
         completeProgressJob(
           jobKey,
-          `${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 통합 개설 완료`,
+          tx(`${osTag} 호환 공유폴더 '${shareRes.share.shareName}' 통합 개설 완료`, `Completed ${osTag} share '${shareRes.share.shareName}' setup`),
           [bridgeStep, ...shareRes.steps]
         );
       } else {
         const failedStep = shareRes.steps.find((s) => s.status === 'error');
-        const errMsg = failedStep?.error || '공유폴더 개설 단계에서 오류가 발생했습니다.';
-        appendLog('구형 OS 메인', `공유폴더(${config.shareName}) 개설 중 오류 발생`, 'error');
-        showToast('공유폴더 개설 단계에서 오류가 발생했습니다.');
+        const errMsg = failedStep?.error || tx('공유폴더 개설 단계에서 오류가 발생했습니다.', 'An error occurred while creating the share.');
+        appendLog(tx('구형 OS 메인', 'Legacy OS Host'), tx(`공유폴더(${config.shareName}) 개설 중 오류 발생`, `Error creating share (${config.shareName})`), 'error');
+        showToast(tx('공유폴더 개설 단계에서 오류가 발생했습니다.', 'An error occurred while creating the share folder.'));
         void captureTroubleshootFailure({
           originRole: 'host',
           netInfoSnap: freshNet,
@@ -2355,11 +2564,11 @@ export const App: React.FC = () => {
         failProgressJob(jobKey, errMsg, [bridgeStep, ...shareRes.steps]);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
       const errSteps = latestSteps.map((s) => (s.status === 'running' ? { ...s, status: 'error' as const, error: msg } : s));
       setLegacyHostSteps(errSteps);
-      appendLog('구형 OS 메인', `통합 개설 예외: ${msg}`, 'error');
-      showToast(`구형 OS 메인 개설 실패: ${msg}`);
+      appendLog(tx('구형 OS 메인', 'Legacy OS Host'), tx(`통합 개설 예외: ${msg}`, `Setup exception: ${msg}`), 'error');
+      showToast(tx(`구형 OS 메인 개설 실패: ${msg}`, `Legacy OS host setup failed: ${msg}`));
       void captureTroubleshootFailure({
         originRole: 'host',
         netInfoSnap: netInfo,
@@ -2382,15 +2591,15 @@ export const App: React.FC = () => {
     const initialBridgeStep: PipelineStep = {
       id: bridgeStepId,
       title: isGuestClientMode
-        ? `${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`
-        : `${osTag} 보안 계정 클라이언트 스냅샷 백업 및 정책 준비`,
+        ? tx(`${osTag} 호환 브릿지 정렬 및 사전 스냅샷 백업`, `Align ${osTag} compatibility bridge & capture snapshot`)
+        : tx(`${osTag} 보안 계정 클라이언트 스냅샷 백업 및 정책 준비`, `${osTag} Secure Account snapshot & policy prep`),
       detail: isGuestClientMode
-        ? '게스트 로그온 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장'
-        : '사전 스냅샷 저장 · 보안 계정 모드(로컬 Guest 계정 개방 생략)',
+        ? tx('게스트 로그온 허용 · 서명 완화 · NTLMv2 고정 · 스냅샷 저장', 'Allow guest logon · Relax signing · Pin NTLMv2 · Save snapshot')
+        : tx('사전 스냅샷 저장 · 보안 계정 모드(로컬 Guest 계정 개방 생략)', 'Save snapshot · Secure Account mode (skips local Guest unlock)'),
       status: 'running',
     };
     const jobKey = startProgressJob(
-      `구형 OS 클라이언트 연결 (${osTag})`,
+      tx(`구형 OS 클라이언트 연결 (${osTag})`, `Legacy OS Client Connect (${osTag})`),
       `\\\\${config.targetHost.trim()}\\${config.shareName.trim()} → ${config.driveLetter}`,
       [initialBridgeStep]
     );
@@ -2425,8 +2634,8 @@ export const App: React.FC = () => {
         updateProgressSteps(jobKey, latestSteps);
 
         if (!bridgeRes.success) {
-          appendLog('구형 OS 클라이언트', `브릿지 정렬 실패: ${bridgeRes.summary}`, 'error');
-          showToast('구형 OS 호환 브릿지 정렬에 실패했습니다.');
+          appendLog(tx('구형 OS 클라이언트', 'Legacy OS Client'), tx(`브릿지 정렬 실패: ${bridgeRes.summary}`, `Bridge alignment failed: ${bridgeRes.summary}`), 'error');
+          showToast(tx('구형 OS 호환 브릿지 정렬에 실패했습니다.', 'Failed to align legacy OS compatibility bridge.'));
           void captureTroubleshootFailure({
             originRole: 'client',
             netInfoSnap: freshNet,
@@ -2446,10 +2655,13 @@ export const App: React.FC = () => {
         bridgeStep = {
           id: bridgeStepId,
           title: initialBridgeStep.title,
-          detail: '원복 스냅샷을 저장했으며, 로컬 Guest(*-501) 개방 없이 클라이언트 서명·NTLMv2 정책만 정렬합니다.',
+          detail: tx(
+            '원복 스냅샷을 저장했으며, 로컬 Guest(*-501) 개방 없이 클라이언트 서명·NTLMv2 정책만 정렬합니다.',
+            'Saved rollback snapshot; aligning client signing & NTLMv2 policies without unlocking local Guest (*-501).'
+          ),
           status: 'success',
           durationMs: Math.round(performance.now() - t0),
-          output: snap ? `스냅샷 저장 완료 (${snap.capturedAt})` : '보안 계정 모드 준비 완료',
+          output: snap ? tx(`스냅샷 저장 완료 (${snap.capturedAt})`, `Snapshot saved (${snap.capturedAt})`) : tx('보안 계정 모드 준비 완료', 'Secure Account mode ready'),
         };
         latestSteps = [bridgeStep];
         setLegacyClientSteps(latestSteps);
@@ -2483,21 +2695,21 @@ export const App: React.FC = () => {
           justMountedTargets: [{ targetHost: config.targetHost, shareName: config.shareName }],
         });
         appendLog(
-          '구형 OS 클라이언트',
-          `${osTag} 브릿지 + ${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 통합 연결 완료`,
+          tx('구형 OS 클라이언트', 'Legacy OS Client'),
+          tx(`${osTag} 브릿지 + ${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 통합 연결 완료`, `Connected ${osTag} bridge + ${mountRes.mount.uncPath} -> ${mountRes.mount.driveLetter}`),
           'success'
         );
-        showToast(`${mountRes.mount.driveLetter} 드라이브가 구형 OS 호환 모드로 연결되었습니다.`);
+        showToast(tx(`${mountRes.mount.driveLetter} 드라이브가 구형 OS 호환 모드로 연결되었습니다.`, `Drive ${mountRes.mount.driveLetter} mounted in legacy OS compatibility mode.`));
         completeProgressJob(
           jobKey,
-          `${osTag} 호환 모드 ${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 연결 완료`,
+          tx(`${osTag} 호환 모드 ${mountRes.mount.uncPath} → ${mountRes.mount.driveLetter} 연결 완료`, `${osTag} mode connected ${mountRes.mount.uncPath} -> ${mountRes.mount.driveLetter}`),
           [bridgeStep, ...mountRes.steps]
         );
       } else {
         const failedStep = mountRes.steps.find((s) => s.status === 'error');
-        const errMsg = failedStep?.error || '구형 OS 클라이언트 드라이브 연결에 실패했습니다.';
-        appendLog('구형 OS 클라이언트', `\\\\${config.targetHost}\\${config.shareName} 연결 실패`, 'error');
-        showToast('클라이언트 연결에 실패했습니다. 파이프라인 처방 가이드를 확인하세요.');
+        const errMsg = failedStep?.error || tx('구형 OS 클라이언트 드라이브 연결에 실패했습니다.', 'Failed to mount legacy OS client drive.');
+        appendLog(tx('구형 OS 클라이언트', 'Legacy OS Client'), tx(`\\\\${config.targetHost}\\${config.shareName} 연결 실패`, `Failed to connect \\\\${config.targetHost}\\${config.shareName}`), 'error');
+        showToast(tx('클라이언트 연결에 실패했습니다. 파이프라인 처방 가이드를 확인하세요.', 'Client connection failed. Check the pipeline troubleshooting guide.'));
         void captureTroubleshootFailure({
           originRole: 'client',
           netInfoSnap: freshNet,
@@ -2511,11 +2723,11 @@ export const App: React.FC = () => {
         failProgressJob(jobKey, errMsg, [bridgeStep, ...mountRes.steps]);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
       const errSteps = latestSteps.map((s) => (s.status === 'running' ? { ...s, status: 'error' as const, error: msg } : s));
       setLegacyClientSteps(errSteps);
-      appendLog('구형 OS 클라이언트', `통합 연결 예외: ${msg}`, 'error');
-      showToast(`구형 OS 클라이언트 연결 실패: ${msg}`);
+      appendLog(tx('구형 OS 클라이언트', 'Legacy OS Client'), tx(`통합 연결 예외: ${msg}`, `Connection exception: ${msg}`), 'error');
+      showToast(tx(`구형 OS 클라이언트 연결 실패: ${msg}`, `Legacy OS client connection failed: ${msg}`));
       void captureTroubleshootFailure({
         originRole: 'client',
         netInfoSnap: netInfo,
@@ -2535,17 +2747,17 @@ export const App: React.FC = () => {
   const handleUnmount = async (driveLetter: string) => {
     const step1: PipelineStep = {
       id: 'unmount-drive',
-      title: `${driveLetter} 네트워크 드라이브 연결 해제`,
-      detail: 'SMB 매핑 및 해당 드라이브 세션을 안전하게 종료합니다.',
+      title: tx(`${driveLetter} 네트워크 드라이브 연결 해제`, `Disconnect ${driveLetter} network drive`),
+      detail: tx('SMB 매핑 및 해당 드라이브 세션을 안전하게 종료합니다.', 'Safely terminating SMB mapping and drive session.'),
       status: 'running',
     };
     const step2: PipelineStep = {
       id: 'unmount-sync',
-      title: '연결 드라이브 목록 동기화',
-      detail: '현재 로컬 드라이브 상태와 저장 목록을 갱신합니다.',
+      title: tx('연결 드라이브 목록 동기화', 'Sync mounted drive list'),
+      detail: tx('현재 로컬 드라이브 상태와 저장 목록을 갱신합니다.', 'Updating local drive status and saved list.'),
       status: 'idle',
     };
-    const jobKey = startProgressJob('네트워크 드라이브 연결 해제', driveLetter, [step1, step2]);
+    const jobKey = startProgressJob(tx('네트워크 드라이브 연결 해제', 'Disconnect Network Drive'), driveLetter, [step1, step2]);
     if (!jobKey) return;
 
     const t0 = performance.now();
@@ -2553,16 +2765,16 @@ export const App: React.FC = () => {
       const updated = await shareBridge.unmountDrive(driveLetter);
       const umDuration = Math.round(performance.now() - t0);
       setMounts(updated);
-      appendLog('클라이언트 PC', `${driveLetter} 드라이브 연결 해제`, 'success');
-      showToast(`${driveLetter} 드라이브 연결이 해제되었습니다.`);
-      completeProgressJob(jobKey, `${driveLetter} 드라이브 연결이 해제되었습니다.`, [
+      appendLog(tx('클라이언트 PC', 'Client PC'), tx(`${driveLetter} 드라이브 연결 해제`, `Disconnected drive ${driveLetter}`), 'success');
+      showToast(tx(`${driveLetter} 드라이브 연결이 해제되었습니다.`, `Drive ${driveLetter} disconnected.`));
+      completeProgressJob(jobKey, tx(`${driveLetter} 드라이브 연결이 해제되었습니다.`, `Drive ${driveLetter} disconnected.`), [
         { ...step1, status: 'success', durationMs: umDuration },
         { ...step2, status: 'success', durationMs: 20 },
       ]);
     } catch (err) {
-      const reason = err instanceof Error ? err.message : '알 수 없는 오류';
-      appendLog('클라이언트 PC', `${driveLetter} 드라이브 해제 실패: ${reason}`, 'error');
-      showToast(`${driveLetter} 드라이브 해제 실패: ${reason}`);
+      const reason = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+      appendLog(tx('클라이언트 PC', 'Client PC'), tx(`${driveLetter} 드라이브 해제 실패: ${reason}`, `Failed to disconnect drive ${driveLetter}: ${reason}`), 'error');
+      showToast(tx(`${driveLetter} 드라이브 해제 실패: ${reason}`, `Failed to disconnect ${driveLetter}: ${reason}`));
       failProgressJob(jobKey, reason, [
         { ...step1, status: 'error', durationMs: Math.round(performance.now() - t0), error: reason },
         step2,
@@ -2579,25 +2791,29 @@ export const App: React.FC = () => {
     const isHost = scope === 'host';
     const step1: PipelineStep = {
       id: `rb-${scope}-exec`,
-      title: isHost ? '호스트 공유 정리 및 보안 기본값 원복' : '클라이언트 연결 해제 및 보안 기본값 원복',
+      title: isHost
+        ? tx('호스트 공유 정리 및 보안 기본값 원복', 'Clean up host shares & restore security defaults')
+        : tx('클라이언트 연결 해제 및 보안 기본값 원복', 'Disconnect drives & restore client security defaults'),
       detail: isHost
-        ? '공유 제거, LSA/Guest 제한 복구, SMB 서명 강제 및 방화벽 규칙 정리'
-        : '전체 네트워크 드라이브 해제, 비인증 게스트 차단 및 서명 강제 복원',
+        ? tx('공유 제거, LSA/Guest 제한 복구, SMB 서명 강제 및 방화벽 규칙 정리', 'Remove shares, restore LSA/Guest limits, enforce SMB signing & clean firewall rules')
+        : tx('전체 네트워크 드라이브 해제, 비인증 게스트 차단 및 서명 강제 복원', 'Disconnect all network drives, block insecure guest & restore signing enforcement'),
       status: 'running',
     };
     const step2: PipelineStep = {
       id: `rb-${scope}-sync`,
-      title: 'OS 네트워크 정책 재검사 및 USB 스냅샷 갱신',
-      detail: '원복된 보안 정책 상태와 공유·드라이브 목록을 재확인합니다.',
+      title: tx('OS 네트워크 정책 재검사 및 USB 스냅샷 갱신', 'Re-inspect OS network policy & update USB snapshot'),
+      detail: tx('원복된 보안 정책 상태와 공유·드라이브 목록을 재확인합니다.', 'Re-verifying restored security policy and share/drive lists.'),
       status: 'idle',
     };
     const jobKey = startProgressJob(
-      isHost ? '호스트 보안 원복' : '클라이언트 보안 원복',
-      isHost ? '공유 및 LSA/SMB 호스트 보안 기본값 복원' : '네트워크 연결 및 클라이언트 보안 기본값 복원',
+      isHost ? tx('호스트 보안 원복', 'Host Security Rollback') : tx('클라이언트 보안 원복', 'Client Security Rollback'),
+      isHost
+        ? tx('공유 및 LSA/SMB 호스트 보안 기본값 복원', 'Restore share and LSA/SMB host security defaults')
+        : tx('네트워크 연결 및 클라이언트 보안 기본값 복원', 'Restore network drives and client security defaults'),
       [step1, step2]
     );
     if (!jobKey) {
-      return { success: false, message: '다른 작업이 진행 중입니다.' };
+      return { success: false, message: tx('다른 작업이 진행 중입니다.', 'Another operation is in progress.') };
     }
 
     const t0 = performance.now();
@@ -2637,7 +2853,7 @@ export const App: React.FC = () => {
         localMounts: shareBridge.getSavedMounts(),
         source: 'rollback',
       });
-      appendLog(isHost ? '메인 PC' : '클라이언트 PC', res.message, res.success ? 'success' : 'error');
+      appendLog(isHost ? tx('메인 PC', 'Main PC') : tx('클라이언트 PC', 'Client PC'), res.message, res.success ? 'success' : 'error');
 
       const syncDuration = Math.round(performance.now() - t1);
       if (res.success) {
@@ -2653,8 +2869,8 @@ export const App: React.FC = () => {
       }
       return res;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '보안 원복 실행 중 예외가 발생했습니다.';
-      appendLog(isHost ? '메인 PC' : '클라이언트 PC', msg, 'error');
+      const msg = err instanceof Error ? err.message : tx('보안 원복 실행 중 예외가 발생했습니다.', 'An exception occurred while running security rollback.');
+      appendLog(isHost ? tx('메인 PC', 'Main PC') : tx('클라이언트 PC', 'Client PC'), msg, 'error');
       failProgressJob(jobKey, msg, [
         { ...step1, status: 'error', durationMs: Math.round(performance.now() - t0), error: msg },
         step2,
@@ -2666,29 +2882,29 @@ export const App: React.FC = () => {
   const handleFullSecurityRollback = async () => {
     const s1: PipelineStep = {
       id: 'full-rb-host',
-      title: '호스트 공유폴더 · 임시 방화벽(445) · Guest/LSA 보안 원복',
-      detail: '모든 사용자 공유 해제 및 서버/LSA/Guest 제한 기본값을 복구합니다.',
+      title: tx('호스트 공유폴더 · 임시 방화벽(445) · Guest/LSA 보안 원복', 'Restore host shares, temp firewall (445) & Guest/LSA security'),
+      detail: tx('모든 사용자 공유 해제 및 서버/LSA/Guest 제한 기본값을 복구합니다.', 'Removing custom shares and restoring server/LSA/Guest restrictions.'),
       status: 'running',
     };
     const s2: PipelineStep = {
       id: 'full-rb-client',
-      title: '클라이언트 네트워크 드라이브 해제 · 게스트 접속 차단',
-      detail: '열린 드라이브 세션을 끊고 클라이언트 서명·게스트 차단을 복구합니다.',
+      title: tx('클라이언트 네트워크 드라이브 해제 · 게스트 접속 차단', 'Disconnect network drives & block insecure guest logon'),
+      detail: tx('열린 드라이브 세션을 끊고 클라이언트 서명·게스트 차단을 복구합니다.', 'Disconnecting drive sessions and restoring client signing/guest blocks.'),
       status: 'idle',
     };
     const s3: PipelineStep = {
       id: 'full-rb-strict',
-      title: '26H2 표준 보안 · 프린터 RPC · UAC 원격 보호 최종 복원',
-      detail: '10개 핵심 보안 기본값(SMB 서명, 게스트, LSA, NTLM, UAC, RPC)을 정렬합니다.',
+      title: tx('26H2 표준 보안 · 프린터 RPC · UAC 원격 보호 최종 복원', 'Restore 26H2 Standard Security, Printer RPC & UAC remote protection'),
+      detail: tx('10개 핵심 보안 기본값(SMB 서명, 게스트, LSA, NTLM, UAC, RPC)을 정렬합니다.', 'Aligning 10 core security defaults (SMB signing, Guest, LSA, NTLM, UAC, RPC).'),
       status: 'idle',
     };
     const jobKey = startProgressJob(
-      '전체(호스트+클라이언트+표준보안) 원복',
-      '10개 핵심 보안 기본값 일괄 복원 및 검증',
+      tx('전체(호스트+클라이언트+표준보안) 원복', 'Full Security Rollback (Host + Client + Standard)'),
+      tx('10개 핵심 보안 기본값 일괄 복원 및 검증', 'Batch restore & verify 10 core security defaults'),
       [s1, s2, s3]
     );
     if (!jobKey) {
-      return { success: false, message: '다른 작업이 진행 중입니다.' };
+      return { success: false, message: tx('다른 작업이 진행 중입니다.', 'Another operation is in progress.') };
     }
 
     const t0 = performance.now();
@@ -2744,9 +2960,9 @@ export const App: React.FC = () => {
 
       const allOk = hostRes.success && clientRes.success && hardenBatch.success;
       const msg = allOk
-        ? '호스트·클라이언트 세션 정리 및 10개 핵심 보안 기본값 일괄 원복을 완료했습니다.'
-        : '일부 보안 원복 단계에 확인이 필요합니다. 10개 핵심 항목 검증 보고서를 확인하세요.';
-      appendLog('전체 보안 원복', msg, allOk ? 'success' : 'error');
+        ? tx('호스트·클라이언트 세션 정리 및 10개 핵심 보안 기본값 일괄 원복을 완료했습니다.', 'Cleaned up host/client sessions and restored all 10 core security defaults.')
+        : tx('일부 보안 원복 단계에 확인이 필요합니다. 10개 핵심 항목 검증 보고서를 확인하세요.', 'Some rollback steps need review. Check the 10-item verification report.');
+      appendLog(tx('전체 보안 원복', 'Full Security Rollback'), msg, allOk ? 'success' : 'error');
       showToast(msg);
       const finalSteps: PipelineStep[] = [
         { ...s1, status: hostRes.success ? 'success' : 'error', durationMs: d1 },
@@ -2760,8 +2976,8 @@ export const App: React.FC = () => {
       }
       return { success: allOk, message: msg };
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : '전체 보안 원복 중 오류가 발생했습니다.';
-      appendLog('전체 보안 원복', errMsg, 'error');
+      const errMsg = err instanceof Error ? err.message : tx('전체 보안 원복 중 오류가 발생했습니다.', 'An error occurred during full security rollback.');
+      appendLog(tx('전체 보안 원복', 'Full Security Rollback'), errMsg, 'error');
       showToast(errMsg);
       failProgressJob(jobKey, errMsg, [
         { ...s1, status: 'error', durationMs: Math.round(performance.now() - t0), error: errMsg },
@@ -2775,23 +2991,27 @@ export const App: React.FC = () => {
   const handleExpirySecurityRollback = async () => {
     const s1: PipelineStep = {
       id: 'exp-cleanup',
-      title: '만료된 임시 공유폴더 해제 정리',
-      detail: '남아 있는 만료 공유 리소스를 제거합니다.',
+      title: tx('만료된 임시 공유폴더 해제 정리', 'Clean up expired temporary shares'),
+      detail: tx('남아 있는 만료 공유 리소스를 제거합니다.', 'Removing remaining expired share resources.'),
       status: 'running',
     };
     const s2: PipelineStep = {
       id: 'exp-rollback',
-      title: '호스트 보안 원복 및 Win 11 26H2 표준 보안 복구',
-      detail: 'SMB 서명 강제 및 Guest·LSA 제한 기본값으로 복원합니다.',
+      title: tx('호스트 보안 원복 및 Win 11 26H2 표준 보안 복구', 'Restore host security & Win 11 26H2 standard defaults'),
+      detail: tx('SMB 서명 강제 및 Guest·LSA 제한 기본값으로 복원합니다.', 'Restoring SMB signing enforcement and Guest/LSA restrictions.'),
       status: 'idle',
     };
     const s3: PipelineStep = {
       id: 'exp-sync',
-      title: 'USB 포터블 기록 및 만료 알림 초기화',
-      detail: '갱신된 정책 상태를 저장합니다.',
+      title: tx('USB 포터블 기록 및 만료 알림 초기화', 'Update USB portable log & clear expiry alerts'),
+      detail: tx('갱신된 정책 상태를 저장합니다.', 'Saving updated policy state.'),
       status: 'idle',
     };
-    const jobKey = startProgressJob('만료 공유 해제 & 보안 원복', `${expiryAlerts.length}건 만료 공유 정리`, [s1, s2, s3]);
+    const jobKey = startProgressJob(
+      tx('만료 공유 해제 & 보안 원복', 'Revoke Expired Shares & Rollback Security'),
+      tx(`${expiryAlerts.length}건 만료 공유 정리`, `Cleaning up ${expiryAlerts.length} expired share(s)`),
+      [s1, s2, s3]
+    );
     if (!jobKey) return;
 
     const t0 = performance.now();
@@ -2856,25 +3076,25 @@ export const App: React.FC = () => {
 
       if (allOk) {
         setExpiryAlerts([]);
-        appendLog('만료 보안 원복', `${rollbackRes.message} · Win 11 26H2 표준 보안 복원 완료`, 'success');
-        showToast('만료된 공유를 정리하고 Win 11 26H2 보안 기본값으로 원복했습니다.');
-        completeProgressJob(jobKey, '만료된 공유 정리 및 Win 11 26H2 표준 보안 원복 완료', [
+        appendLog(tx('만료 보안 원복', 'Expiry Security Rollback'), tx(`${rollbackRes.message} · Win 11 26H2 표준 보안 복원 완료`, `${rollbackRes.message} · Restored Win 11 26H2 standard security`), 'success');
+        showToast(tx('만료된 공유를 정리하고 Win 11 26H2 보안 기본값으로 원복했습니다.', 'Cleaned up expired shares and restored Win 11 26H2 security defaults.'));
+        completeProgressJob(jobKey, tx('만료된 공유 정리 및 Win 11 26H2 표준 보안 원복 완료', 'Expired share cleanup & Win 11 26H2 security rollback complete'), [
           { ...s1, status: 'success', durationMs: d1 },
           { ...s2, status: 'success', durationMs: d2 },
           { ...s3, status: 'success', durationMs: Math.round(performance.now() - t2) },
         ]);
       } else {
-        appendLog('만료 보안 원복', errMsg || '보안 원복 일부 단계 실패', 'error');
-        showToast(`만료 보안 원복 중 오류가 발생했습니다: ${errMsg}`);
-        failProgressJob(jobKey, errMsg || '호스트 보안 원복 또는 26H2 표준 보안 복원에 실패했습니다.', [
+        appendLog(tx('만료 보안 원복', 'Expiry Security Rollback'), errMsg || tx('보안 원복 일부 단계 실패', 'Some rollback steps failed'), 'error');
+        showToast(tx(`만료 보안 원복 중 오류가 발생했습니다: ${errMsg}`, `Expiry security rollback error: ${errMsg}`));
+        failProgressJob(jobKey, errMsg || tx('호스트 보안 원복 또는 26H2 표준 보안 복원에 실패했습니다.', 'Failed to restore host or 26H2 standard security.'), [
           { ...s1, status: 'success', durationMs: d1 },
           { ...s2, status: 'error', durationMs: d2, error: errMsg },
           s3,
         ]);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '만료 보안 원복 중 오류가 발생했습니다.';
-      appendLog('만료 보안 원복', msg, 'error');
+      const msg = err instanceof Error ? err.message : tx('만료 보안 원복 중 오류가 발생했습니다.', 'An error occurred during expiry security rollback.');
+      appendLog(tx('만료 보안 원복', 'Expiry Security Rollback'), msg, 'error');
       showToast(msg);
       const errSteps: PipelineStep[] =
         phase === 1
@@ -2899,10 +3119,15 @@ export const App: React.FC = () => {
       ]);
       setDiagChecks(checks);
       setPolicyStatus(pol);
-      appendLog('공통 진단', 'SMB 네트워크 스택 및 OS 정책 상태 점검 완료', 'success');
+      appendLog(tx('공통 진단', 'Diagnostics'), tx('SMB 네트워크 스택 및 OS 정책 상태 점검 완료', 'Completed SMB stack and OS policy diagnostics'), 'success');
     } catch {
       setDiagChecks([
-        { id: 'err', label: '진단 실행 오류', status: 'fail', detail: '진단 스크립트 실행 중 예외가 발생했습니다.' },
+        {
+          id: 'err',
+          label: tx('진단 실행 오류', 'Diagnostics Execution Error'),
+          status: 'fail',
+          detail: tx('진단 스크립트 실행 중 예외가 발생했습니다.', 'An exception occurred while running the diagnostic script.'),
+        },
       ]);
     } finally {
       setDiagLoading(false);
@@ -2912,10 +3137,16 @@ export const App: React.FC = () => {
   const handlePingHost = async (target: string) => {
     const result = await shareBridge.pingHost(target, peers, netInfo);
     appendLog(
-      'Ping 진단',
+      tx('Ping 진단', 'Ping Diagnostics'),
       result.reachable
-        ? `${result.target} 응답 확인 (평균 ${result.avgLatencyMs ?? '-'}ms · Port 445 ${result.smbPortOpen ? 'OPEN' : 'CLOSED'})`
-        : `${result.target} 응답 없음 (패킷 손실 ${result.packetLossPct}%)`,
+        ? tx(
+            `${result.target} 응답 확인 (평균 ${result.avgLatencyMs ?? '-'}ms · Port 445 ${result.smbPortOpen ? 'OPEN' : 'CLOSED'})`,
+            `${result.target} reachable (avg ${result.avgLatencyMs ?? '-'}ms · Port 445 ${result.smbPortOpen ? 'OPEN' : 'CLOSED'})`
+          )
+        : tx(
+            `${result.target} 응답 없음 (패킷 손실 ${result.packetLossPct}%)`,
+            `${result.target} unreachable (packet loss ${result.packetLossPct}%)`
+          ),
       result.reachable ? 'success' : 'error'
     );
     return result;
@@ -2934,17 +3165,17 @@ export const App: React.FC = () => {
       const host = ps.sourceIp || ps.sourceHostName;
       if (host && !seen.has(host)) {
         seen.add(host);
-        list.push({ label: `${ps.sourceHostName || 'USB 호스트'} (${ps.shareName})`, host });
+        list.push({ label: `${ps.sourceHostName || tx('USB 호스트', 'USB Host')} (${ps.shareName})`, host });
       }
     }
     for (const m of mounts) {
       if (m.targetHost && !seen.has(m.targetHost)) {
         seen.add(m.targetHost);
-        list.push({ label: `${m.driveLetter} 호스트`, host: m.targetHost });
+        list.push({ label: tx(`${m.driveLetter} 호스트`, `${m.driveLetter} Host`), host: m.targetHost });
       }
     }
     return list;
-  }, [peers, portableShares, mounts]);
+  }, [peers, portableShares, mounts, tx]);
 
   const remotePortableShares = React.useMemo(() => {
     const hostLower = netInfo.hostname.trim().toLowerCase();
@@ -2955,13 +3186,21 @@ export const App: React.FC = () => {
     (entry: PortableHostShareEntry) => {
       const origin = entry.sourceHostName || entry.sourceIp || 'USB';
       appendLog(
-        'USB 포터블',
-        `원본 PC(${origin})의 공유 설정 '${entry.shareName}' 원클릭 자동 채우기 적용`,
+        tx('USB 포터블', 'USB Portable'),
+        tx(
+          `원본 PC(${origin})의 공유 설정 '${entry.shareName}' 원클릭 자동 채우기 적용`,
+          `Auto-filled share '${entry.shareName}' from source PC (${origin})`
+        ),
         'success'
       );
-      showToast(`USB에 저장된 '${origin} · ${entry.shareName}' 연결 정보를 불러왔습니다.`);
+      showToast(
+        tx(
+          `USB에 저장된 '${origin} · ${entry.shareName}' 연결 정보를 불러왔습니다.`,
+          `Loaded USB connection details for '${origin} · ${entry.shareName}'.`
+        )
+      );
     },
-    [appendLog, showToast]
+    [appendLog, showToast, tx]
   );
 
   const handleJumpToClientWithAutoFill = useCallback(
@@ -3072,16 +3311,22 @@ export const App: React.FC = () => {
 
       if (notify) {
         appendLog(
-          '사용장소',
-          `'${profile.locationName}' 프로필 불러오기 및 입력 폼 자동 채움 완료 (공유 ${profile.savedShares.length}건 · 드라이브 ${profile.clientTargets.length}건)`,
+          tx('사용장소', 'Location'),
+          tx(
+            `'${profile.locationName}' 프로필 불러오기 및 입력 폼 자동 채움 완료 (공유 ${profile.savedShares.length}건 · 드라이브 ${profile.clientTargets.length}건)`,
+            `Loaded profile '${profile.locationName}' and auto-filled forms (${profile.savedShares.length} share(s) · ${profile.clientTargets.length} drive(s))`
+          ),
           'success'
         );
         showToast(
-          `'${profile.locationName}' 설정을 불러왔습니다. 필요 시 [이 장소 일괄 적용]을 실행하세요.`
+          tx(
+            `'${profile.locationName}' 설정을 불러왔습니다. 필요 시 [이 장소 일괄 적용]을 실행하세요.`,
+            `Loaded '${profile.locationName}'. Click [Batch Apply This Location] if needed.`
+          )
         );
       }
     },
-    [appendLog, showToast]
+    [appendLog, showToast, tx]
   );
 
   const handleSelectLocationProfile = useCallback(
@@ -3093,12 +3338,12 @@ export const App: React.FC = () => {
       }
       const res = await shareBridge.loadLocationProfile(profileId);
       if (!res.success || !res.profile) {
-        showToast(res.error || '사용장소 프로필 파일을 불러오지 못했습니다.');
+        showToast(res.error || tx('사용장소 프로필 파일을 불러오지 못했습니다.', 'Failed to load location profile file.'));
         return;
       }
       applyLocationProfileToWorkspace(res.profile, true);
     },
-    [applyLocationProfileToWorkspace, showToast]
+    [applyLocationProfileToWorkspace, showToast, tx]
   );
 
   const handleSaveLocationProfile = useCallback(
@@ -3130,8 +3375,8 @@ export const App: React.FC = () => {
 
       const res = await shareBridge.saveLocationProfile(snapshot);
       if (!res.success || !res.profile) {
-        const msg = res.error || '사용장소 파일 저장에 실패했습니다.';
-        appendLog('사용장소', msg, 'error');
+        const msg = res.error || tx('사용장소 파일 저장에 실패했습니다.', 'Failed to save location profile file.');
+        appendLog(tx('사용장소', 'Location'), msg, 'error');
         showToast(msg);
         return false;
       }
@@ -3140,29 +3385,37 @@ export const App: React.FC = () => {
       await refreshLocationProfiles();
       void refreshBackupStatus();
       appendLog(
-        '사용장소',
-        `'${res.profile.locationName}' 프로필 저장 완료 (${res.profile.profileId}.location.json)`,
+        tx('사용장소', 'Location'),
+        tx(
+          `'${res.profile.locationName}' 프로필 저장 완료 (${res.profile.profileId}.location.json)`,
+          `Saved profile '${res.profile.locationName}' (${res.profile.profileId}.location.json)`
+        ),
         'success'
       );
-      showToast(`사용장소 '${res.profile.locationName}' 설정을 개별 파일로 저장했습니다.`);
+      showToast(
+        tx(
+          `사용장소 '${res.profile.locationName}' 설정을 개별 파일로 저장했습니다.`,
+          `Saved location profile '${res.profile.locationName}' to its own file.`
+        )
+      );
       return true;
     },
-    [netInfo, hostDraft, shares, clientDraft, mounts, activeLocationProfile, refreshLocationProfiles, refreshBackupStatus, appendLog, showToast]
+    [netInfo, hostDraft, shares, clientDraft, mounts, activeLocationProfile, refreshLocationProfiles, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleExportLocationProfile = useCallback(
     async (profileId: string) => {
       const loaded = await shareBridge.loadLocationProfile(profileId);
       if (!loaded.success || !loaded.profile) {
-        showToast(loaded.error || '내보낼 사용장소 데이터를 찾지 못했습니다.');
+        showToast(loaded.error || tx('내보낼 사용장소 데이터를 찾지 못했습니다.', 'Could not find location profile to export.'));
         return;
       }
       const res = await shareBridge.exportLocationProfileFile(loaded.profile);
       if (res.canceled) return;
-      appendLog('사용장소', res.message, res.success ? 'success' : 'error');
+      appendLog(tx('사용장소', 'Location'), res.message, res.success ? 'success' : 'error');
       showToast(res.message);
     },
-    [appendLog, showToast]
+    [appendLog, showToast, tx]
   );
 
   const handleImportLocationJson = useCallback(async () => {
@@ -3170,18 +3423,18 @@ export const App: React.FC = () => {
       const res = await shareBridge.importLocationProfileFile(true);
       if (res.canceled) return;
       if (!res.success || !res.profile) {
-        appendLog('사용장소', res.message, 'error');
+        appendLog(tx('사용장소', 'Location'), res.message, 'error');
         showToast(res.message);
         return;
       }
       await refreshLocationProfiles();
       applyLocationProfileToWorkspace(res.profile, false);
-      appendLog('사용장소', res.message, 'success');
+      appendLog(tx('사용장소', 'Location'), res.message, 'success');
       showToast(res.message);
       return;
     }
     locationFileInputRef.current?.click();
-  }, [refreshLocationProfiles, applyLocationProfileToWorkspace, appendLog, showToast]);
+  }, [refreshLocationProfiles, applyLocationProfileToWorkspace, appendLog, showToast, tx]);
 
   const handleWebLocationFileSelected = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3192,26 +3445,26 @@ export const App: React.FC = () => {
         const text = await file.text();
         const res = await shareBridge.importLocationProfileFromJson(text, true);
         if (!res.success || !res.profile) {
-          appendLog('사용장소', res.message, 'error');
+          appendLog(tx('사용장소', 'Location'), res.message, 'error');
           showToast(res.message);
           return;
         }
         await refreshLocationProfiles();
         applyLocationProfileToWorkspace(res.profile, false);
-        appendLog('사용장소', res.message, 'success');
+        appendLog(tx('사용장소', 'Location'), res.message, 'success');
         showToast(res.message);
       } catch {
-        showToast('선택한 JSON 파일을 읽는 중 오류가 발생했습니다.');
+        showToast(tx('선택한 JSON 파일을 읽는 중 오류가 발생했습니다.', 'An error occurred while reading the selected JSON file.'));
       }
     },
-    [refreshLocationProfiles, applyLocationProfileToWorkspace, appendLog, showToast]
+    [refreshLocationProfiles, applyLocationProfileToWorkspace, appendLog, showToast, tx]
   );
 
   const handleDeleteLocationProfile = useCallback(
     async (profileId: string, locationName: string) => {
       const res = await shareBridge.deleteLocationProfile(profileId);
       if (!res.success) {
-        showToast(res.error || '사용장소 파일 삭제에 실패했습니다.');
+        showToast(res.error || tx('사용장소 파일 삭제에 실패했습니다.', 'Failed to delete location profile file.'));
         return;
       }
       if (activeLocationProfile?.profileId === profileId) {
@@ -3220,32 +3473,32 @@ export const App: React.FC = () => {
       }
       await refreshLocationProfiles();
       void refreshBackupStatus();
-      appendLog('사용장소', `'${locationName}' 프로필 파일 삭제 완료`, 'success');
-      showToast(`'${locationName}' 사용장소 프로필을 삭제했습니다.`);
+      appendLog(tx('사용장소', 'Location'), tx(`'${locationName}' 프로필 파일 삭제 완료`, `Deleted profile '${locationName}'`), 'success');
+      showToast(tx(`'${locationName}' 사용장소 프로필을 삭제했습니다.`, `Deleted location profile '${locationName}'.`));
     },
-    [activeLocationProfile, refreshLocationProfiles, refreshBackupStatus, appendLog, showToast]
+    [activeLocationProfile, refreshLocationProfiles, refreshBackupStatus, appendLog, showToast, tx]
   );
 
   const handleLoadLocationProfileForEdit = useCallback(
     async (profileId: string): Promise<LocationProfileFile | null> => {
       const res = await shareBridge.loadLocationProfile(profileId);
       if (!res.success || !res.profile) {
-        const msg = res.error || '수정할 사용장소 프로필 파일을 불러오지 못했습니다.';
-        appendLog('사용장소', msg, 'error');
+        const msg = res.error || tx('수정할 사용장소 프로필 파일을 불러오지 못했습니다.', 'Failed to load location profile for editing.');
+        appendLog(tx('사용장소', 'Location'), msg, 'error');
         showToast(msg);
         return null;
       }
       return res.profile;
     },
-    [appendLog, showToast]
+    [appendLog, showToast, tx]
   );
 
   const handleUpdateLocationProfile = useCallback(
     async (edited: LocationProfileFile, applyToWorkspace: boolean): Promise<boolean> => {
       const res = await shareBridge.saveEditedLocationProfile(edited);
       if (!res.success || !res.profile) {
-        const msg = res.error || '사용장소 프로필 파일 수정 저장에 실패했습니다.';
-        appendLog('사용장소', msg, 'error');
+        const msg = res.error || tx('사용장소 프로필 파일 수정 저장에 실패했습니다.', 'Failed to save edited location profile.');
+        appendLog(tx('사용장소', 'Location'), msg, 'error');
         showToast(msg);
         return false;
       }
@@ -3258,11 +3511,14 @@ export const App: React.FC = () => {
         setActiveLocationProfile(saved);
       }
       appendLog(
-        '사용장소',
-        `'${saved.locationName}' 프로필 파일 내용 수정 완료 (${saved.profileId}.location.json)`,
+        tx('사용장소', 'Location'),
+        tx(
+          `'${saved.locationName}' 프로필 파일 내용 수정 완료 (${saved.profileId}.location.json)`,
+          `Updated profile '${saved.locationName}' (${saved.profileId}.location.json)`
+        ),
         'success'
       );
-      showToast(`사용장소 '${saved.locationName}' 파일 내용을 저장했습니다.`);
+      showToast(tx(`사용장소 '${saved.locationName}' 파일 내용을 저장했습니다.`, `Saved updates to '${saved.locationName}'.`));
       return true;
     },
     [
@@ -3272,6 +3528,7 @@ export const App: React.FC = () => {
       refreshBackupStatus,
       appendLog,
       showToast,
+      tx,
     ]
   );
 
@@ -3281,8 +3538,11 @@ export const App: React.FC = () => {
       const preflightSummaryStep: PipelineStep | null = report
         ? {
             id: 'loc-preflight-summary',
-            title: `[사전 검증] 환경·경로·권한·TCP 445 검사 완료`,
-            detail: `전체 ${report.totalItems}건: 통과 ${report.passCount} · 주의 ${report.warningCount} · 오류 ${report.failCount}`,
+            title: tx('[사전 검증] 환경·경로·권한·TCP 445 검사 완료', '[Pre-flight] Environment, path, permission & TCP 445 check done'),
+            detail: tx(
+              `전체 ${report.totalItems}건: 통과 ${report.passCount} · 주의 ${report.warningCount} · 오류 ${report.failCount}`,
+              `Total ${report.totalItems}: Pass ${report.passCount} · Warn ${report.warningCount} · Fail ${report.failCount}`
+            ),
             status: 'success',
           }
         : null;
@@ -3292,27 +3552,30 @@ export const App: React.FC = () => {
         ...(preflightSummaryStep ? [preflightSummaryStep] : []),
         ...validShares.map((sh, idx) => ({
           id: `loc-sh-${idx}`,
-          title: `[호스트 공유] ${sh.shareName} (${sh.folderPath})`,
-          detail: '대기 중',
+          title: tx(`[호스트 공유] ${sh.shareName} (${sh.folderPath})`, `[Host Share] ${sh.shareName} (${sh.folderPath})`),
+          detail: tx('대기 중', 'Waiting'),
           status: 'idle' as const,
         })),
         ...targetProfile.clientTargets.map((ct, idx) => ({
           id: `loc-ct-${idx}`,
-          title: `[드라이브 연결] ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`,
-          detail: '대기 중',
+          title: tx(`[드라이브 연결] ${ct.driveLetter} → \\\\${ct.targetHost}\\${ct.shareName}`, `[Drive Mount] ${ct.driveLetter} -> \\\\${ct.targetHost}\\${ct.shareName}`),
+          detail: tx('대기 중', 'Waiting'),
           status: 'idle' as const,
         })),
         {
           id: 'loc-final-sync',
-          title: 'OS 네트워크 정책 및 USB·LAN 피어 최종 동기화',
-          detail: '일괄 적용 결과를 저장소에 반영합니다.',
+          title: tx('OS 네트워크 정책 및 USB·LAN 피어 최종 동기화', 'Final sync of OS network policy, USB & LAN peers'),
+          detail: tx('일괄 적용 결과를 저장소에 반영합니다.', 'Saving batch apply results to storage.'),
           status: 'idle',
         },
       ];
 
       const jobKey = startProgressJob(
-        `사용장소 '${targetProfile.locationName}' 일괄 적용`,
-        `호스트 공유 ${validShares.length}건 · 네트워크 드라이브 ${targetProfile.clientTargets.length}건`,
+        tx(`사용장소 '${targetProfile.locationName}' 일괄 적용`, `Batch Apply Location '${targetProfile.locationName}'`),
+        tx(
+          `호스트 공유 ${validShares.length}건 · 네트워크 드라이브 ${targetProfile.clientTargets.length}건`,
+          `${validShares.length} host share(s) · ${targetProfile.clientTargets.length} network drive(s)`
+        ),
         initialBatchSteps
       );
       if (!jobKey) return;
@@ -3320,7 +3583,7 @@ export const App: React.FC = () => {
       setPreflightModalOpen(false);
       setLocationModalOpen(false);
       setIsLocationBatchApplying(true);
-      setLocationBatchProgress(`'${targetProfile.locationName}' 설정 일괄 적용 준비 중...`);
+      setLocationBatchProgress(tx(`'${targetProfile.locationName}' 설정 일괄 적용 준비 중...`, `Preparing batch apply for '${targetProfile.locationName}'...`));
 
       const batchSteps = initialBatchSteps.map((s) => ({ ...s }));
       let currentIdx = -1;
@@ -3340,7 +3603,7 @@ export const App: React.FC = () => {
           batchSteps[currentIdx] = {
             ...batchSteps[currentIdx],
             status: 'running',
-            detail: '실행 준비 중...',
+            detail: tx('실행 준비 중...', 'Preparing execution...'),
           };
         }
         updateProgressSteps(
@@ -3378,8 +3641,8 @@ export const App: React.FC = () => {
           },
           onProgressText: (text) => {
             setLocationBatchProgress(text);
-            const hostMatch = text.match(/^호스트 공유폴더\((\d+)\//);
-            const clientMatch = text.match(/^네트워크 드라이브\((\d+)\//);
+            const hostMatch = text.match(/^(?:호스트 공유폴더|Host share\s*)\((\d+)\//i);
+            const clientMatch = text.match(/^(?:네트워크 드라이브|Network drive\s*)\((\d+)\//i);
             if (hostMatch) {
               advanceBatchItem(stepOffset + Math.max(0, parseInt(hostMatch[1], 10) - 1));
             } else if (clientMatch) {
@@ -3405,7 +3668,7 @@ export const App: React.FC = () => {
           setPeers(updatedPeers);
         } catch {}
         setLastLocationBatchResult(batchRes);
-        appendLog('장소 일괄 적용', batchRes.summary, batchRes.success ? 'success' : 'error');
+        appendLog(tx('장소 일괄 적용', 'Location Batch Apply'), batchRes.summary, batchRes.success ? 'success' : 'error');
         showToast(batchRes.summary);
 
         // Reconcile exact success/error status from batchRes.details
@@ -3446,9 +3709,9 @@ export const App: React.FC = () => {
           failProgressJob(jobKey, `${batchRes.summary} (${firstErr})`, batchSteps);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-        appendLog('장소 일괄 적용', `실행 예외: ${msg}`, 'error');
-        showToast(`사용장소 일괄 적용 실패: ${msg}`);
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(tx('장소 일괄 적용', 'Location Batch Apply'), tx(`실행 예외: ${msg}`, `Execution exception: ${msg}`), 'error');
+        showToast(tx(`사용장소 일괄 적용 실패: ${msg}`, `Location batch apply failed: ${msg}`));
         failProgressJob(jobKey, msg, batchSteps);
       } finally {
         setIsLocationBatchApplying(false);
@@ -3463,6 +3726,7 @@ export const App: React.FC = () => {
       updateProgressSteps,
       completeProgressJob,
       failProgressJob,
+      tx,
     ]
   );
 
@@ -3481,21 +3745,24 @@ export const App: React.FC = () => {
         if (seq !== preflightSeqRef.current) return;
         setPreflightReport(report);
         appendLog(
-          '사전 검증',
-          `'${targetProfile.locationName}' Pre-flight Check: 통과 ${report.passCount} · 주의 ${report.warningCount} · 오류 ${report.failCount}`,
+          tx('사전 검증', 'Pre-flight Check'),
+          tx(
+            `'${targetProfile.locationName}' Pre-flight Check: 통과 ${report.passCount} · 주의 ${report.warningCount} · 오류 ${report.failCount}`,
+            `'${targetProfile.locationName}' Pre-flight: Pass ${report.passCount} · Warn ${report.warningCount} · Fail ${report.failCount}`
+          ),
           report.hasBlockingErrors ? 'error' : 'success'
         );
       } catch (err) {
         if (seq !== preflightSeqRef.current) return;
-        const msg = err instanceof Error ? err.message : '알 수 없는 오류';
-        showToast(`사전 검증 실행 실패: ${msg}`);
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        showToast(tx(`사전 검증 실행 실패: ${msg}`, `Pre-flight check failed: ${msg}`));
       } finally {
         if (seq === preflightSeqRef.current) {
           setPreflightChecking(false);
         }
       }
     },
-    [appendLog, showToast]
+    [appendLog, showToast, tx]
   );
 
   const handleBatchApplyLocation = useCallback(
@@ -3504,21 +3771,21 @@ export const App: React.FC = () => {
       if (profileIdOverride) {
         const loaded = await shareBridge.loadLocationProfile(profileIdOverride);
         if (!loaded.success || !loaded.profile) {
-          showToast(loaded.error || '적용할 사용장소 파일을 불러오지 못했습니다.');
+          showToast(loaded.error || tx('적용할 사용장소 파일을 불러오지 못했습니다.', 'Failed to load location profile to apply.'));
           return;
         }
         targetProfile = loaded.profile;
         applyLocationProfileToWorkspace(loaded.profile, false);
       }
       if (!targetProfile) {
-        showToast('먼저 적용할 사용장소 프로필을 선택하세요.');
+        showToast(tx('먼저 적용할 사용장소 프로필을 선택하세요.', 'Please select a location profile first.'));
         return;
       }
 
       setLocationModalOpen(false);
       await runPreflightCheckForProfile(targetProfile);
     },
-    [activeLocationProfile, applyLocationProfileToWorkspace, runPreflightCheckForProfile, showToast]
+    [activeLocationProfile, applyLocationProfileToWorkspace, runPreflightCheckForProfile, showToast, tx]
   );
 
   return (
@@ -3551,7 +3818,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Server className="w-3.5 h-3.5 shrink-0" />
-              <span>메인 PC (개설)</span>
+              <span>{tx('메인 PC (개설)', 'Main PC (Host)')}</span>
             </button>
             <button
               id="role-switch-client"
@@ -3567,20 +3834,20 @@ export const App: React.FC = () => {
               }`}
             >
               <Laptop className="w-3.5 h-3.5 shrink-0" />
-              <span>클라이언트 PC (접속)</span>
+              <span>{tx('클라이언트 PC (접속)', 'Client PC (Connect)')}</span>
             </button>
           </div>
 
           <div className="flex items-center gap-4">
             <span className="tabular-data text-xs text-slate-500 dark:text-slate-400">
-              {netInfo.isElectron ? 'Windows 관리자 런타임' : '웹 프리뷰 시뮬레이션 모드'} ·{' '}
+              {netInfo.isElectron ? tx('Windows 관리자 런타임', 'Windows Admin Runtime') : tx('웹 프리뷰 시뮬레이션 모드', 'Web Preview Simulation Mode')} ·{' '}
               {formatEraShortLabel(policyStatus?.osEra || netInfo.osEra, policyStatus?.osBuild || netInfo.osBuild, policyStatus?.osDisplayVersion || netInfo.osDisplayVersion)} ·{' '}
-              {netInfo.primaryIp} · {portableStatus.writable ? 'USB 자동 동기화 활성' : 'USB 읽기 전용'}
+              {netInfo.primaryIp} · {portableStatus.writable ? tx('USB 자동 동기화 활성', 'USB Auto-Sync Active') : tx('USB 읽기 전용', 'USB Read-Only')}
             </span>
             <button
               type="button"
               onClick={() => setIsDark((prev) => !prev)}
-              aria-label="테마 전환"
+              aria-label={tx('테마 전환', 'Toggle Theme')}
               className="p-2 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -3592,7 +3859,10 @@ export const App: React.FC = () => {
           <div className="px-4 py-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-300 flex items-center gap-2.5">
             <ShieldAlert className="w-4 h-4 shrink-0" />
             <span>
-              현재 표준 사용자 권한으로 실행되었습니다. 방화벽 개방, 레지스트리 정책 변경 및 SMB 공유 생성을 위해 관리자 권한으로 실행해 주세요.
+              {tx(
+                '현재 표준 사용자 권한으로 실행되었습니다. 방화벽 개방, 레지스트리 정책 변경 및 SMB 공유 생성을 위해 관리자 권한으로 실행해 주세요.',
+                'Running with standard user privileges. Please relaunch as Administrator to open firewall ports, modify registry policies, and create SMB shares.'
+              )}
             </span>
           </div>
         )}
@@ -3602,8 +3872,14 @@ export const App: React.FC = () => {
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>
               {!portableStatus.writable
-                ? `실행 파일 폴더(${portableStatus.directory})가 ${portableStatus.writeProtected ? '쓰기 금지(읽기 전용)' : '쓰기 불가'} 상태이므로 변경 사항이 USB ${portableStatus.fileName}에 자동 저장되지 않습니다.${portableStatus.writeError ? ` (${portableStatus.writeError})` : ''}`
-                : `손상된 USB 포터블 데이터 파일이 안전하게 백업 복구되었습니다. 공유를 다시 생성하면 새 설정 파일이 자동 기록됩니다.`}
+                ? tx(
+                    `실행 파일 폴더(${portableStatus.directory})가 ${portableStatus.writeProtected ? '쓰기 금지(읽기 전용)' : '쓰기 불가'} 상태이므로 변경 사항이 USB ${portableStatus.fileName}에 자동 저장되지 않습니다.${portableStatus.writeError ? ` (${portableStatus.writeError})` : ''}`,
+                    `Application folder (${portableStatus.directory}) is ${portableStatus.writeProtected ? 'write-protected (read-only)' : 'not writable'}, so changes will not auto-save to USB ${portableStatus.fileName}.${portableStatus.writeError ? ` (${portableStatus.writeError})` : ''}`
+                  )
+                : tx(
+                    '손상된 USB 포터블 데이터 파일이 안전하게 백업 복구되었습니다. 공유를 다시 생성하면 새 설정 파일이 자동 기록됩니다.',
+                    'A corrupted USB portable data file was safely backed up and recovered. Recreating a share will record a fresh configuration file.'
+                  )}
             </span>
           </div>
         )}
@@ -3618,16 +3894,19 @@ export const App: React.FC = () => {
               <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <div className="space-y-0.5 min-w-0">
                 <div className="text-xs font-bold text-amber-900 dark:text-amber-200">
-                  임시 공유 만료 알림 ({expiryAlerts.length}건)
+                  {tx(`임시 공유 만료 알림 (${expiryAlerts.length}건)`, `Temporary Share Expiry Alert (${expiryAlerts.length})`)}
                 </div>
                 <p className="text-xs text-amber-800 dark:text-amber-300">
                   {expiryAlerts
                     .map(
                       (a) =>
-                        `'${a.shareName}' (${a.expiredAt} 만료 · ${a.autoRevoked ? '공유 자동 해제됨' : '수동 해제 대기'})`
+                        `'${a.shareName}' (${tx(`${a.expiredAt} 만료`, `Expired ${a.expiredAt}`)} · ${a.autoRevoked ? tx('공유 자동 해제됨', 'Auto-revoked') : tx('수동 해제 대기', 'Pending manual revoke')})`
                     )
                     .join(', ')}
-                  . 보안을 위해 완화된 SMB·게스트·LSA 정책을 표준 보안으로 원복할 수 있습니다.
+                  {tx(
+                    '. 보안을 위해 완화된 SMB·게스트·LSA 정책을 표준 보안으로 원복할 수 있습니다.',
+                    '. For security, you can roll back relaxed SMB/Guest/LSA policies to standard defaults.'
+                  )}
                 </p>
               </div>
             </div>
@@ -3639,12 +3918,12 @@ export const App: React.FC = () => {
                 className="px-3.5 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                만료 공유 해제 & 보안 원복
+                {tx('만료 공유 해제 & 보안 원복', 'Revoke Expired & Rollback Security')}
               </button>
               <button
                 type="button"
                 onClick={() => setExpiryAlerts([])}
-                aria-label="만료 알림 닫기"
+                aria-label={tx('만료 알림 닫기', 'Dismiss expiry alert')}
                 className="p-1.5 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 rounded-lg cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -3663,16 +3942,19 @@ export const App: React.FC = () => {
               <Zap className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
               <div className="space-y-1 min-w-0">
                 <div className="text-xs font-bold text-slate-900 dark:text-white">
-                  USB에 이 PC({netInfo.hostname})용 호스트 정책 자동 적용 대기 작업이 있습니다
+                  {tx(
+                    `USB에 이 PC(${netInfo.hostname})용 호스트 정책 자동 적용 대기 작업이 있습니다`,
+                    `Pending Host Policy Task Found on USB for This PC (${netInfo.hostname})`
+                  )}
                 </div>
                 <p className="tabular-data text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
-                  요청 PC: <span className="font-semibold">{myPendingHostTask.requestedByHostName}</span>
-                  {myPendingHostTask.requestedByIp ? ` (${myPendingHostTask.requestedByIp})` : ''} · 저장 일시:{' '}
-                  {formatSnapshotTimestamp(myPendingHostTask.createdAt)} · 해결 대상:{' '}
+                  {tx('요청 PC:', 'Requested by:')} <span className="font-semibold">{myPendingHostTask.requestedByHostName}</span>
+                  {myPendingHostTask.requestedByIp ? ` (${myPendingHostTask.requestedByIp})` : ''} · {tx('저장 일시:', 'Saved:')}{' '}
+                  {formatSnapshotTimestamp(myPendingHostTask.createdAt)} · {tx('해결 대상:', 'Targets:')}{' '}
                   <span className="font-semibold">
-                    {myPendingHostTask.conflictLabels.join(' · ') || 'SMB · 게스트 정책 정렬'}
+                    {myPendingHostTask.conflictLabels.join(' · ') || tx('SMB · 게스트 정책 정렬', 'SMB · Guest Policy Alignment')}
                   </span>
-                  {myPendingHostTask.includeGuestUnlock ? ' · Guest 무비밀번호 완전 개방 포함' : ''}
+                  {myPendingHostTask.includeGuestUnlock ? tx(' · Guest 무비밀번호 완전 개방 포함', ' · Includes Full Guest Passwordless Unlock') : ''}
                 </p>
               </div>
             </div>
@@ -3685,14 +3967,14 @@ export const App: React.FC = () => {
                 className="px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
               >
                 <Zap className="w-3.5 h-3.5" />
-                {isApplyingPendingHostTask ? '적용 중...' : '대기 작업 지금 적용'}
+                {isApplyingPendingHostTask ? tx('적용 중...', 'Applying...') : tx('대기 작업 지금 적용', 'Apply Queued Task Now')}
               </button>
               <button
                 type="button"
                 onClick={() => setActiveSection('matrix')}
                 className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer"
               >
-                매트릭스 상세
+                {tx('매트릭스 상세', 'Matrix Details')}
               </button>
               {confirmingDismissPendingTask ? (
                 <div className="inline-flex items-center gap-1.5">
@@ -3701,14 +3983,14 @@ export const App: React.FC = () => {
                     onClick={() => void handleDeletePendingHostTask(myPendingHostTask.targetHostName)}
                     className="px-2.5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg cursor-pointer"
                   >
-                    삭제 확정
+                    {tx('삭제 확정', 'Confirm Delete')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmingDismissPendingTask(false)}
                     className="px-2.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
                   >
-                    취소
+                    {tx('취소', 'Cancel')}
                   </button>
                 </div>
               ) : (
@@ -3717,7 +3999,7 @@ export const App: React.FC = () => {
                   onClick={() => setConfirmingDismissPendingTask(true)}
                   className="px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg whitespace-nowrap cursor-pointer"
                 >
-                  대기 삭제
+                  {tx('대기 삭제', 'Dismiss')}
                 </button>
               )}
             </div>
@@ -3773,7 +4055,15 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-3 min-w-0">
               <Usb className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
               <p className="text-xs text-slate-700 dark:text-slate-200 min-w-0">
-                USB에서 다른 메인 PC(<span className="tabular-data font-semibold">{remotePortableShares[0].sourceHostName} · {remotePortableShares[0].sourceIp}</span>)의 공유 설정 {remotePortableShares.length}건을 감지했습니다. 현재 클라이언트 PC라면 바로 연결할 수 있습니다.
+                {locale === 'en' ? (
+                  <>
+                    Detected {remotePortableShares.length} share configuration(s) from another Main PC (<span className="tabular-data font-semibold">{remotePortableShares[0].sourceHostName} · {remotePortableShares[0].sourceIp}</span>) on USB. If this is a client PC, you can connect immediately.
+                  </>
+                ) : (
+                  <>
+                    USB에서 다른 메인 PC(<span className="tabular-data font-semibold">{remotePortableShares[0].sourceHostName} · {remotePortableShares[0].sourceIp}</span>)의 공유 설정 {remotePortableShares.length}건을 감지했습니다. 현재 클라이언트 PC라면 바로 연결할 수 있습니다.
+                  </>
+                )}
               </p>
             </div>
             <button
@@ -3782,7 +4072,7 @@ export const App: React.FC = () => {
               onClick={() => handleJumpToClientWithAutoFill(remotePortableShares[0])}
               className="px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer self-end sm:self-center"
             >
-              클라이언트 연결로 이동 · 자동 채우기
+              {tx('클라이언트 연결로 이동 · 자동 채우기', 'Go to Client Connect · Auto-Fill')}
             </button>
           </div>
         )}
@@ -3805,7 +4095,7 @@ export const App: React.FC = () => {
             onCreateShare={handleCreateShare}
             onRemoveShare={handleRemoveShare}
             onOpenFolder={handleOpenPath}
-            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: '공유 개설' })}
+            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: tx('공유 개설', 'Share Setup') })}
             onOpenTroubleshootWizard={() => handleOpenTroubleshootWizard()}
             onToggleBlockEmptyPasswordAccounts={handleToggleBlockEmptyPasswordAccounts}
           />
@@ -3844,7 +4134,7 @@ export const App: React.FC = () => {
             }}
             onOpenTroubleshootWizard={() => handleOpenTroubleshootWizard()}
             onScanLan={handleScanLan}
-            onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: '클라이언트 연결' })}
+            onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: tx('클라이언트 연결', 'Client Connect') })}
             onConnect={handleConnectClient}
             onUnmount={handleUnmount}
             onOpenDrive={handleOpenPath}
@@ -3875,7 +4165,7 @@ export const App: React.FC = () => {
             isApplyingPendingHostTask={isApplyingPendingHostTask}
             isApplyingMode={applyingPatchMode}
             onInspectPolicy={handleInspectOsPolicy}
-            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: 'OS 호환성 매트릭스' })}
+            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: tx('OS 호환성 매트릭스', 'OS Compatibility Matrix') })}
             onApplyPatch={handleApplyOsPatch}
             onSyncMatchedPolicies={handleSyncMatchedPolicies}
             onFullSecurityRollback={handleFullSecurityRollback}
@@ -3915,7 +4205,7 @@ export const App: React.FC = () => {
             isClientConnecting={isClientConnecting}
             isApplyingMode={applyingPatchMode}
             onInspectPolicy={handleInspectOsPolicy}
-            onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: '구형 OS 공유' })}
+            onRefresh={() => handleRefreshTab({ scanLan: true, inspectPolicy: true, tabLabel: tx('구형 OS 공유', 'Legacy OS Sharing') })}
             onApplyPatch={handleApplyOsPatch}
             onSelectFolder={shareBridge.selectFolder}
             onCreateLegacyHostShare={handleCreateLegacyHostShare}
@@ -3941,14 +4231,18 @@ export const App: React.FC = () => {
             <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
-                  작업 실행 이력 ({activityLog.length})
+                  {tx(`작업 실행 이력 (${activityLog.length})`, `Action Execution Logs (${activityLog.length})`)}
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 font-mono break-all">
                   {appLogInfo?.supported && appLogInfo.directory
-                    ? `로그 파일 자동 저장: ${appLogInfo.currentFilePath || appLogInfo.directory}${
-                        appLogInfo.writeProtected ? ' (쓰기 금지 감지됨)' : ''
-                      }`
-                    : '앱 실행 폴더 하위 log\\AhBiShare_YYYY-MM-DD.log 파일에 자동 기록됩니다.'}
+                    ? tx(
+                        `로그 파일 자동 저장: ${appLogInfo.currentFilePath || appLogInfo.directory}${appLogInfo.writeProtected ? ' (쓰기 금지 감지됨)' : ''}`,
+                        `Auto-saved log file: ${appLogInfo.currentFilePath || appLogInfo.directory}${appLogInfo.writeProtected ? ' (Write-protected)' : ''}`
+                      )
+                    : tx(
+                        '앱 실행 폴더 하위 log\\AhBiShare_YYYY-MM-DD.log 파일에 자동 기록됩니다.',
+                        'Automatically saved to log\\AhBiShare_YYYY-MM-DD.log under the application folder.'
+                      )}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -3959,7 +4253,7 @@ export const App: React.FC = () => {
                   className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer tabular-data"
                 >
                   <Archive className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                  백업·복원 관리 ({backupStatus?.snapshots.length || 0})
+                  {tx(`백업·복원 관리 (${backupStatus?.snapshots.length || 0})`, `Backup & Restore (${backupStatus?.snapshots.length || 0})`)}
                 </button>
                 {appLogInfo?.supported && appLogInfo.directory && (
                   <button
@@ -3969,18 +4263,18 @@ export const App: React.FC = () => {
                     className="px-3.5 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                   >
                     <FolderOpen className="w-3.5 h-3.5" />
-                    로그 폴더 열기
+                    {tx('로그 폴더 열기', 'Open Log Folder')}
                   </button>
                 )}
                 <button
                   id="btn-refresh-logs"
                   type="button"
                   disabled={isRefreshingTab}
-                  onClick={() => void handleRefreshTab({ inspectPolicy: true, tabLabel: '실행 이력' })}
+                  onClick={() => void handleRefreshTab({ inspectPolicy: true, tabLabel: tx('실행 이력', 'Activity Logs') })}
                   className="px-3.5 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingTab ? 'animate-spin text-indigo-500' : ''}`} />
-                  {isRefreshingTab ? '새로고침 중...' : '새로고침'}
+                  {isRefreshingTab ? tx('새로고침 중...', 'Refreshing...') : tx('새로고침', 'Refresh')}
                 </button>
                 {activityLog.length > 0 && (
                   <button
@@ -3988,14 +4282,14 @@ export const App: React.FC = () => {
                     onClick={() => setActivityLog([])}
                     className="px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
                   >
-                    이력 비우기
+                    {tx('이력 비우기', 'Clear Logs')}
                   </button>
                 )}
               </div>
             </div>
             {activityLog.length === 0 ? (
               <div className="px-6 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
-                실행된 공유 개설 또는 클라이언트 연결 이력이 아직 없습니다.
+                {tx('실행된 공유 개설 또는 클라이언트 연결 이력이 아직 없습니다.', 'No share creation or client connection actions have been logged yet.')}
               </div>
             ) : (
               <ul className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
@@ -4013,7 +4307,7 @@ export const App: React.FC = () => {
                         entry.status === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
                       }`}
                     >
-                      {entry.status === 'success' ? '성공' : '실패'}
+                      {entry.status === 'success' ? tx('성공', 'Success') : tx('실패', 'Failed')}
                     </span>
                   </li>
                 ))}
@@ -4033,7 +4327,7 @@ export const App: React.FC = () => {
             onRollback={handleRollback}
             onFullSecurityRollback={handleFullSecurityRollback}
             onInspectPolicy={handleInspectOsPolicy}
-            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: '보안 원복' })}
+            onRefresh={() => handleRefreshTab({ inspectPolicy: true, tabLabel: tx('보안 원복', 'Security Rollback') })}
             onRestoreDefaults={handleSyncMatchedPolicies}
             onNotify={showToast}
           />
@@ -4063,33 +4357,44 @@ export const App: React.FC = () => {
                 onClick={() => void runUpdateCheck(true)}
                 className="hover:text-slate-900 dark:hover:text-slate-200 underline underline-offset-4 cursor-pointer disabled:opacity-50"
               >
-                {isCheckingUpdates ? '업데이트 확인 중...' : 'GitHub 업데이트 확인'}
+                {isCheckingUpdates ? tx('업데이트 확인 중...', 'Checking updates...') : tx('GitHub 업데이트 확인', 'Check GitHub Updates')}
               </button>
               <button
                 type="button"
                 onClick={() => void handleOpenDiagnostics()}
                 className="hover:text-slate-900 dark:hover:text-slate-200 underline underline-offset-4 cursor-pointer"
               >
-                SMB 서비스 및 포트 445 점검
+                {tx('SMB 서비스 및 포트 445 점검', 'Inspect SMB Service & Port 445')}
+              </button>
+              <button
+                id="btn-footer-license-notices"
+                type="button"
+                onClick={() => {
+                  setLicenseModalTab('mit');
+                  setLicenseModalOpen(true);
+                }}
+                className="hover:text-slate-900 dark:hover:text-slate-200 underline underline-offset-4 cursor-pointer"
+              >
+                {tx('라이선스 및 오픈소스 고지', 'License & Open-Source Notices')}
               </button>
             </div>
           </div>
           <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800/70 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]">
-            <span className="font-semibold text-slate-600 dark:text-slate-300">제작자 및 공식 채널 안내</span>
-            <span>개발자 · 저작권: <strong className="text-slate-800 dark:text-slate-200">AhBiYout</strong></span>
+            <span className="font-semibold text-slate-600 dark:text-slate-300">{tx('제작자 및 공식 채널 안내', 'Author & Official Channels')}</span>
+            <span>{tx('개발자 · 저작권:', 'Developer · Copyright:')} <strong className="text-slate-800 dark:text-slate-200">AhBiYout</strong></span>
             <span>
-              소속회사:{' '}
+              {tx('소속회사:', 'Affiliation:')}{' '}
               <a
                 href="https://www.cisnet.co.kr"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-indigo-600 dark:text-indigo-400 hover:underline underline-offset-2 font-medium"
               >
-                (주)청운정보시스템 (cisnet.co.kr)
+                {tx('(주)청운정보시스템 (cisnet.co.kr)', 'Cheongwoon Information Systems (cisnet.co.kr)')}
               </a>
             </span>
             <span>
-              GitHub 저장소:{' '}
+              {tx('GitHub 저장소:', 'GitHub Repository:')}{' '}
               <a
                 href="https://github.com/ahbiyout-all/AhBiShare-OneClick"
                 target="_blank"
@@ -4100,7 +4405,7 @@ export const App: React.FC = () => {
               </a>
             </span>
             <span>
-              공식 구글 블로그:{' '}
+              {tx('공식 구글 블로그:', 'Official Blog:')}{' '}
               <a
                 href="https://ahbiyoutvibe.blogspot.com/"
                 target="_blank"
@@ -4130,7 +4435,7 @@ export const App: React.FC = () => {
           setPendingClientAuthMode({ key: String(Date.now()), authMode: 'account' });
           setRoleMode('client');
           setActiveSection('workspace');
-          showToast('보안 계정 모드로 전환되었습니다. 계정 정보를 확인하고 연결을 실행하세요.');
+          showToast(tx('보안 계정 모드로 전환되었습니다. 계정 정보를 확인하고 연결을 실행하세요.', 'Switched to Secure Account mode. Verify your credentials and connect.'));
         }}
         onPingHost={handlePingHost}
         onClose={() => {
@@ -4149,7 +4454,12 @@ export const App: React.FC = () => {
         onRecheck={() => void runUpdateCheck(true)}
         onSkipVersion={(tag) => {
           skipUpdateTag(tag);
-          showToast(`${tag} 버전 자동 알림을 건너뜁니다. 상단/하단 버튼에서 언제든 다시 확인할 수 있습니다.`);
+          showToast(
+            tx(
+              `${tag} 버전 자동 알림을 건너뜁니다. 상단/하단 버튼에서 언제든 다시 확인할 수 있습니다.`,
+              `Skipped auto-notifications for ${tag}. You can re-check anytime from the header or footer.`
+            )
+          );
         }}
         onClose={() => setUpdateModalOpen(false)}
       />
@@ -4265,11 +4575,21 @@ export const App: React.FC = () => {
         }}
       />
 
+      <LicenseNoticesModal
+        isOpen={licenseModalOpen}
+        initialTab={licenseModalTab}
+        onClose={() => setLicenseModalOpen(false)}
+        onOpenPackagedFolder={
+          netInfo.isElectron ? () => shareBridge.openLicenseFolder() : undefined
+        }
+        onNotify={showToast}
+      />
+
       <input
         ref={locationFileInputRef}
         type="file"
         accept=".json,application/json"
-        aria-label="사용장소 프로필 JSON 파일 선택"
+        aria-label={tx('사용장소 프로필 JSON 파일 선택', 'Select location profile JSON file')}
         onChange={(e) => void handleWebLocationFileSelected(e)}
         className="hidden"
       />

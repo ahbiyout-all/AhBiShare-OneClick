@@ -17,15 +17,31 @@
     "preload.js",
     "portableStore.js",
     "portableUpdater.js",
+    "localeHelper.js",
     "package.json",
     "icon.ico",
     "public/config.json",
+    "LICENSE",
+    "NOTICE",
+    "THIRD-PARTY-NOTICES.md",
     "!**/node_modules/**/*"
   ],
   "extraResources": [
     {
       "from": "scripts/upgradedHostGuestUnblock.bat",
       "to": "scripts/upgradedHostGuestUnblock.bat"
+    },
+    {
+      "from": "LICENSE",
+      "to": "LICENSE"
+    },
+    {
+      "from": "NOTICE",
+      "to": "NOTICE"
+    },
+    {
+      "from": "THIRD-PARTY-NOTICES.md",
+      "to": "THIRD-PARTY-NOTICES.md"
     }
   ],
   "directories": {

@@ -7,6 +7,7 @@ import { buildHostGuestUnlockBatchScript } from '@/services/powershellEngine';
 import { PipelineTracker } from './PipelineTracker';
 import { PresetPasswordGrid } from './PresetPasswordGrid';
 import { EmptyPasswordPolicyToggle } from './EmptyPasswordPolicyToggle';
+import { useI18n } from '@/i18n/I18nContext';
 
 interface HostPanelProps {
   netInfo: LocalNetworkInfo;
@@ -30,24 +31,28 @@ interface HostPanelProps {
   onToggleBlockEmptyPasswordAccounts?: (block: boolean) => Promise<void>;
 }
 
-const TTL_PRESETS: Array<{ label: string; minutes: number }> = [
-  { label: '무제한', minutes: 0 },
-  { label: '30분', minutes: 30 },
-  { label: '1시간', minutes: 60 },
-  { label: '3시간', minutes: 180 },
+const TTL_PRESETS: Array<{ koLabel: string; enLabel: string; minutes: number }> = [
+  { koLabel: '무제한', enLabel: 'Unlimited', minutes: 0 },
+  { koLabel: '30분', enLabel: '30 min', minutes: 30 },
+  { koLabel: '1시간', enLabel: '1 hr', minutes: 60 },
+  { koLabel: '3시간', enLabel: '3 hrs', minutes: 180 },
 ];
 
-function formatRemainingTime(expiresAt: string | undefined, nowMs: number): { text: string; expired: boolean; soon: boolean } {
+function formatRemainingTime(
+  expiresAt: string | undefined,
+  nowMs: number,
+  tx: (ko: string, en: string) => string
+): { text: string; expired: boolean; soon: boolean } {
   if (!expiresAt) {
-    return { text: '상시 공유 (무제한)', expired: false, soon: false };
+    return { text: tx('상시 공유 (무제한)', 'Always On (Unlimited)'), expired: false, soon: false };
   }
   const targetMs = Date.parse(expiresAt);
   if (Number.isNaN(targetMs)) {
-    return { text: '상시 공유', expired: false, soon: false };
+    return { text: tx('상시 공유', 'Always On'), expired: false, soon: false };
   }
   const diffSec = Math.floor((targetMs - nowMs) / 1000);
   if (diffSec <= 0) {
-    return { text: '만료됨 · 해제 대기', expired: true, soon: true };
+    return { text: tx('만료됨 · 해제 대기', 'Expired · Pending Removal'), expired: true, soon: true };
   }
   const hrs = Math.floor(diffSec / 3600);
   const mins = Math.floor((diffSec % 3600) / 60);
@@ -55,7 +60,7 @@ function formatRemainingTime(expiresAt: string | undefined, nowMs: number): { te
   const pad = (n: number) => String(n).padStart(2, '0');
   const formatted = hrs > 0 ? `${hrs}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`;
   return {
-    text: `남은 시간 ${formatted}`,
+    text: tx(`남은 시간 ${formatted}`, `Remaining ${formatted}`),
     expired: false,
     soon: diffSec <= 300,
   };
@@ -82,6 +87,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
   onOpenTroubleshootWizard,
   onToggleBlockEmptyPasswordAccounts,
 }) => {
+  const { tx } = useI18n();
   const [config, setConfig] = useState<HostConfig>(() =>
     initialConfig || {
       folderPath: 'C:\\AhBiShared',
@@ -184,7 +190,12 @@ export const HostPanel: React.FC<HostPanelProps> = ({
         copyTimerRef.current = null;
       }, 1800);
     } else {
-      setCopyWarning('브라우저 클립보드 권한이 제한되어 있습니다. 위 연결 코드를 드래그해 직접 복사하세요.');
+      setCopyWarning(
+        tx(
+          '브라우저 클립보드 권한이 제한되어 있습니다. 위 연결 코드를 드래그해 직접 복사하세요.',
+          'Clipboard access is restricted. Select and copy the connection code above manually.'
+        )
+      );
     }
   };
 
@@ -208,7 +219,9 @@ export const HostPanel: React.FC<HostPanelProps> = ({
         return;
       }
       if (!config.password || config.password.length < 4) {
-        setValidationError('보안 계정 접속 암호는 최소 4자 이상 입력하세요.');
+        setValidationError(
+          tx('보안 계정 접속 암호는 최소 4자 이상 입력하세요.', 'Account password must be at least 4 characters long.')
+        );
         return;
       }
     }
@@ -228,13 +241,16 @@ export const HostPanel: React.FC<HostPanelProps> = ({
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="space-y-1.5 min-w-0 flex-1">
               <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-                메인 PC 공유폴더 원클릭 개설
+                {tx('메인 PC 공유폴더 원클릭 개설', 'One-Click Host Shared Folder Setup')}
               </h2>
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                방화벽 포트 445, 네트워크 검색 서비스, NTFS·SMB 권한 설정과 클라이언트용 연결 코드를 한 번에 구성합니다.
+                {tx(
+                  '방화벽 포트 445, 네트워크 검색 서비스, NTFS·SMB 권한 설정과 클라이언트용 연결 코드를 한 번에 구성합니다.',
+                  'Automatically configures firewall port 445, network discovery, NTFS/SMB permissions, and generates a client connection code.'
+                )}
               </p>
               <p className="tabular-data text-xs text-slate-500 dark:text-slate-400 pt-1">
-                현재 호스트: {netInfo.hostname} · LAN IP: {netInfo.primaryIp} · {netInfo.adapterName}
+                {tx('현재 호스트', 'Host')}: {netInfo.hostname} · LAN IP: {netInfo.primaryIp} · {netInfo.adapterName}
               </p>
             </div>
             {onRefresh && (
@@ -246,7 +262,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                 className="px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
-                {isRefreshing ? '새로고침 중...' : '새로고침'}
+                {isRefreshing ? tx('새로고침 중...', 'Refreshing...') : tx('새로고침', 'Refresh')}
               </button>
             )}
           </div>
@@ -254,7 +270,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
           <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
             <div>
               <label htmlFor="host-folder-path" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                공유할 로컬 폴더 경로
+                {tx('공유할 로컬 폴더 경로', 'Local Folder Path to Share')}
               </label>
               <div className="flex gap-2">
                 <input
@@ -271,7 +287,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   className="px-4 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <FolderOpen className="w-4 h-4" />
-                  폴더 선택
+                  {tx('폴더 선택', 'Select Folder')}
                 </button>
               </div>
             </div>
@@ -279,7 +295,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label htmlFor="host-share-name" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  네트워크 공유 이름
+                  {tx('네트워크 공유 이름', 'Network Share Name')}
                 </label>
                 <input
                   id="host-share-name"
@@ -297,7 +313,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
 
               <div>
                 <span className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  폴더 접근 권한
+                  {tx('폴더 접근 권한', 'Folder Access Permission')}
                 </span>
                 <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg">
                   <button
@@ -309,7 +325,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
-                    전체 권한 (쓰기)
+                    {tx('전체 권한 (쓰기)', 'Full Control (Write)')}
                   </button>
                   <button
                     type="button"
@@ -320,7 +336,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
-                    읽기 전용
+                    {tx('읽기 전용', 'Read Only')}
                   </button>
                 </div>
               </div>
@@ -328,7 +344,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
 
             <div>
               <span className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                SMB 공유 인증 방식
+                {tx('SMB 공유 인증 방식', 'SMB Share Authentication')}
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg">
                 <button
@@ -343,7 +359,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  간편 무비밀번호 (Guest / Everyone)
+                  {tx('간편 무비밀번호 (Guest / Everyone)', 'Passwordless (Guest / Everyone)')}
                 </button>
                 <button
                   type="button"
@@ -357,13 +373,19 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  보안 계정 (전용 ID · PW + cmdkey)
+                  {tx('보안 계정 (전용 ID · PW + cmdkey)', 'Secure Account (Dedicated ID · PW)')}
                 </button>
               </div>
               <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
                 {config.authMode === 'guest'
-                  ? '가정·사설 LAN에서 암호 입력 없이 모든 PC가 즉시 접근할 수 있도록 익명/게스트 정책을 자동 개방합니다.'
-                  : '호스트에 전용 로컬 계정을 구성하고, 클라이언트 연결 코드에 자격 증명을 포함해 팝업 없이 안전하게 연결합니다.'}
+                  ? tx(
+                      '가정·사설 LAN에서 암호 입력 없이 모든 PC가 즉시 접근할 수 있도록 익명/게스트 정책을 자동 개방합니다.',
+                      'Automatically opens anonymous/guest policies so any PC on a home or private LAN can connect without a password.'
+                    )
+                  : tx(
+                      '호스트에 전용 로컬 계정을 구성하고, 클라이언트 연결 코드에 자격 증명을 포함해 팝업 없이 안전하게 연결합니다.',
+                      'Creates a dedicated local account on the host and embeds credentials in the connection code for prompt-free secure access.'
+                    )}
               </p>
             </div>
 
@@ -411,7 +433,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
                 <div>
                   <label htmlFor="host-acc-user" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                    전용 계정 ID
+                    {tx('전용 계정 ID', 'Account Username')}
                   </label>
                   <input
                     id="host-acc-user"
@@ -426,7 +448,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                 </div>
                 <div>
                   <label htmlFor="host-acc-pass" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                    접속 암호
+                    {tx('접속 암호', 'Password')}
                   </label>
                   <div className="flex gap-1.5">
                     <input
@@ -445,8 +467,8 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                         setValidationError(null);
                         setConfig({ ...config, password: generateSecureSharePassword(10) });
                       }}
-                      title="새 암호 생성"
-                      aria-label="새 암호 생성"
+                      title={tx('새 암호 생성', 'Generate New Password')}
+                      aria-label={tx('새 암호 생성', 'Generate new password')}
                       className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
@@ -461,7 +483,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
                   <Clock className="w-3.5 h-3.5 text-indigo-500" />
-                  공유 자동 만료 타이머 (임시 공유 보안)
+                  {tx('공유 자동 만료 타이머 (임시 공유 보안)', 'Auto-Expiry Share Timer (Temporary Security)')}
                 </span>
                 {(config.ttlMinutes || 0) > 0 && (
                   <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
@@ -472,7 +494,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                       onChange={(e) => setConfig({ ...config, autoRevokeOnExpiry: e.target.checked })}
                       className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                     />
-                    만료 시 공유폴더 자동 해제
+                    {tx('만료 시 공유폴더 자동 해제', 'Auto-remove share upon expiry')}
                   </label>
                 )}
               </div>
@@ -491,15 +513,26 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                           : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                       }`}
                     >
-                      {preset.label}
+                      {tx(preset.koLabel, preset.enLabel)}
                     </button>
                   );
                 })}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {(config.ttlMinutes || 0) > 0
-                  ? `${config.ttlMinutes}분 후 만료 알림이 표시되며${config.autoRevokeOnExpiry ? ' 공유폴더가 자동 해제됩니다.' : ' 1클릭 보안 원복 배너가 표시됩니다.'}`
-                  : '만료 시간 없이 사용자가 직접 공유를 해제할 때까지 유지됩니다.'}
+                  ? config.autoRevokeOnExpiry
+                    ? tx(
+                        `${config.ttlMinutes}분 후 만료 알림이 표시되며 공유폴더가 자동 해제됩니다.`,
+                        `An expiry alert appears after ${config.ttlMinutes} min and the share is removed automatically.`
+                      )
+                    : tx(
+                        `${config.ttlMinutes}분 후 만료 알림이 표시되며 1클릭 보안 원복 배너가 표시됩니다.`,
+                        `An expiry alert appears after ${config.ttlMinutes} min with a 1-click security rollback banner.`
+                      )
+                  : tx(
+                      '만료 시간 없이 사용자가 직접 공유를 해제할 때까지 유지됩니다.',
+                      'Remains active until you manually remove the share.'
+                    )}
               </p>
             </div>
           </div>
@@ -512,7 +545,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
 
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
             <span className="tabular-data text-xs text-slate-500 dark:text-slate-400 truncate">
-              UNC 경로: \\{netInfo.primaryIp}\{config.shareName.trim() || 'AhBiShared'}
+              {tx('UNC 경로', 'UNC Path')}: \\{netInfo.primaryIp}\{config.shareName.trim() || 'AhBiShared'}
             </span>
             <button
               id="btn-host-oneclick"
@@ -521,7 +554,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
               className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
             >
               <Play className="w-4 h-4" />
-              {isExecuting ? '공유 환경 구성 중...' : '원클릭 공유폴더 개설'}
+              {isExecuting ? tx('공유 환경 구성 중...', 'Configuring Share...') : tx('원클릭 공유폴더 개설', 'Create Share (1-Click)')}
             </button>
           </div>
         </form>
@@ -532,10 +565,13 @@ export const HostPanel: React.FC<HostPanelProps> = ({
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
-                    클라이언트 전달용 연결 코드
+                    {tx('클라이언트 전달용 연결 코드', 'Client Connection Code')}
                   </h3>
                   <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
-                    다른 PC의 클라이언트 화면에 이 코드를 붙여넣으면 한 번의 클릭으로 연결됩니다.
+                    {tx(
+                      '다른 PC의 클라이언트 화면에 이 코드를 붙여넣으면 한 번의 클릭으로 연결됩니다.',
+                      'Paste this code on the Client tab of another PC to connect with one click.'
+                    )}
                   </p>
                 </div>
                 <button
@@ -544,7 +580,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <QrCode className="w-3.5 h-3.5" />
-                  QR 보기
+                  {tx('QR 보기', 'Show QR')}
                 </button>
               </div>
 
@@ -563,7 +599,10 @@ export const HostPanel: React.FC<HostPanelProps> = ({
 
               <div className="flex items-center justify-between gap-3 pt-1">
                 <span className="tabular-data text-xs text-emerald-700 dark:text-emerald-400">
-                  개설 완료 · {latestShare.authMode === 'guest' ? '무비밀번호' : `계정(${latestShare.username})`}
+                  {tx('개설 완료', 'Created')} ·{' '}
+                  {latestShare.authMode === 'guest'
+                    ? tx('무비밀번호', 'Passwordless')
+                    : tx(`계정(${latestShare.username})`, `Account (${latestShare.username})`)}
                 </span>
                 <button
                   type="button"
@@ -571,7 +610,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {copiedCode === latestShare.shareName ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedCode === latestShare.shareName ? '복사됨' : '연결 코드 복사'}
+                  {copiedCode === latestShare.shareName ? tx('복사됨', 'Copied') : tx('연결 코드 복사', 'Copy Connection Code')}
                 </button>
               </div>
 
@@ -582,7 +621,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
           )}
 
           <PipelineTracker
-            title="호스트 6단계 자동 구성 파이프라인"
+            title={tx('호스트 6단계 자동 구성 파이프라인', 'Host 6-Step Auto Setup Pipeline')}
             steps={steps}
             isRunning={isExecuting}
           />
@@ -597,7 +636,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                 className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 space-y-2.5"
               >
                 <div className="text-xs font-bold text-amber-900 dark:text-amber-200">
-                  공유 개설 오류 감지 · 단계별 해결 마법사 준비됨
+                  {tx('공유 개설 오류 감지 · 단계별 해결 마법사 준비됨', 'Share Creation Error Detected · Step-by-Step Wizard Ready')}
                 </div>
                 <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
                   {failedHostStep.error}
@@ -609,7 +648,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 rounded-lg cursor-pointer"
                 >
                   <Wrench className="w-3.5 h-3.5" />
-                  단계별 오류 해결 마법사 열기
+                  {tx('단계별 오류 해결 마법사 열기', 'Open Step-by-Step Troubleshoot Wizard')}
                 </button>
               </div>
             );
@@ -620,17 +659,20 @@ export const HostPanel: React.FC<HostPanelProps> = ({
       <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
-            활성 공유폴더 목록 ({shares.length})
+            {tx('활성 공유폴더 목록', 'Active Shared Folders')} ({shares.length})
           </h3>
           <span className="text-xs text-slate-500 dark:text-slate-400">
-            클라이언트 PC로 연결 코드를 복사해 공유를 시작하세요
+            {tx('클라이언트 PC로 연결 코드를 복사해 공유를 시작하세요', 'Copy the connection code to a client PC to begin sharing')}
           </span>
         </div>
 
         {shares.length === 0 ? (
           <div className="px-6 py-10 text-center">
             <p className="text-sm text-slate-600 dark:text-slate-400">
-              아직 개설된 공유폴더가 없습니다. 위 양식에서 폴더를 지정하고 원클릭 공유폴더 개설을 실행하세요.
+              {tx(
+                '아직 개설된 공유폴더가 없습니다. 위 양식에서 폴더를 지정하고 원클릭 공유폴더 개설을 실행하세요.',
+                'No shared folders yet. Choose a folder above and run One-Click Host Share Setup.'
+              )}
             </p>
           </div>
         ) : (
@@ -638,36 +680,36 @@ export const HostPanel: React.FC<HostPanelProps> = ({
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 dark:text-slate-400">
-                  <th className="py-3 px-6">공유 이름</th>
-                  <th className="py-3 px-4">로컬 경로 / UNC</th>
-                  <th className="py-3 px-4">인증 및 권한</th>
-                  <th className="py-3 px-4">생성 시각 / 만료 타이머</th>
-                  <th className="py-3 px-6 text-right">작업</th>
+                  <th className="py-3 px-6">{tx('공유 이름', 'Share Name')}</th>
+                  <th className="py-3 px-4">{tx('로컬 경로 / UNC', 'Local Path / UNC')}</th>
+                  <th className="py-3 px-4">{tx('인증 및 권한', 'Auth & Permission')}</th>
+                  <th className="py-3 px-4">{tx('생성 시각 / 만료 타이머', 'Created / Expiry Timer')}</th>
+                  <th className="py-3 px-6 text-right">{tx('작업', 'Actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
                 {shares.map((share) => {
                   const uncTarget = resolveActiveShareUncPath(share, netInfo.primaryIp);
-                  const ttlState = formatRemainingTime(share.expiresAt, nowMs);
+                  const ttlState = formatRemainingTime(share.expiresAt, nowMs, tx);
                   const statusBadge = ttlState.expired
                     ? {
-                        label: '만료됨',
+                        label: tx('만료됨', 'Expired'),
                         dotClass: 'bg-red-500',
                         badgeClass: 'bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/30',
-                        title: '공유 만료 시간이 지났습니다',
+                        title: tx('공유 만료 시간이 지났습니다', 'Share expiry time has passed'),
                       }
                     : ttlState.soon
                       ? {
-                          label: '곧 만료',
+                          label: tx('곧 만료', 'Expiring Soon'),
                           dotClass: 'bg-amber-500 animate-pulse',
                           badgeClass: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30',
-                          title: '5분 이내에 공유가 만료됩니다',
+                          title: tx('5분 이내에 공유가 만료됩니다', 'Share will expire within 5 minutes'),
                         }
                       : {
-                          label: '활성',
+                          label: tx('활성', 'Active'),
                           dotClass: 'bg-emerald-500',
                           badgeClass: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30',
-                          title: '정상적으로 공유가 활성화되어 있습니다',
+                          title: tx('정상적으로 공유가 활성화되어 있습니다', 'Share is active and healthy'),
                         };
                   return (
                   <tr key={share.shareName} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
@@ -688,7 +730,10 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                       <div className="text-slate-400">{share.uncPath}</div>
                     </td>
                     <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                      {share.authMode === 'guest' ? '무비밀번호' : `보안(${share.username})`} · {share.permission === 'full' ? '전체 권한' : '읽기 전용'}
+                      {share.authMode === 'guest'
+                        ? tx('무비밀번호', 'Passwordless')
+                        : tx(`보안(${share.username})`, `Secure (${share.username})`)}{' '}
+                      · {share.permission === 'full' ? tx('전체 권한', 'Full Control') : tx('읽기 전용', 'Read Only')}
                     </td>
                     <td className="py-3 px-4 tabular-data text-xs whitespace-nowrap">
                       <div className="text-slate-500 dark:text-slate-400">{share.createdAt}</div>
@@ -711,7 +756,7 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                           onClick={() => handleCopy(share.connectionCode, `row-${share.shareName}`)}
                           className="px-2.5 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md cursor-pointer"
                         >
-                          {copiedCode === `row-${share.shareName}` ? '복사 완료' : '코드 복사'}
+                          {copiedCode === `row-${share.shareName}` ? tx('복사 완료', 'Copied') : tx('코드 복사', 'Copy Code')}
                         </button>
                         <button
                           type="button"
@@ -719,19 +764,23 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                           onClick={() => {
                             if (uncTarget) void onOpenFolder(uncTarget);
                           }}
-                          title={uncTarget ? `${uncTarget} UNC 경로를 Windows 탐색기에서 열기` : '유효한 UNC 경로가 없습니다'}
-                          aria-label={`${share.shareName} 탐색기에서 열기`}
+                          title={
+                            uncTarget
+                              ? tx(`${uncTarget} UNC 경로를 Windows 탐색기에서 열기`, `Open ${uncTarget} in Windows Explorer`)
+                              : tx('유효한 UNC 경로가 없습니다', 'No valid UNC path')
+                          }
+                          aria-label={tx(`${share.shareName} 탐색기에서 열기`, `Open ${share.shareName} in Explorer`)}
                           className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-40 rounded-md inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
-                          탐색기에서 열기
+                          {tx('탐색기에서 열기', 'Open in Explorer')}
                         </button>
                         <button
                           type="button"
                           onClick={() => void onOpenFolder(share.folderPath)}
                           className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md cursor-pointer"
-                          title="로컬 폴더 열기"
-                          aria-label={`${share.shareName} 로컬 폴더 열기`}
+                          title={tx('로컬 폴더 열기', 'Open Local Folder')}
+                          aria-label={tx(`${share.shareName} 로컬 폴더 열기`, `Open ${share.shareName} local folder`)}
                         >
                           <FolderOpen className="w-4 h-4" />
                         </button>
@@ -739,8 +788,8 @@ export const HostPanel: React.FC<HostPanelProps> = ({
                           type="button"
                           onClick={() => onRemoveShare(share.shareName)}
                           className="p-1.5 text-slate-500 hover:text-red-500 rounded-md cursor-pointer"
-                          title="공유 해제"
-                          aria-label={`${share.shareName} 공유 해제`}
+                          title={tx('공유 해제', 'Remove Share')}
+                          aria-label={tx(`${share.shareName} 공유 해제`, `Remove ${share.shareName} share`)}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>

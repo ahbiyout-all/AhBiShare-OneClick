@@ -19,6 +19,7 @@ import {
 } from '@/types/share';
 import { classifyFailureDiagnostics } from '@/services/networkEvolution';
 import { buildHostGuestUnlockPsCommand } from '@/services/powershellEngine';
+import { tx } from '@/i18n/localeState';
 
 export interface BuildTroubleshootTicketInput {
   originRole: RoleMode;
@@ -64,39 +65,42 @@ export function sanitizeTroubleshootErrorSummary(rawText?: string, maxLength = 5
 
 function classifyHostErrorCode(errorMessage: string): { code: string; title: string } {
   const raw = errorMessage || '';
-  if (/관리자|administrator|access is denied|액세스.*거부|권한/i.test(raw)) {
+  if (/관리자|administrator|access is denied|액세스.*거부|권한|admin/i.test(raw)) {
     return {
       code: 'Host Permission Error',
-      title: '호스트 관리자 권한 또는 폴더 ACL 접근 권한 부족',
+      title: tx(
+        '호스트 관리자 권한 또는 폴더 ACL 접근 권한 부족',
+        'Insufficient host administrator privileges or folder ACL permissions'
+      ),
     };
   }
   if (/방화벽|firewall|445/i.test(raw)) {
     return {
       code: 'Host Firewall 445',
-      title: '호스트 TCP 445 인바운드 방화벽 규칙 차단',
+      title: tx('호스트 TCP 445 인바운드 방화벽 규칙 차단', 'Host TCP 445 inbound firewall rule blocked'),
     };
   }
-  if (/lanmanserver|server 서비스|srv|서비스/i.test(raw)) {
+  if (/lanmanserver|server 서비스|srv|서비스|service/i.test(raw)) {
     return {
       code: 'Host Service Stopped',
-      title: '호스트 SMB Server(LanmanServer) 서비스 중지됨',
+      title: tx('호스트 SMB Server(LanmanServer) 서비스 중지됨', 'Host SMB Server (LanmanServer) service stopped'),
     };
   }
-  if (/폴더|경로|not found|enoent|directory/i.test(raw)) {
+  if (/폴더|경로|not found|enoent|directory|folder|path/i.test(raw)) {
     return {
       code: 'Host Folder Missing',
-      title: '공유 대상 로컬 폴더 경로 확인 필요',
+      title: tx('공유 대상 로컬 폴더 경로 확인 필요', 'Target local folder path check required'),
     };
   }
-  if (/legacy|브릿지|encryptdata|smb1|서명/i.test(raw)) {
+  if (/legacy|브릿지|encryptdata|smb1|서명|bridge|signing/i.test(raw)) {
     return {
       code: 'Host Legacy Bridge',
-      title: '구형 OS 호환 SMB 브릿지 정책 적용 실패',
+      title: tx('구형 OS 호환 SMB 브릿지 정책 적용 실패', 'Failed to apply legacy OS SMB bridge policy'),
     };
   }
   return {
     code: 'Host Setup Error',
-    title: '호스트 SMB 공유폴더 구성 단계 오류',
+    title: tx('호스트 SMB 공유폴더 구성 단계 오류', 'Host SMB share setup stage error'),
   };
 }
 
@@ -221,12 +225,14 @@ function makeStep(
 export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput): TroubleshootTicket {
   const nowIso = new Date().toISOString();
   const { targetHostName, targetIp, shareName } = resolveTargetIdentity(input);
-  const cleanedSummary = sanitizeTroubleshootErrorSummary(input.errorMessage || '연결 또는 공유 구성 오류 발생');
+  const cleanedSummary = sanitizeTroubleshootErrorSummary(
+    input.errorMessage || tx('연결 또는 공유 구성 오류 발생', 'Connection or share configuration error occurred')
+  );
   const hostUnlockCmd = buildHostGuestUnlockPsCommand(shareName);
-  const normalizedTargetForDisplay = targetIp || targetHostName || '대상 호스트';
+  const normalizedTargetForDisplay = targetIp || targetHostName || tx('대상 호스트', 'Target Host');
 
   let errorCode = 'Mount Diagnostic';
-  let errorTitle = '네트워크 공유 연결 오류';
+  let errorTitle = tx('네트워크 공유 연결 오류', 'Network Share Connection Error');
   let recommendedSide: 'host' | 'client' | 'both' = 'both';
   let hostSteps: TroubleshootWizardStep[] = [];
   let clientSteps: TroubleshootWizardStep[] = [];
@@ -242,8 +248,11 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('host', 1, {
           executor: 'apply_legacy_bridge',
           patchMode: 'legacy_bridge_compat',
-          title: '구형 OS SMB 2.1/3.0 호환 브릿지 정책 정렬',
-          description: 'EncryptData=0 · 서명 완화 · NTLMv2 고정 및 LanmanServer/방화벽 445 규칙을 정렬합니다.',
+          title: tx('구형 OS SMB 2.1/3.0 호환 브릿지 정책 정렬', 'Align Legacy OS SMB 2.1/3.0 Bridge Policy'),
+          description: tx(
+            'EncryptData=0 · 서명 완화 · NTLMv2 고정 및 LanmanServer/방화벽 445 규칙을 정렬합니다.',
+            'Sets EncryptData=0, relaxes SMB signing, pins NTLMv2, and aligns LanmanServer & firewall port 445.'
+          ),
         })
       );
     } else {
@@ -251,8 +260,14 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('host', 1, {
           executor: 'apply_safe_compat',
           patchMode: 'safe_compat',
-          title: '호스트 SMB 서비스(LanmanServer) 및 TCP 445 방화벽 개방',
-          description: '공유 서비스 가동 상태, 개인 네트워크 프로필 전환 및 TCP 445 인바운드 규칙을 복구합니다.',
+          title: tx(
+            '호스트 SMB 서비스(LanmanServer) 및 TCP 445 방화벽 개방',
+            'Start Host SMB Service (LanmanServer) & Open TCP 445 Firewall'
+          ),
+          description: tx(
+            '공유 서비스 가동 상태, 개인 네트워크 프로필 전환 및 TCP 445 인바운드 규칙을 복구합니다.',
+            'Restores the sharing service state, Private network profile, and TCP 445 inbound firewall rule.'
+          ),
         })
       );
     }
@@ -261,8 +276,14 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
       hostSteps.push(
         makeStep('host', hostSteps.length + 1, {
           executor: 'host_guest_unlock_and_reopen',
-          title: '호스트 Guest 무비밀번호 차단 해제 및 ACL 권한 정렬',
-          description: 'LimitBlankPasswordUse=0 · SeDenyNetworkLogonRight 정리 · Guest 활성화 및 공유 권한을 재정렬합니다.',
+          title: tx(
+            '호스트 Guest 무비밀번호 차단 해제 및 ACL 권한 정렬',
+            'Unlock Host Blank-Password Guest Policy & Align ACL Permissions'
+          ),
+          description: tx(
+            'LimitBlankPasswordUse=0 · SeDenyNetworkLogonRight 정리 · Guest 활성화 및 공유 권한을 재정렬합니다.',
+            'Sets LimitBlankPasswordUse=0, clears SeDenyNetworkLogonRight, enables Guest, and aligns share ACLs.'
+          ),
           commandPreview: hostUnlockCmd,
         })
       );
@@ -271,50 +292,82 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
     hostSteps.push(
       makeStep('host', hostSteps.length + 1, {
         executor: 'retry_host_share',
-        title: `'${shareName}' SMB 공유폴더 원클릭 재개설 실행`,
-        description: `${input.folderPath || 'C:\\AhBiShared'} 폴더 확인 후 공유 및 USB 포터블 동기화를 다시 실행합니다.`,
+        title: tx(`'${shareName}' SMB 공유폴더 원클릭 재개설 실행`, `Re-run One-Click SMB Share Setup for '${shareName}'`),
+        description: tx(
+          `${input.folderPath || 'C:\\AhBiShared'} 폴더 확인 후 공유 및 USB 포터블 동기화를 다시 실행합니다.`,
+          `Verifies ${input.folderPath || 'C:\\AhBiShared'}, recreates the share, and syncs USB portable storage.`
+        ),
       })
     );
 
     clientSteps = [
       makeStep('client', 1, {
         executor: 'verify_port_445',
-        title: `클라이언트에서 ${normalizedTargetForDisplay} TCP 445 도달성 점검`,
-        description: '호스트 공유 재개설 후 클라이언트 PC가 SMB 포트 445에 정상 도달하는지 확인합니다.',
+        title: tx(
+          `클라이언트에서 ${normalizedTargetForDisplay} TCP 445 도달성 점검`,
+          `Check TCP 445 Reachability to ${normalizedTargetForDisplay} from Client`
+        ),
+        description: tx(
+          '호스트 공유 재개설 후 클라이언트 PC가 SMB 포트 445에 정상 도달하는지 확인합니다.',
+          'Verifies that the client PC can reach SMB port 445 after host share setup completes.'
+        ),
       }),
     ];
   } else {
     const diag = classifyFailureDiagnostics(input.errorMessage);
     errorCode = diag?.code || 'Mount Diagnostic';
-    errorTitle = diag?.title || '네트워크 드라이브 연결 실패';
+    errorTitle = diag?.title || tx('네트워크 드라이브 연결 실패', 'Network Drive Connection Failed');
 
     if (errorCode === 'Error 1385') {
       recommendedSide = 'host';
       hostSteps = [
         makeStep('host', 1, {
           executor: 'host_guest_unlock_and_reopen',
-          title: '호스트 Guest 네트워크 로그온 거부(1385) 정책 해제',
-          description:
+          title: tx(
+            '호스트 Guest 네트워크 로그온 거부(1385) 정책 해제',
+            'Clear Host Guest Network Logon Denial (Error 1385)'
+          ),
+          description: tx(
             '호스트의 SeDenyNetworkLogonRight에서 Guest/Guests를 제거하고 LimitBlankPasswordUse=0 및 445 방화벽을 즉시 개방합니다.',
+            'Removes Guest/Guests from host SeDenyNetworkLogonRight, sets LimitBlankPasswordUse=0, and opens TCP 445.'
+          ),
           commandPreview: hostUnlockCmd,
         }),
         makeStep('host', 2, {
           executor: 'apply_safe_compat',
           patchMode: 'safe_compat',
-          title: '호스트 SMB 서명 완화 및 공유 서비스(LanmanServer) 재정렬',
-          description: 'Win 11 24H2~26H2 서버 측 SMB 서명 강제를 완화하고 공유 상태를 갱신합니다.',
+          title: tx(
+            '호스트 SMB 서명 완화 및 공유 서비스(LanmanServer) 재정렬',
+            'Relax Host SMB Signing & Realign LanmanServer'
+          ),
+          description: tx(
+            'Win 11 24H2~26H2 서버 측 SMB 서명 강제를 완화하고 공유 상태를 갱신합니다.',
+            'Relaxes mandatory SMB server signing on Win 11 24H2–26H2 and refreshes share state.'
+          ),
         }),
       ];
       clientSteps = [
         makeStep('client', 1, {
           executor: 'switch_to_account_mode',
-          title: '(대안) 보안 계정 모드로 전환하여 즉시 연결 준비',
-          description: '호스트에서 Guest 개방을 원치 않는다면 보안 계정(아이디/암호) 모드로 전환해 바로 접속할 수 있습니다.',
+          title: tx(
+            '(대안) 보안 계정 모드로 전환하여 즉시 연결 준비',
+            '(Alternative) Switch to Account Auth Mode to Connect Immediately'
+          ),
+          description: tx(
+            '호스트에서 Guest 개방을 원치 않는다면 보안 계정(아이디/암호) 모드로 전환해 바로 접속할 수 있습니다.',
+            'If you prefer not to unlock Guest on the host, switch to Account Auth (username/password) to connect right away.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 네트워크 드라이브 재연결`,
-          description: '호스트 조치(또는 계정 전환) 완료 후 지정한 드라이브 문자로 다시 연결합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 네트워크 드라이브 재연결`,
+            `Reconnect Network Drive ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '호스트 조치(또는 계정 전환) 완료 후 지정한 드라이브 문자로 다시 연결합니다.',
+            'Retries mounting the selected drive letter after host unlock or Account Auth switch.'
+          ),
         }),
       ];
     } else if (errorCode === 'Error 1223') {
@@ -322,21 +375,39 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
       hostSteps = [
         makeStep('host', 1, {
           executor: 'host_guest_unlock_and_reopen',
-          title: '호스트 익명/Guest 차단(1223) 해제 및 공유 권한 정렬',
-          description: '익명 자격 증명 요구를 일으키는 빈 암호 제한과 Guest 네트워크 로그온 차단을 호스트에서 해제합니다.',
+          title: tx(
+            '호스트 익명/Guest 차단(1223) 해제 및 공유 권한 정렬',
+            'Unlock Host Anonymous/Guest Block (Error 1223) & Align Share ACL'
+          ),
+          description: tx(
+            '익명 자격 증명 요구를 일으키는 빈 암호 제한과 Guest 네트워크 로그온 차단을 호스트에서 해제합니다.',
+            'Clears blank password restrictions and Guest logon blocks on the host that trigger credential prompts.'
+          ),
           commandPreview: hostUnlockCmd,
         }),
       ];
       clientSteps = [
         makeStep('client', 1, {
           executor: 'switch_to_account_mode',
-          title: '클라이언트 보안 계정(cmdkey) 인증 모드로 전환',
-          description: '호스트가 자격 증명을 요구하는 경우 보안 계정 모드로 전환해 계정/암호를 입력합니다.',
+          title: tx(
+            '클라이언트 보안 계정(cmdkey) 인증 모드로 전환',
+            'Switch Client to Account Auth (cmdkey) Mode'
+          ),
+          description: tx(
+            '호스트가 자격 증명을 요구하는 경우 보안 계정 모드로 전환해 계정/암호를 입력합니다.',
+            'Switch to Account Auth mode and provide credentials when the host requires authentication.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-          description: '호스트 개방 또는 보안 계정 입력 후 네트워크 드라이브 연결을 다시 시도합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+            `Retry Mounting ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '호스트 개방 또는 보안 계정 입력 후 네트워크 드라이브 연결을 다시 시도합니다.',
+            'Retries network drive mount after host unlock or entering Account Auth credentials.'
+          ),
         }),
       ];
     } else if (errorCode === '0x80070035 / 1272') {
@@ -345,13 +416,25 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('host', 1, {
           executor: 'apply_safe_compat',
           patchMode: 'safe_compat',
-          title: '호스트 SMB 서버 서명 완화 및 게스트 인증 허용',
-          description: '호스트 측 RequireSecuritySignature=0 및 LanmanServer 구성을 호환 모드로 정렬합니다.',
+          title: tx(
+            '호스트 SMB 서버 서명 완화 및 게스트 인증 허용',
+            'Relax Host SMB Server Signing & Enable Guest Auth'
+          ),
+          description: tx(
+            '호스트 측 RequireSecuritySignature=0 및 LanmanServer 구성을 호환 모드로 정렬합니다.',
+            'Sets RequireSecuritySignature=0 and aligns LanmanServer compatibility on the host.'
+          ),
         }),
         makeStep('host', 2, {
           executor: 'host_guest_unlock_and_reopen',
-          title: '호스트 Guest 무비밀번호 · 빈 암호 허용 일괄 개방',
-          description: 'Guest 계정 활성화, LimitBlankPasswordUse=0 및 방화벽 TCP 445 규칙을 적용합니다.',
+          title: tx(
+            '호스트 Guest 무비밀번호 · 빈 암호 허용 일괄 개방',
+            'Batch Unlock Host Guest & Blank-Password Logon'
+          ),
+          description: tx(
+            'Guest 계정 활성화, LimitBlankPasswordUse=0 및 방화벽 TCP 445 규칙을 적용합니다.',
+            'Enables the Guest account, sets LimitBlankPasswordUse=0, and opens TCP 445 firewall.'
+          ),
           commandPreview: hostUnlockCmd,
         }),
       ];
@@ -359,13 +442,25 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('client', 1, {
           executor: 'apply_safe_compat',
           patchMode: 'safe_compat',
-          title: '클라이언트 Win 11 24H2~26H2 비인증 게스트·서명 완화 적용',
-          description: 'AllowInsecureGuestAuth=1, EnableInsecureGuestLogons=1 및 SMB 클라이언트 서명 완화를 적용합니다.',
+          title: tx(
+            '클라이언트 Win 11 24H2~26H2 비인증 게스트·서명 완화 적용',
+            'Apply Client Win 11 24H2–26H2 Insecure Guest & Signing Relaxation'
+          ),
+          description: tx(
+            'AllowInsecureGuestAuth=1, EnableInsecureGuestLogons=1 및 SMB 클라이언트 서명 완화를 적용합니다.',
+            'Applies AllowInsecureGuestAuth=1, EnableInsecureGuestLogons=1, and relaxes client SMB signing.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-          description: '양단 안전 호환 패치 완료 후 네트워크 드라이브를 다시 연결합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+            `Retry Mounting ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '양단 안전 호환 패치 완료 후 네트워크 드라이브를 다시 연결합니다.',
+            'Retries drive mount after safe compatibility patches are applied on both PCs.'
+          ),
         }),
       ];
     } else if (errorCode === 'Error 5 / 86 / 1326') {
@@ -390,7 +485,10 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
       const duplicateSidRisk =
         sameMachineSidPrefix || Boolean(input.duplicateSidEvent6167Detected);
       if (duplicateSidRisk) {
-        errorTitle = '인증 실패 (86/1326) 또는 복제 OS 중복 Machine SID 차단 의심';
+        errorTitle = tx(
+          '인증 실패 (86/1326) 또는 복제 OS 중복 Machine SID 차단 의심',
+          'Authentication Failed (86/1326) or Suspected Cloned OS Duplicate Machine SID Block'
+        );
       }
 
       if (input.authMode === 'account') {
@@ -398,25 +496,45 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         hostSteps = [
           makeStep('host', 1, {
             executor: 'retry_host_share',
-            title: `호스트 공유 '${shareName}' 전용 계정·암호 및 Classic(forceguest=0) 재동기화`,
+            title: tx(
+              `호스트 공유 '${shareName}' 전용 계정·암호 및 Classic(forceguest=0) 재동기화`,
+              `Resync Host Account Credentials & Classic Mode (forceguest=0) for '${shareName}'`
+            ),
             description: matchingHostSnap?.forceGuest
-              ? '호스트에 forceguest=1(Guest 강제)가 감지되었습니다! Classic(forceguest=0) 전환 및 전용 계정 암호·NTFS ACL을 재동기화합니다.'
-              : '호스트의 전용 공유 계정 암호, Classic(forceguest=0) 모델, 폴더 NTFS 권한 및 USB 암호화 자격 증명을 최신 상태로 다시 동기화합니다.',
+              ? tx(
+                  '호스트에 forceguest=1(Guest 강제)가 감지되었습니다! Classic(forceguest=0) 전환 및 전용 계정 암호·NTFS ACL을 재동기화합니다.',
+                  'forceguest=1 detected on host! Switches to Classic (forceguest=0) and resyncs account password & NTFS ACLs.'
+                )
+              : tx(
+                  '호스트의 전용 공유 계정 암호, Classic(forceguest=0) 모델, 폴더 NTFS 권한 및 USB 암호화 자격 증명을 최신 상태로 다시 동기화합니다.',
+                  'Resyncs host share account password, Classic (forceguest=0) model, NTFS ACLs, and USB encrypted credentials.'
+                ),
           }),
           makeStep('host', 2, {
             executor: 'apply_safe_compat',
             patchMode: 'safe_compat',
-            title: '호스트 NTLMv2 · BlockNTLM=0 · UAC 원격 토큰 및 방화벽 445 정렬',
-            description: '로컬 계정 원격 로그온, forceguest=0 및 NTLMv2 인증 협상 정책을 정렬합니다.',
+            title: tx(
+              '호스트 NTLMv2 · BlockNTLM=0 · UAC 원격 토큰 및 방화벽 445 정렬',
+              'Align Host NTLMv2, BlockNTLM=0, UAC Remote Token & TCP 445 Firewall'
+            ),
+            description: tx(
+              '로컬 계정 원격 로그온, forceguest=0 및 NTLMv2 인증 협상 정책을 정렬합니다.',
+              'Aligns local account remote logon, forceguest=0, and NTLMv2 negotiation policies.'
+            ),
           }),
           ...(duplicateSidRisk
             ? [
                 makeStep('host', 3, {
                   executor: 'apply_safe_compat',
                   patchMode: 'kir_duplicate_sid_compat',
-                  title: '호스트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
-                  description:
+                  title: tx(
+                    '호스트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                    'Apply Host Duplicate Machine SID KIR Bypass (1517186191=0)'
+                  ),
+                  description: tx(
                     'OS 복제 PC 간 동일 Machine SID로 인해 Win11 24H2/25H2(KB5065426)가 SMB 인증을 Error 86으로 거부합니다. 적용 후 재부팅하세요.',
+                    'Win11 24H2/25H2 (KB5065426) rejects SMB auth with Error 86 on cloned PCs sharing a Machine SID. Reboot after applying.'
+                  ),
                 }),
               ]
             : []),
@@ -424,24 +542,41 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         clientSteps = [
           makeStep('client', 1, {
             executor: 'clear_conflicting_sessions',
-            title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
-            description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+            title: tx(
+              '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
+              'Clear Stale Saved Credentials (cmdkey) & SMB Sessions'
+            ),
+            description: tx(
+              '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+              'Clears cached credentials and conflicting SMB sessions for the target host.'
+            ),
           }),
           ...(duplicateSidRisk
             ? [
                 makeStep('client', 2, {
                   executor: 'apply_safe_compat',
                   patchMode: 'kir_duplicate_sid_compat',
-                  title: '클라이언트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
-                  description:
+                  title: tx(
+                    '클라이언트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                    'Apply Client Duplicate Machine SID KIR Bypass (1517186191=0)'
+                  ),
+                  description: tx(
                     '복제 PC 간 중복 SID 차단(Event 6167)을 해제하기 위해 Overrides\\1517186191=0 을 적용합니다 (재부팅 필요).',
+                    'Applies Overrides\\1517186191=0 to bypass Event 6167 duplicate SID blocks between cloned PCs (reboot required).'
+                  ),
                 }),
               ]
             : []),
           makeStep('client', duplicateSidRisk ? 3 : 2, {
             executor: 'retry_mount',
-            title: `${normalizedTargetForDisplay}\\${shareName} 보안 계정 재연결 실행`,
-            description: 'USB 동기화 암호 또는 입력한 계정 비밀번호로 네트워크 드라이브 연결을 다시 실행합니다.',
+            title: tx(
+              `${normalizedTargetForDisplay}\\${shareName} 보안 계정 재연결 실행`,
+              `Retry Account Mount ${normalizedTargetForDisplay}\\${shareName}`
+            ),
+            description: tx(
+              'USB 동기화 암호 또는 입력한 계정 비밀번호로 네트워크 드라이브 연결을 다시 실행합니다.',
+              'Retries network drive mount with USB-synced or entered Account Auth credentials.'
+            ),
           }),
         ];
       } else {
@@ -449,26 +584,46 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         hostSteps = [
           makeStep('host', 1, {
             executor: 'host_guest_unlock_and_reopen',
-            title: '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0 · minpwlen=0) 및 ACL 정렬',
+            title: tx(
+              '호스트 빈 암호 제한 해제(LimitBlankPasswordUse=0 · minpwlen=0) 및 ACL 정렬',
+              'Unlock Host Blank Password Limit (LimitBlankPasswordUse=0 · minpwlen=0) & ACLs'
+            ),
             description:
               (matchingHostSnap?.minimumPasswordLength ?? 0) > 0
-                ? `호스트에 최소 암호 길이(${matchingHostSnap?.minimumPasswordLength})가 설정되어 Guest 빈 암호가 거부되었을 수 있습니다. net accounts /minpwlen:0 및 ACL을 일괄 복구합니다.`
-                : 'Guest 빈 암호 거부, Classic(forceguest=0) 및 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
+                ? tx(
+                    `호스트에 최소 암호 길이(${matchingHostSnap?.minimumPasswordLength})가 설정되어 Guest 빈 암호가 거부되었을 수 있습니다. net accounts /minpwlen:0 및 ACL을 일괄 복구합니다.`,
+                    `Host minimum password length (${matchingHostSnap?.minimumPasswordLength}) may have blocked Guest blank password. Resets net accounts /minpwlen:0 and ACLs.`
+                  )
+                : tx(
+                    'Guest 빈 암호 거부, Classic(forceguest=0) 및 공유 권한/NTFS ACL 충돌을 호스트에서 일괄 복구합니다.',
+                    'Repairs Guest blank-password rejection, Classic (forceguest=0), and share/NTFS ACL conflicts on the host.'
+                  ),
             commandPreview: hostUnlockCmd,
           }),
           makeStep('host', 2, {
             executor: 'retry_host_share',
-            title: `호스트 공유 '${shareName}' 무비밀번호(Guest) 권한 재적용`,
-            description: '공유 폴더의 Everyone/Guest 접근 권한과 로컬 Guest 계정 상태를 갱신합니다.',
+            title: tx(
+              `호스트 공유 '${shareName}' 무비밀번호(Guest) 권한 재적용`,
+              `Reapply Guest Permissions on Host Share '${shareName}'`
+            ),
+            description: tx(
+              '공유 폴더의 Everyone/Guest 접근 권한과 로컬 Guest 계정 상태를 갱신합니다.',
+              'Refreshes Everyone/Guest permissions on the share and verifies local Guest account status.'
+            ),
           }),
           ...(duplicateSidRisk
             ? [
                 makeStep('host', 3, {
                   executor: 'apply_safe_compat',
                   patchMode: 'kir_duplicate_sid_compat',
-                  title: '호스트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
-                  description:
+                  title: tx(
+                    '호스트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                    'Apply Host Duplicate Machine SID KIR Bypass (1517186191=0)'
+                  ),
+                  description: tx(
                     'OS 복제 PC 간 동일 Machine SID로 인한 Win11 24H2/25H2 인증 거부(Event 6167)를 우회합니다 (재부팅 필요).',
+                    'Bypasses Win11 24H2/25H2 Event 6167 auth rejection caused by cloned Machine SIDs (reboot required).'
+                  ),
                 }),
               ]
             : []),
@@ -476,33 +631,62 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         clientSteps = [
           makeStep('client', 1, {
             executor: 'clear_conflicting_sessions',
-            title: '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
-            description: '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+            title: tx(
+              '기존 잘못 저장된 자격 증명(cmdkey) 및 SMB 세션 정리',
+              'Clear Stale Saved Credentials (cmdkey) & SMB Sessions'
+            ),
+            description: tx(
+              '대상 호스트에 캐시된 오래된 계정/암호 세션과 충돌 매핑을 정리합니다.',
+              'Clears cached credentials and conflicting SMB sessions for the target host.'
+            ),
           }),
           makeStep('client', 2, {
             executor: 'switch_to_account_mode',
             title: matchingPortableAccount
-              ? `호스트 보안 계정('${matchingPortableAccount.username || 'AhBiShare'}') 모드로 전환 준비`
-              : '보안 계정 모드로 전환해 정확한 아이디·암호 입력 준비',
+              ? tx(
+                  `호스트 보안 계정('${matchingPortableAccount.username || 'AhBiShare'}') 모드로 전환 준비`,
+                  `Prepare Switch to Host Account Mode ('${matchingPortableAccount.username || 'AhBiShare'}')`
+                )
+              : tx(
+                  '보안 계정 모드로 전환해 정확한 아이디·암호 입력 준비',
+                  'Prepare Switch to Account Auth Mode with Exact Credentials'
+                ),
             description: matchingPortableAccount
-              ? 'USB 포터블 기록상 호스트 공유가 보안 계정 모드로 설정되어 있습니다. 계정 모드로 전환해 바로 연결하세요.'
-              : '호스트에 설정된 전용 공유 계정(아이디/암호)으로 인증 모드를 맞춥니다.',
+              ? tx(
+                  'USB 포터블 기록상 호스트 공유가 보안 계정 모드로 설정되어 있습니다. 계정 모드로 전환해 바로 연결하세요.',
+                  'USB portable metadata indicates this host share uses Account Auth. Switch to Account Auth to connect immediately.'
+                )
+              : tx(
+                  '호스트에 설정된 전용 공유 계정(아이디/암호)으로 인증 모드를 맞춥니다.',
+                  'Aligns authentication mode with the dedicated account credentials configured on the host.'
+                ),
           }),
           ...(duplicateSidRisk
             ? [
                 makeStep('client', 3, {
                   executor: 'apply_safe_compat',
                   patchMode: 'kir_duplicate_sid_compat',
-                  title: '클라이언트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
-                  description:
+                  title: tx(
+                    '클라이언트 중복 Machine SID 차단 해제 KIR(1517186191=0) 적용',
+                    'Apply Client Duplicate Machine SID KIR Bypass (1517186191=0)'
+                  ),
+                  description: tx(
                     '복제 PC 간 중복 SID 차단(Event 6167)을 해제하기 위해 Overrides\\1517186191=0 을 적용합니다 (재부팅 필요).',
+                    'Applies Overrides\\1517186191=0 to bypass Event 6167 duplicate SID blocks between cloned PCs (reboot required).'
+                  ),
                 }),
               ]
             : []),
           makeStep('client', duplicateSidRisk ? 4 : 3, {
             executor: 'retry_mount',
-            title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-            description: '세션 정리 및 인증 확인 후 네트워크 드라이브 연결을 다시 실행합니다.',
+            title: tx(
+              `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+              `Retry Mounting ${normalizedTargetForDisplay}\\${shareName}`
+            ),
+            description: tx(
+              '세션 정리 및 인증 확인 후 네트워크 드라이브 연결을 다시 실행합니다.',
+              'Retries network drive mount after clearing sessions and verifying auth.'
+            ),
           }),
         ];
       }
@@ -512,21 +696,39 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('host', 1, {
           executor: 'apply_legacy_bridge',
           patchMode: 'legacy_bridge_compat',
-          title: '호스트 구형 OS SMB 2.1/3.0 브릿지 호환 적용',
-          description: 'SMB 전송 암호화 강제(EncryptData/RejectUnencryptedAccess)를 끄고 NTLMv2 및 서명 완화를 적용합니다.',
+          title: tx(
+            '호스트 구형 OS SMB 2.1/3.0 브릿지 호환 적용',
+            'Apply Host Legacy OS SMB 2.1/3.0 Bridge Compatibility'
+          ),
+          description: tx(
+            'SMB 전송 암호화 강제(EncryptData/RejectUnencryptedAccess)를 끄고 NTLMv2 및 서명 완화를 적용합니다.',
+            'Disables enforced SMB transport encryption (EncryptData/RejectUnencryptedAccess), pins NTLMv2, and relaxes signing.'
+          ),
         }),
       ];
       clientSteps = [
         makeStep('client', 1, {
           executor: 'apply_legacy_bridge',
           patchMode: 'legacy_bridge_compat',
-          title: '클라이언트 구형 OS 브릿지(서명 완화·NTLMv2) 정렬',
-          description: '클라이언트 측 SMB 서명 요구와 NTLM 호환 수준을 호스트와 일치시킵니다.',
+          title: tx(
+            '클라이언트 구형 OS 브릿지(서명 완화·NTLMv2) 정렬',
+            'Align Client Legacy OS Bridge (Signing Relaxation · NTLMv2)'
+          ),
+          description: tx(
+            '클라이언트 측 SMB 서명 요구와 NTLM 호환 수준을 호스트와 일치시킵니다.',
+            'Aligns client SMB signing requirements and NTLM compatibility level with the host.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 구형 호환 재연결 실행`,
-          description: '양단 SMB 브릿지 정렬 완료 후 네트워크 드라이브를 다시 연결합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 구형 호환 재연결 실행`,
+            `Retry Legacy-Compatible Mount ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '양단 SMB 브릿지 정렬 완료 후 네트워크 드라이브를 다시 연결합니다.',
+            'Retries drive mount after aligning SMB bridge settings on both ends.'
+          ),
         }),
       ];
     } else if (errorCode === 'Error 53 / TCP 445') {
@@ -535,31 +737,61 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('host', 1, {
           executor: 'apply_safe_compat',
           patchMode: 'safe_compat',
-          title: '호스트 TCP 445 방화벽 개방 · 개인 네트워크 · LanmanServer 가동',
-          description: '호스트 방화벽에서 포트 445가 차단되었는지 점검하고 파일 및 프린터 공유 규칙을 개방합니다.',
+          title: tx(
+            '호스트 TCP 445 방화벽 개방 · 개인 네트워크 · LanmanServer 가동',
+            'Open Host TCP 445 Firewall, Private Profile & Start LanmanServer'
+          ),
+          description: tx(
+            '호스트 방화벽에서 포트 445가 차단되었는지 점검하고 파일 및 프린터 공유 규칙을 개방합니다.',
+            'Checks whether TCP 445 is blocked on the host firewall and enables File & Printer Sharing rules.'
+          ),
         }),
         makeStep('host', 2, {
           executor: 'retry_host_share',
-          title: `호스트 '${shareName}' 공유 활성화 상태 재확인`,
-          description: '대상 공유 폴더가 정상 개설되어 있고 네트워크 탐색이 켜져 있는지 재적용합니다.',
+          title: tx(
+            `호스트 '${shareName}' 공유 활성화 상태 재확인`,
+            `Verify & Reapply Host Share '${shareName}'`
+          ),
+          description: tx(
+            '대상 공유 폴더가 정상 개설되어 있고 네트워크 탐색이 켜져 있는지 재적용합니다.',
+            'Reapplies the shared folder configuration and verifies network discovery is active.'
+          ),
         }),
       ];
       clientSteps = [
         makeStep('client', 1, {
           executor: 'verify_port_445',
-          title: `${normalizedTargetForDisplay} Ping 및 TCP 445 포트 도달성 재검사`,
-          description: '호스트 PC와 같은 대역(LAN)에 연결되어 있고 445 포트가 열려 있는지 실시간 확인합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay} Ping 및 TCP 445 포트 도달성 재검사`,
+            `Re-check Ping & TCP 445 Reachability to ${normalizedTargetForDisplay}`
+          ),
+          description: tx(
+            '호스트 PC와 같은 대역(LAN)에 연결되어 있고 445 포트가 열려 있는지 실시간 확인합니다.',
+            'Tests in real time whether the host is on the same LAN subnet and listening on TCP 445.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'enable_smbv1_client',
           patchMode: 'enable_smbv1_client',
-          title: '(구형 장비/Win7 전용) SMBv1 클라이언트 기능 설치',
-          description: '대상 호스트가 SMB 2.0 미지원 구형 장비·NAS·레거시 PC일 경우에만 적용하세요.',
+          title: tx(
+            '(구형 장비/Win7 전용) SMBv1 클라이언트 기능 설치',
+            '(Legacy NAS / Win7 Only) Install SMBv1 Client Feature'
+          ),
+          description: tx(
+            '대상 호스트가 SMB 2.0 미지원 구형 장비·NAS·레거시 PC일 경우에만 적용하세요.',
+            'Apply only if the target is an older NAS, multifunction printer, or legacy PC without SMB 2.0.'
+          ),
         }),
         makeStep('client', 3, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-          description: '네트워크 경로 및 포트 445 개방 확인 후 드라이브 연결을 재시도합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+            `Retry Mounting ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '네트워크 경로 및 포트 445 개방 확인 후 드라이브 연결을 재시도합니다.',
+            'Retries mounting the drive after verifying the network path and port 445.'
+          ),
         }),
       ];
     } else if (errorCode === 'Error 1219') {
@@ -568,13 +800,25 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
       clientSteps = [
         makeStep('client', 1, {
           executor: 'clear_conflicting_sessions',
-          title: `${normalizedTargetForDisplay} 기존 SMB 다중 세션 · 자격 증명 정리`,
-          description: '동일 서버에 열려 있는 다른 사용자 세션(net use * /delete)과 cmdkey 캐시를 정리합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay} 기존 SMB 다중 세션 · 자격 증명 정리`,
+            `Clear Existing SMB Multi-Sessions & Credentials for ${normalizedTargetForDisplay}`
+          ),
+          description: tx(
+            '동일 서버에 열려 있는 다른 사용자 세션(net use * /delete)과 cmdkey 캐시를 정리합니다.',
+            'Clears conflicting SMB sessions (net use * /delete) and cached cmdkey credentials to the same host.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-          description: '충돌 세션 제거 후 지정한 인증 방식으로 즉시 재연결합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+            `Retry Mounting ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '충돌 세션 제거 후 지정한 인증 방식으로 즉시 재연결합니다.',
+            'Reconnects immediately using the selected auth mode after clearing conflicting sessions.'
+          ),
         }),
       ];
     } else if (errorCode === 'Error 85') {
@@ -583,13 +827,25 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
       clientSteps = [
         makeStep('client', 1, {
           executor: 'reassign_free_drive',
-          title: `사용 중인 드라이브(${input.driveLetter || 'Z:'})를 빈 드라이브 문자로 자동 변경`,
-          description: '이미 할당된 드라이브 문자 충돌을 피하기 위해 사용 가능한 다음 드라이브 문자로 재배정합니다.',
+          title: tx(
+            `사용 중인 드라이브(${input.driveLetter || 'Z:'})를 빈 드라이브 문자로 자동 변경`,
+            `Auto-Reassign Busy Drive (${input.driveLetter || 'Z:'}) to a Free Letter`
+          ),
+          description: tx(
+            '이미 할당된 드라이브 문자 충돌을 피하기 위해 사용 가능한 다음 드라이브 문자로 재배정합니다.',
+            'Reassigns to the next available drive letter to avoid the existing drive letter conflict.'
+          ),
         }),
         makeStep('client', 2, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 새 드라이브 문자로 재연결`,
-          description: '새로 배정된 드라이브 문자로 네트워크 공유를 연결합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 새 드라이브 문자로 재연결`,
+            `Reconnect ${normalizedTargetForDisplay}\\${shareName} on New Drive Letter`
+          ),
+          description: tx(
+            '새로 배정된 드라이브 문자로 네트워크 공유를 연결합니다.',
+            'Mounts the network share using the newly assigned drive letter.'
+          ),
         }),
       ];
     } else {
@@ -598,31 +854,61 @@ export function buildTroubleshootTicketDraft(input: BuildTroubleshootTicketInput
         makeStep('host', 1, {
           executor: input.isLegacyOs ? 'apply_legacy_bridge' : 'apply_safe_compat',
           patchMode: input.isLegacyOs ? 'legacy_bridge_compat' : 'safe_compat',
-          title: '호스트 SMB 호환 정책 및 방화벽 445 정렬',
-          description: '호스트 측 서명 완화, 게스트/공유 권한 및 TCP 445 인바운드 규칙을 점검합니다.',
+          title: tx(
+            '호스트 SMB 호환 정책 및 방화벽 445 정렬',
+            'Align Host SMB Compatibility Policy & TCP 445 Firewall'
+          ),
+          description: tx(
+            '호스트 측 서명 완화, 게스트/공유 권한 및 TCP 445 인바운드 규칙을 점검합니다.',
+            'Checks host SMB signing relaxation, Guest/share permissions, and TCP 445 inbound firewall rules.'
+          ),
         }),
         makeStep('host', 2, {
           executor: 'retry_host_share',
-          title: `호스트 '${shareName}' 공유 상태 재점검`,
-          description: '활성 SMB 공유 존재 여부와 폴더 접근 권한을 재적용합니다.',
+          title: tx(
+            `호스트 '${shareName}' 공유 상태 재점검`,
+            `Re-verify Host Share '${shareName}' State`
+          ),
+          description: tx(
+            '활성 SMB 공유 존재 여부와 폴더 접근 권한을 재적용합니다.',
+            'Reapplies folder permissions and ensures the active SMB share is published.'
+          ),
         }),
       ];
       clientSteps = [
         makeStep('client', 1, {
           executor: 'verify_port_445',
-          title: `${normalizedTargetForDisplay} TCP 445 도달성 점검`,
-          description: '클라이언트에서 호스트 IP 및 SMB 445 포트로 도달 가능한지 확인합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay} TCP 445 도달성 점검`,
+            `Check TCP 445 Reachability to ${normalizedTargetForDisplay}`
+          ),
+          description: tx(
+            '클라이언트에서 호스트 IP 및 SMB 445 포트로 도달 가능한지 확인합니다.',
+            'Checks whether the client can reach the host IP and SMB port 445.'
+          ),
         }),
         makeStep('client', 2, {
           executor: input.isLegacyOs ? 'apply_legacy_bridge' : 'apply_safe_compat',
           patchMode: input.isLegacyOs ? 'legacy_bridge_compat' : 'safe_compat',
-          title: '클라이언트 SMB 클라이언트 호환 정책 정렬',
-          description: '클라이언트 측 게스트 로그온 및 SMB 서명 완화 설정을 적용합니다.',
+          title: tx(
+            '클라이언트 SMB 클라이언트 호환 정책 정렬',
+            'Align Client SMB Compatibility Policy'
+          ),
+          description: tx(
+            '클라이언트 측 게스트 로그온 및 SMB 서명 완화 설정을 적용합니다.',
+            'Applies insecure guest logon and SMB signing relaxation on the client.'
+          ),
         }),
         makeStep('client', 3, {
           executor: 'retry_mount',
-          title: `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
-          description: '점검 및 정책 정렬 후 네트워크 드라이브를 다시 연결합니다.',
+          title: tx(
+            `${normalizedTargetForDisplay}\\${shareName} 드라이브 재연결 실행`,
+            `Retry Mounting ${normalizedTargetForDisplay}\\${shareName}`
+          ),
+          description: tx(
+            '점검 및 정책 정렬 후 네트워크 드라이브를 다시 연결합니다.',
+            'Retries mounting the network drive after diagnostics and policy alignment.'
+          ),
         }),
       ];
     }
@@ -990,19 +1276,19 @@ export function evaluateTroubleshootTicketsForPc(
 export function formatStepResolvedSourceLabel(source?: TroubleshootStepResolvedSource): string {
   switch (source) {
     case 'matrix':
-      return 'OS 호환성 매트릭스 적용됨';
+      return tx('OS 호환성 매트릭스 적용됨', 'Applied from OS Matrix');
     case 'host_panel':
-      return 'HostPanel 빈 암호 토글 반영';
+      return tx('HostPanel 빈 암호 토글 반영', 'Applied via Host Blank-Password Toggle');
     case 'live_inspect':
-      return '실시간 OS 정책 이미 충족';
+      return tx('실시간 OS 정책 이미 충족', 'Live OS Policy Already Satisfied');
     case 'share_retry':
-      return '공유폴더 개설 확인됨';
+      return tx('공유폴더 개설 확인됨', 'Share Creation Verified');
     case 'mount_retry':
-      return '드라이브 연결 성공 확인됨';
+      return tx('드라이브 연결 성공 확인됨', 'Drive Mount Verified');
     case 'rollback':
-      return '보안 원복 확인됨';
+      return tx('보안 원복 확인됨', 'Security Rollback Verified');
     case 'wizard':
-      return '마법사 직접 실행 완료';
+      return tx('마법사 직접 실행 완료', 'Executed in Wizard');
     default:
       return '';
   }
@@ -1084,35 +1370,65 @@ export function getPolicyStepMatchedExplanation(
   if (!policy) return '';
 
   if (step.executor === 'host_guest_unlock_and_reopen') {
-    return '현재 OS 정책(LimitBlankPasswordUse=0 · Guest 활성 · SeDenyNetworkLogonRight 해제 · TCP 445 허용 · forceguest=0)이 이미 충족되어 다시 실행할 필요가 없습니다.';
+    return tx(
+      '현재 OS 정책(LimitBlankPasswordUse=0 · Guest 활성 · SeDenyNetworkLogonRight 해제 · TCP 445 허용 · forceguest=0)이 이미 충족되어 다시 실행할 필요가 없습니다.',
+      'Current OS policy (LimitBlankPasswordUse=0, Guest enabled, SeDenyNetworkLogonRight cleared, TCP 445 open, forceguest=0) is already satisfied.'
+    );
   }
 
   if (step.executor === 'apply_safe_compat') {
     if (step.patchMode === 'kir_duplicate_sid_compat') {
       return policy.pendingRebootFlag
-        ? '중복 SID 우회 레지스트리(1517186191=0)가 이미 반영되어 있습니다. 커널 적용을 위해 재부팅 후 연결하세요.'
-        : '중복 SID 우회 정책(1517186191=0) 조건이 현재 OS 정책에서 이미 충족되었습니다.';
+        ? tx(
+            '중복 SID 우회 레지스트리(1517186191=0)가 이미 반영되어 있습니다. 커널 적용을 위해 재부팅 후 연결하세요.',
+            'Duplicate SID bypass registry (1517186191=0) is already set. Reboot to apply it in the kernel before connecting.'
+          )
+        : tx(
+            '중복 SID 우회 정책(1517186191=0) 조건이 현재 OS 정책에서 이미 충족되었습니다.',
+            'Duplicate SID bypass policy (1517186191=0) is already satisfied on this PC.'
+          );
     }
     if (step.patchMode === 'enable_uac_token_filter') {
-      return 'UAC 원격 토큰 필터 해제(LocalAccountTokenFilterPolicy=1) 조건이 이미 충족되었습니다.';
+      return tx(
+        'UAC 원격 토큰 필터 해제(LocalAccountTokenFilterPolicy=1) 조건이 이미 충족되었습니다.',
+        'UAC remote token filter relaxation (LocalAccountTokenFilterPolicy=1) is already active.'
+      );
     }
     if (step.side === 'host') {
       return ticket.authMode === 'guest'
-        ? '호스트 프로필 · TCP 445 · LanmanServer · SMB 서명/NTLM 및 Guest 허용 조건이 이미 충족되어 실행할 필요가 없습니다.'
-        : '호스트 프로필 · TCP 445 · LanmanServer · SMB 서명/NTLM 호환 조건이 이미 충족되어 실행할 필요가 없습니다.';
+        ? tx(
+            '호스트 프로필 · TCP 445 · LanmanServer · SMB 서명/NTLM 및 Guest 허용 조건이 이미 충족되어 실행할 필요가 없습니다.',
+            'Host network profile, TCP 445, LanmanServer, SMB signing/NTLM, and Guest conditions are already satisfied.'
+          )
+        : tx(
+            '호스트 프로필 · TCP 445 · LanmanServer · SMB 서명/NTLM 호환 조건이 이미 충족되어 실행할 필요가 없습니다.',
+            'Host network profile, TCP 445, LanmanServer, and SMB signing/NTLM compatibility conditions are already satisfied.'
+          );
     }
-    return '클라이언트 SMB 서명 완화 · AllowInsecureGuestAuth=1 · 암호화 강제 해제 조건이 이미 충족되어 실행할 필요가 없습니다.';
+    return tx(
+      '클라이언트 SMB 서명 완화 · AllowInsecureGuestAuth=1 · 암호화 강제 해제 조건이 이미 충족되어 실행할 필요가 없습니다.',
+      'Client SMB signing relaxation, AllowInsecureGuestAuth=1, and unencrypted access conditions are already satisfied.'
+    );
   }
 
   if (step.executor === 'apply_legacy_bridge') {
-    return '구형 OS 브릿지 조건(비암호화 SMB 허용 · 서명 완화 · NTLMv2 고정)이 현재 OS 정책에 이미 충족되어 있습니다.';
+    return tx(
+      '구형 OS 브릿지 조건(비암호화 SMB 허용 · 서명 완화 · NTLMv2 고정)이 현재 OS 정책에 이미 충족되어 있습니다.',
+      'Legacy OS bridge conditions (unencrypted SMB allowed, relaxed signing, NTLMv2 pinned) are already satisfied.'
+    );
   }
 
   if (step.executor === 'enable_smbv1_client') {
-    return 'SMB 1.0/CIFS 클라이언트 기능(SMB1Protocol)이 이미 활성화(Enabled) 상태이므로 다시 설치할 필요가 없습니다.';
+    return tx(
+      'SMB 1.0/CIFS 클라이언트 기능(SMB1Protocol)이 이미 활성화(Enabled) 상태이므로 다시 설치할 필요가 없습니다.',
+      'SMB 1.0/CIFS Client feature (SMB1Protocol) is already Enabled; no reinstallation needed.'
+    );
   }
 
-  return '현재 OS 정책 상태가 이 단계의 요구 조건을 이미 충족했습니다.';
+  return tx(
+    '현재 OS 정책 상태가 이 단계의 요구 조건을 이미 충족했습니다.',
+    'Current OS policy already satisfies the requirements for this step.'
+  );
 }
 
 export function getSatisfiedPolicyModesFromStatus(policy: OsNetworkPolicyStatus | null): {
@@ -1190,15 +1506,21 @@ function buildAutoSyncCompletionMessage(
   source: TroubleshootStepResolvedSource,
   policy: OsNetworkPolicyStatus | null
 ): string {
-  const sourceLabel = formatStepResolvedSourceLabel(source) || 'OS 정책 동기화';
+  const sourceLabel = formatStepResolvedSourceLabel(source) || tx('OS 정책 동기화', 'OS Policy Sync');
   const needsRebootNote =
     step.requiresReboot ||
     stepRequiresRebootByDefinition(step.executor, step.patchMode) ||
     Boolean(policy?.pendingRebootFlag && (step.patchMode === 'kir_duplicate_sid_compat' || step.executor === 'enable_smbv1_client'));
   if (needsRebootNote) {
-    return `${sourceLabel} 확인 — 정책 값은 반영되었으나 커널 적용을 위해 재부팅이 필요합니다.`;
+    return tx(
+      `${sourceLabel} 확인 — 정책 값은 반영되었으나 커널 적용을 위해 재부팅이 필요합니다.`,
+      `${sourceLabel} verified — policy values are saved, but a reboot is required for kernel activation.`
+    );
   }
-  return `${sourceLabel}로 정책 요건이 이미 충족되어 자동 완료 처리되었습니다.`;
+  return tx(
+    `${sourceLabel}로 정책 요건이 이미 충족되어 자동 완료 처리되었습니다.`,
+    `Policy requirements already satisfied (${sourceLabel}); marked complete automatically.`
+  );
 }
 
 export function reconcileTroubleshootTicketsWithLocalState(input: {
@@ -1289,7 +1611,10 @@ export function reconcileTroubleshootTicketsWithLocalState(input: {
               resolvedSource: 'share_retry' as const,
               ...(requiresReboot ? { requiresReboot: true } : {}),
               lastAttemptAt: nowIso,
-              lastMessage: `'${ticket.shareName}' 공유폴더 개설 성공으로 자동 완료 처리되었습니다.`,
+              lastMessage: tx(
+                `'${ticket.shareName}' 공유폴더 개설 성공으로 자동 완료 처리되었습니다.`,
+                `Auto-completed after creating share '${ticket.shareName}'.`
+              ),
             };
           }
           return step;
@@ -1306,7 +1631,10 @@ export function reconcileTroubleshootTicketsWithLocalState(input: {
               resolvedSource: 'mount_retry' as const,
               ...(requiresReboot ? { requiresReboot: true } : {}),
               lastAttemptAt: nowIso,
-              lastMessage: `'${ticket.shareName}' 네트워크 드라이브 연결 성공으로 완료되었습니다.`,
+              lastMessage: tx(
+                `'${ticket.shareName}' 네트워크 드라이브 연결 성공으로 완료되었습니다.`,
+                `Completed after mounting network drive '${ticket.shareName}'.`
+              ),
             };
           }
           return step;
@@ -1339,7 +1667,10 @@ export function reconcileTroubleshootTicketsWithLocalState(input: {
             resolvedSource: undefined,
             ...(requiresReboot ? { requiresReboot: true } : {}),
             lastAttemptAt: nowIso,
-            lastMessage: 'OS 호환성 매트릭스 또는 보안 원복으로 정책이 해제되어 다시 적용이 필요합니다.',
+            lastMessage: tx(
+              'OS 호환성 매트릭스 또는 보안 원복으로 정책이 해제되어 다시 적용이 필요합니다.',
+              'Policy was reverted by OS Matrix or Security Rollback and must be reapplied.'
+            ),
           };
         }
 
@@ -1357,7 +1688,10 @@ export function reconcileTroubleshootTicketsWithLocalState(input: {
                 ...s,
                 status: 'skipped' as const,
                 lastAttemptAt: nowIso,
-                lastMessage: '클라이언트 연결 성공으로 남은 단계 건너뜀',
+                lastMessage: tx(
+                  '클라이언트 연결 성공으로 남은 단계 건너뜀',
+                  'Skipped remaining step after client drive mounted'
+                ),
               }
             : s
         );
@@ -1371,7 +1705,10 @@ export function reconcileTroubleshootTicketsWithLocalState(input: {
               ...s,
               status: 'skipped' as const,
               lastAttemptAt: nowIso,
-              lastMessage: '호스트 공유폴더 개설 성공으로 남은 단계 건너뜀',
+              lastMessage: tx(
+                '호스트 공유폴더 개설 성공으로 남은 단계 건너뜀',
+                'Skipped remaining step after host share creation succeeded'
+              ),
             }
           : s
       );
@@ -1381,7 +1718,10 @@ export function reconcileTroubleshootTicketsWithLocalState(input: {
               ...s,
               status: 'skipped' as const,
               lastAttemptAt: nowIso,
-              lastMessage: '호스트 공유폴더 정상 개설 확인됨',
+              lastMessage: tx(
+                '호스트 공유폴더 정상 개설 확인됨',
+                'Host shared folder creation verified'
+              ),
             }
           : s
       );

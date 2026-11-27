@@ -4,73 +4,165 @@ import {
   LegacyScriptOptions,
   LegacyTargetOs,
 } from '@/types/share';
+import { tx } from '@/i18n/localeState';
 
 function toCrlf(text: string): string {
   return text.replace(/\r?\n/g, '\r\n');
 }
 
-export const LEGACY_COMPARISON_MATRIX: LegacyComparisonRow[] = [
-  {
-    id: 'leg_smb_dialect',
-    category: 'protocol',
-    categoryLabel: 'SMB 세대',
-    topic: '기본 SMB 프로토콜 버전',
-    win7Behavior: 'SMB 2.1 기본 지원 (SMB 3.x 미지원 · 2.0/2.1 또는 구형 SMB1)',
-    win8Behavior: 'SMB 3.0 / 3.02 기본 지원 (Windows 8.1까지 비인증 게스트 기본 허용)',
-    win10_11Behavior: 'SMB 3.1.1 기본 (Win 10 1709+/Win 11 24H2부터 게스트·서명 강화)',
-    resolutionSummary: 'Win 7 SP1 이상은 SMB 1.0 없이도 SMB 2.1로 Win 10·11과 연결됩니다. 단, Win 10·11 서버에서 SMB2 유지 및 암호화 강제 해제가 필수입니다.',
-  },
-  {
-    id: 'leg_smb_encryption',
-    category: 'encryption',
-    categoryLabel: 'SMB 암호화',
-    topic: 'SMB 전송 암호화 강제 (Error 58 / 0x80070035)',
-    win7Behavior: 'SMB 전송 암호화(AES-CCM/GCM) 자체 미지원 → 암호화 강제 서버 거부됨',
-    win8Behavior: 'SMB 3.0 AES-CCM만 지원 (Win 11의 AES-256-GCM 우선 협상 시 주의)',
-    win10_11Behavior: 'EncryptData 또는 RejectUnencryptedAccess=$true 시 Win 7 연결 즉시 차단',
-    resolutionSummary: 'Win 10·11 호스트에서 [구형 OS 브릿지 패치]로 EncryptData=$false 및 RejectUnencryptedAccess=$false 적용 시 즉시 해결됩니다.',
-  },
-  {
-    id: 'leg_smb_signing',
-    category: 'protocol',
-    categoryLabel: '보안 서명',
-    topic: 'SMB 패킷 서명 강제 (Win 11 24H2+ 차단)',
-    win7Behavior: '클라이언트/서버 기본 서명 선택적 (요구 안 함)',
-    win8Behavior: '클라이언트/서버 기본 서명 선택적',
-    win10_11Behavior: 'Win 11 24H2~26H2 기본 RequireSecuritySignature=$true (외부 비서명 차단)',
-    resolutionSummary: 'Win 10·11에서 서명 강제를 완화하고, Win 7·8 쪽도 RequireSecuritySignature=0으로 일치시킵니다.',
-  },
-  {
-    id: 'leg_ntlm_auth',
-    category: 'auth',
-    categoryLabel: '인증 · NTLM',
-    topic: 'NTLMv1 vs NTLMv2 인증 협상 & UAC 원격 토큰',
-    win7Behavior: '기본 LmCompatibilityLevel=3 (환경에 따라 NTLMv1 응답 또는 UAC 오류 5 발생)',
-    win8Behavior: 'NTLMv2 기본 사용, 워크그룹 로컬 관리자 공유 시 UAC 토큰 필터링 적용',
-    win10_11Behavior: 'NTLMv1 사실상 거부 및 24H2+ 게스트 차단, MSA/PIN 전용 계정 확산',
-    resolutionSummary: '양단 LmCompatibilityLevel=3(NTLMv2 전용) 고정 + 필요 시 LocalAccountTokenFilterPolicy=1 및 전용 공유 계정(계정 모드)을 사용합니다.',
-  },
-  {
-    id: 'leg_discovery',
-    category: 'discovery',
-    categoryLabel: '탐색 · 검색',
-    topic: '네트워크 폴더 목록 탐색 (홈 그룹 & Computer Browser 종료)',
-    win7Behavior: '홈 그룹(HomeGroup) + NetBIOS/Computer Browser(SMBv1 기반) 의존',
-    win8Behavior: '홈 그룹 + NetBIOS 탐색 혼용',
-    win10_11Behavior: 'Win 10 1803 이후 홈 그룹 완전 제거, SMBv1 탐색 비활성 (WS-Discovery 전환)',
-    resolutionSummary: 'Win 10·11에서 FDResPub/fdPHost 서비스를 켜고, 탐색기 목록 대신 AhBiShare 연결 코드 또는 \\\\IP\\공유폴더명으로 직접 마운트합니다.',
-  },
-  {
-    id: 'leg_error_codes',
-    category: 'errors',
-    categoryLabel: '오류 코드',
-    topic: 'Win 7·8 공유 시 빈번한 오류 (0x80070035 · 58 · 1272 · 5)',
-    win7Behavior: '오류 58(명령 오류/암호화), 오류 53(방화벽 445), 오류 1326(계정 불일치)',
-    win8Behavior: '오류 5(UAC 원격 토큰), 오류 1219(다중 세션 충돌), 오류 0x80070035',
-    win10_11Behavior: '오류 1272(게스트 로그온 차단), 0x80070035(서명·암호화 강제)',
-    resolutionSummary: '먼저 SMB 2.1/3.0 브릿지 + USB 스크립트를 적용하고, 그래도 2008/XP급 구형 장비만 남을 때 2단계 확인 후 SMB 1.0을 한시 활성화합니다.',
-  },
-];
+export function getLegacyComparisonMatrix(): LegacyComparisonRow[] {
+  return [
+    {
+      id: 'leg_smb_dialect',
+      category: 'protocol',
+      categoryLabel: tx('SMB 세대', 'SMB Dialect'),
+      topic: tx('기본 SMB 프로토콜 버전', 'Default SMB Protocol Version'),
+      win7Behavior: tx(
+        'SMB 2.1 기본 지원 (SMB 3.x 미지원 · 2.0/2.1 또는 구형 SMB1)',
+        'SMB 2.1 supported (no SMB 3.x; uses SMB 2.0/2.1 or legacy SMB1)'
+      ),
+      win8Behavior: tx(
+        'SMB 3.0 / 3.02 기본 지원 (Windows 8.1까지 비인증 게스트 기본 허용)',
+        'SMB 3.0 / 3.02 supported (unauthenticated guest allowed by default through Win 8.1)'
+      ),
+      win10_11Behavior: tx(
+        'SMB 3.1.1 기본 (Win 10 1709+/Win 11 24H2부터 게스트·서명 강화)',
+        'SMB 3.1.1 default (guest & signing hardened since Win 10 1709+ / Win 11 24H2)'
+      ),
+      resolutionSummary: tx(
+        'Win 7 SP1 이상은 SMB 1.0 없이도 SMB 2.1로 Win 10·11과 연결됩니다. 단, Win 10·11 서버에서 SMB2 유지 및 암호화 강제 해제가 필수입니다.',
+        'Win 7 SP1+ connects to Win 10/11 over SMB 2.1 without SMB 1.0, provided SMB2 stays enabled and mandatory encryption is disabled on Win 10/11.'
+      ),
+    },
+    {
+      id: 'leg_smb_encryption',
+      category: 'encryption',
+      categoryLabel: tx('SMB 암호화', 'SMB Encryption'),
+      topic: tx(
+        'SMB 전송 암호화 강제 (Error 58 / 0x80070035)',
+        'Enforced SMB Encryption (Error 58 / 0x80070035)'
+      ),
+      win7Behavior: tx(
+        'SMB 전송 암호화(AES-CCM/GCM) 자체 미지원 → 암호화 강제 서버 거부됨',
+        'No SMB transport encryption (AES-CCM/GCM) → rejected by encryption-enforcing servers'
+      ),
+      win8Behavior: tx(
+        'SMB 3.0 AES-CCM만 지원 (Win 11의 AES-256-GCM 우선 협상 시 주의)',
+        'Supports SMB 3.0 AES-CCM only (watch out for Win 11 AES-256-GCM negotiation)'
+      ),
+      win10_11Behavior: tx(
+        'EncryptData 또는 RejectUnencryptedAccess=$true 시 Win 7 연결 즉시 차단',
+        'Blocks Win 7 immediately when EncryptData or RejectUnencryptedAccess=$true'
+      ),
+      resolutionSummary: tx(
+        'Win 10·11 호스트에서 [구형 OS 브릿지 패치]로 EncryptData=$false 및 RejectUnencryptedAccess=$false 적용 시 즉시 해결됩니다.',
+        'Resolved by applying the [Legacy OS Bridge Patch] on Win 10/11 to set EncryptData=$false and RejectUnencryptedAccess=$false.'
+      ),
+    },
+    {
+      id: 'leg_smb_signing',
+      category: 'protocol',
+      categoryLabel: tx('보안 서명', 'SMB Signing'),
+      topic: tx(
+        'SMB 패킷 서명 강제 (Win 11 24H2+ 차단)',
+        'Mandatory SMB Packet Signing (Win 11 24H2+ Block)'
+      ),
+      win7Behavior: tx(
+        '클라이언트/서버 기본 서명 선택적 (요구 안 함)',
+        'Client/server signing optional by default (not required)'
+      ),
+      win8Behavior: tx(
+        '클라이언트/서버 기본 서명 선택적',
+        'Client/server signing optional by default'
+      ),
+      win10_11Behavior: tx(
+        'Win 11 24H2~26H2 기본 RequireSecuritySignature=$true (외부 비서명 차단)',
+        'Win 11 24H2–26H2 defaults to RequireSecuritySignature=$true (blocks unsigned peers)'
+      ),
+      resolutionSummary: tx(
+        'Win 10·11에서 서명 강제를 완화하고, Win 7·8 쪽도 RequireSecuritySignature=0으로 일치시킵니다.',
+        'Relax mandatory signing on Win 10/11 and align Win 7/8 with RequireSecuritySignature=0.'
+      ),
+    },
+    {
+      id: 'leg_ntlm_auth',
+      category: 'auth',
+      categoryLabel: tx('인증 · NTLM', 'Auth & NTLM'),
+      topic: tx(
+        'NTLMv1 vs NTLMv2 인증 협상 & UAC 원격 토큰',
+        'NTLMv1 vs NTLMv2 Negotiation & UAC Remote Token'
+      ),
+      win7Behavior: tx(
+        '기본 LmCompatibilityLevel=3 (환경에 따라 NTLMv1 응답 또는 UAC 오류 5 발생)',
+        'Default LmCompatibilityLevel=3 (some environments hit NTLMv1 or UAC Error 5)'
+      ),
+      win8Behavior: tx(
+        'NTLMv2 기본 사용, 워크그룹 로컬 관리자 공유 시 UAC 토큰 필터링 적용',
+        'NTLMv2 default; workgroup local admin shares are subject to UAC token filtering'
+      ),
+      win10_11Behavior: tx(
+        'NTLMv1 사실상 거부 및 24H2+ 게스트 차단, MSA/PIN 전용 계정 확산',
+        'NTLMv1 practically rejected, 24H2+ blocks guest logons, MSA/PIN accounts common'
+      ),
+      resolutionSummary: tx(
+        '양단 LmCompatibilityLevel=3(NTLMv2 전용) 고정 + 필요 시 LocalAccountTokenFilterPolicy=1 및 전용 공유 계정(계정 모드)을 사용합니다.',
+        'Pin LmCompatibilityLevel=3 (NTLMv2 only) on both ends + use LocalAccountTokenFilterPolicy=1 or dedicated Account Auth credentials.'
+      ),
+    },
+    {
+      id: 'leg_discovery',
+      category: 'discovery',
+      categoryLabel: tx('탐색 · 검색', 'Network Discovery'),
+      topic: tx(
+        '네트워크 폴더 목록 탐색 (홈 그룹 & Computer Browser 종료)',
+        'Network Folder Browsing (HomeGroup & Computer Browser Retired)'
+      ),
+      win7Behavior: tx(
+        '홈 그룹(HomeGroup) + NetBIOS/Computer Browser(SMBv1 기반) 의존',
+        'Relies on HomeGroup + NetBIOS/Computer Browser (SMBv1-based)'
+      ),
+      win8Behavior: tx(
+        '홈 그룹 + NetBIOS 탐색 혼용',
+        'Mix of HomeGroup + NetBIOS discovery'
+      ),
+      win10_11Behavior: tx(
+        'Win 10 1803 이후 홈 그룹 완전 제거, SMBv1 탐색 비활성 (WS-Discovery 전환)',
+        'HomeGroup removed since Win 10 1803; SMBv1 browsing disabled (switched to WS-Discovery)'
+      ),
+      resolutionSummary: tx(
+        'Win 10·11에서 FDResPub/fdPHost 서비스를 켜고, 탐색기 목록 대신 AhBiShare 연결 코드 또는 \\\\IP\\공유폴더명으로 직접 마운트합니다.',
+        'Enable FDResPub/fdPHost on Win 10/11 and mount directly using an AhBiShare connection code or \\\\IP\\ShareName.'
+      ),
+    },
+    {
+      id: 'leg_error_codes',
+      category: 'errors',
+      categoryLabel: tx('오류 코드', 'Error Codes'),
+      topic: tx(
+        'Win 7·8 공유 시 빈번한 오류 (0x80070035 · 58 · 1272 · 5)',
+        'Frequent Win 7/8 Sharing Errors (0x80070035 · 58 · 1272 · 5)'
+      ),
+      win7Behavior: tx(
+        '오류 58(명령 오류/암호화), 오류 53(방화벽 445), 오류 1326(계정 불일치)',
+        'Error 58 (incorrect command/encryption), Error 53 (firewall 445), Error 1326 (bad credentials)'
+      ),
+      win8Behavior: tx(
+        '오류 5(UAC 원격 토큰), 오류 1219(다중 세션 충돌), 오류 0x80070035',
+        'Error 5 (UAC remote token), Error 1219 (multiple session conflict), 0x80070035'
+      ),
+      win10_11Behavior: tx(
+        '오류 1272(게스트 로그온 차단), 0x80070035(서명·암호화 강제)',
+        'Error 1272 (guest logon blocked), 0x80070035 (enforced signing/encryption)'
+      ),
+      resolutionSummary: tx(
+        '먼저 SMB 2.1/3.0 브릿지 + USB 스크립트를 적용하고, 그래도 2008/XP급 구형 장비만 남을 때 2단계 확인 후 SMB 1.0을 한시 활성화합니다.',
+        'Apply SMB 2.1/3.0 bridge + USB scripts first; only temporarily enable SMB 1.0 after 2-step confirmation for Server 2008/XP-era equipment.'
+      ),
+    },
+  ];
+}
+
+export const LEGACY_COMPARISON_MATRIX: LegacyComparisonRow[] = getLegacyComparisonMatrix();
 
 function osDisplayLabel(targetOs: LegacyTargetOs): string {
   return targetOs === 'win7' ? 'Windows 7 SP1 (NT 6.1)' : 'Windows 8 / 8.1 (NT 6.2 / 6.3)';
@@ -396,28 +488,28 @@ export function buildLegacyScriptBundle(options: LegacyScriptOptions): LegacyScr
     files: [
       {
         name: 'AhBiShare_Legacy_Apply.bat',
-        label: '적용 스크립트 (.bat)',
+        label: tx('적용 스크립트 (.bat)', 'Apply Script (.bat)'),
         kind: 'apply',
         format: 'bat',
         content: toCrlf(applyBatLines.join('\n')),
       },
       {
         name: 'AhBiShare_Legacy_Apply.reg',
-        label: '적용 레지스트리 (.reg)',
+        label: tx('적용 레지스트리 (.reg)', 'Apply Registry (.reg)'),
         kind: 'apply',
         format: 'reg',
         content: toCrlf(regApplyLines.join('\n')),
       },
       {
         name: 'AhBiShare_Legacy_Rollback.bat',
-        label: '원복 스크립트 (.bat)',
+        label: tx('원복 스크립트 (.bat)', 'Rollback Script (.bat)'),
         kind: 'rollback',
         format: 'bat',
         content: toCrlf(rollbackBatLines.join('\n')),
       },
       {
         name: 'AhBiShare_Legacy_Rollback.reg',
-        label: '원복 레지스트리 (.reg)',
+        label: tx('원복 레지스트리 (.reg)', 'Rollback Registry (.reg)'),
         kind: 'rollback',
         format: 'reg',
         content: toCrlf(regRollbackLines.join('\n')),
