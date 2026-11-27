@@ -1,9 +1,25 @@
-import React from 'react';
-import { MapPin, Save, FolderCog, Play, CheckCircle2, AlertCircle, Loader2, Upload, X, Pencil } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
 import {
+  MapPin,
+  Save,
+  FolderCog,
+  Play,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  Upload,
+  X,
+  Pencil,
+  Radio,
+  ShieldCheck,
+  Wifi,
+} from 'lucide-react';
+import {
+  LocalNetworkInfo,
   LocationBatchApplyResult,
   LocationProfileFile,
   LocationProfileSummary,
+  NetworkChangeEvent,
 } from '@/types/share';
 import { useI18n } from '@/i18n/I18nContext';
 
@@ -13,6 +29,12 @@ interface LocationProfileBarProps {
   isBatchApplying: boolean;
   batchProgressText: string | null;
   lastBatchResult: LocationBatchApplyResult | null;
+  currentNetwork?: LocalNetworkInfo;
+  networkChange?: NetworkChangeEvent | null;
+  autoWatchEnabled?: boolean;
+  onToggleAutoWatch?: () => void;
+  onSwitchAndPreflightMatchedProfile?: (profileId: string) => void;
+  onDismissNetworkChange?: () => void;
   onSelectProfile: (profileId: string) => void;
   onOpenSaveModal: () => void;
   onOpenManagerModal: () => void;
@@ -36,6 +58,12 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
   isBatchApplying,
   batchProgressText,
   lastBatchResult,
+  currentNetwork,
+  networkChange = null,
+  autoWatchEnabled = true,
+  onToggleAutoWatch,
+  onSwitchAndPreflightMatchedProfile,
+  onDismissNetworkChange,
   onSelectProfile,
   onOpenSaveModal,
   onOpenManagerModal,
@@ -48,6 +76,21 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
   const activeShareCount = activeProfile?.savedShares.length || 0;
   const activeClientCount = activeProfile?.clientTargets.length || 0;
   const hasApplicableItems = Boolean(activeProfile && (activeShareCount > 0 || activeClientCount > 0));
+
+  const matchedProfiles = networkChange?.matchedProfiles || [];
+  const [selectedMatchedProfileId, setSelectedMatchedProfileId] = useState<string>(
+    () => matchedProfiles[0]?.profileId || ''
+  );
+
+  useEffect(() => {
+    setSelectedMatchedProfileId(matchedProfiles[0]?.profileId || '');
+  }, [networkChange]);
+
+  const effectiveMatchedId =
+    matchedProfiles.find((p) => p.profileId === selectedMatchedProfileId)?.profileId ||
+    matchedProfiles[0]?.profileId ||
+    '';
+  const effectiveMatchedProfile = matchedProfiles.find((p) => p.profileId === effectiveMatchedId) || null;
 
   return (
     <section
@@ -104,16 +147,42 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
               </span>
             ) : (
               <span>
-                {tx(
-                  '사무실·집·현장별로 공유·연결 설정을 개별 .json 파일로 저장하고 선택 시 자동 채웁니다',
-                  'Save share & drive settings per office, home, or site as .json files and auto-fill on selection'
-                )}
+                {currentNetwork?.subnetPrefix && currentNetwork.subnetPrefix !== '127.0.0'
+                  ? tx(
+                      `현재 대역 ${currentNetwork.subnetPrefix}.x · 사무실·집·현장별 .json 프로필 자동 매칭`,
+                      `Current subnet ${currentNetwork.subnetPrefix}.x · Auto-matches .json site profiles`
+                    )
+                  : tx(
+                      '사무실·집·현장별로 공유·연결 설정을 개별 .json 파일로 저장하고 선택 시 자동 채웁니다',
+                      'Save share & drive settings per office, home, or site as .json files and auto-fill on selection'
+                    )}
               </span>
             )}
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onToggleAutoWatch && (
+            <button
+              id="btn-toggle-network-watch"
+              type="button"
+              onClick={onToggleAutoWatch}
+              aria-pressed={autoWatchEnabled}
+              title={tx(
+                'LAN/Wi-Fi 네트워크 대역 변경 시 USB 사용장소 프로필을 자동 감지하고 끊긴 드라이브 상태를 점검합니다',
+                'Automatically detect USB location profiles and check disconnected drives on LAN/Wi-Fi subnet changes'
+              )}
+              className={`px-3 py-2 text-xs font-semibold rounded-lg border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                autoWatchEnabled
+                  ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 border-emerald-500/35'
+                  : 'text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border-slate-300 dark:border-slate-700'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5" />
+              {autoWatchEnabled ? tx('대역 자동감지', 'Auto Watch') : tx('감지 일시정지', 'Watch Paused')}
+            </button>
+          )}
+
           <button
             id="btn-open-save-location"
             type="button"
@@ -198,6 +267,101 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
         </div>
       </div>
 
+      {networkChange && !isBatchApplying && (
+        <div
+          id="network-change-banner"
+          role="status"
+          className="rounded-lg border border-indigo-500/35 bg-indigo-500/5 dark:bg-indigo-500/10 px-4 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5 min-w-0">
+            <Wifi className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+            <div className="min-w-0 space-y-1">
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <span>
+                  {networkChange.kind === 'subnet_changed'
+                    ? tx('네트워크 대역 변경 감지', 'Network Subnet Change Detected')
+                    : tx('현재 현장 대역과 일치하는 USB 프로필 발견', 'Matching USB Location Profile Detected')}
+                </span>
+                <span className="tabular-data text-indigo-700 dark:text-indigo-300">
+                  {networkChange.kind === 'subnet_changed' && networkChange.fromSubnet
+                    ? `${networkChange.fromSubnet}.x → ${networkChange.toSubnet}.x`
+                    : `${networkChange.toSubnet}.x`}
+                </span>
+                <span className="tabular-data font-normal text-slate-500 dark:text-slate-400">
+                  · {networkChange.toIp} ({networkChange.adapterName})
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                {effectiveMatchedProfile
+                  ? tx(
+                      `USB 저장 프로필 '${effectiveMatchedProfile.locationName}' (공유 ${effectiveMatchedProfile.shareCount}건 · 드라이브 ${effectiveMatchedProfile.clientTargetCount}건)과 일치합니다. 전환 후 사전 검증으로 연결 가능 여부를 바로 확인하세요.`,
+                      `Matches USB profile '${effectiveMatchedProfile.locationName}' (${effectiveMatchedProfile.shareCount} share(s) · ${effectiveMatchedProfile.clientTargetCount} drive(s)). Switch and run pre-flight verification now.`
+                    )
+                  : tx(
+                      `현재 대역(${networkChange.toSubnet}.x)에 등록된 USB 사용장소 프로필이 없습니다. 현장 공유·드라이브 구성을 새 프로필로 저장할 수 있습니다.`,
+                      `No USB location profile saved for subnet ${networkChange.toSubnet}.x yet. Save this site's setup as a new profile for future visits.`
+                    )}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0 justify-end">
+            {matchedProfiles.length > 1 && (
+              <select
+                id="select-network-matched-profile"
+                aria-label={tx('일치하는 현장 프로필 선택', 'Select matched site profile')}
+                value={effectiveMatchedId}
+                onChange={(e) => setSelectedMatchedProfileId(e.target.value)}
+                className="px-2.5 py-1.5 text-xs font-medium bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {matchedProfiles.map((mp) => (
+                  <option key={mp.profileId} value={mp.profileId}>
+                    {tx(
+                      `${mp.locationName} (${mp.shareCount}/${mp.clientTargetCount})`,
+                      `${mp.locationName} (${mp.shareCount}/${mp.clientTargetCount})`
+                    )}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {effectiveMatchedProfile && onSwitchAndPreflightMatchedProfile ? (
+              <button
+                id="btn-network-match-switch"
+                type="button"
+                onClick={() => onSwitchAndPreflightMatchedProfile(effectiveMatchedProfile.profileId)}
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                {tx('전환 후 사전 검증', 'Switch & Pre-flight Check')}
+              </button>
+            ) : (
+              <button
+                id="btn-network-save-site"
+                type="button"
+                onClick={onOpenSaveModal}
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {tx('새 현장 프로필로 저장', 'Save as New Site')}
+              </button>
+            )}
+
+            {onDismissNetworkChange && (
+              <button
+                id="btn-dismiss-network-change"
+                type="button"
+                onClick={onDismissNetworkChange}
+                aria-label={tx('네트워크 변경 알림 닫기', 'Dismiss network change notice')}
+                className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {isBatchApplying && batchProgressText && (
         <div className="pt-2 border-t border-slate-200 dark:border-slate-800 text-xs text-indigo-600 dark:text-indigo-400 flex items-center gap-2">
           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
@@ -247,3 +411,4 @@ export const LocationProfileBar: React.FC<LocationProfileBarProps> = ({
     </section>
   );
 };
+

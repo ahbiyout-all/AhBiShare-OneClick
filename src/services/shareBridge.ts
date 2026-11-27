@@ -54,11 +54,14 @@ import {
   RestoreBackupResult,
   AppLocale,
   AppLocaleInfo,
+  DriveRecoveryReadiness,
+  OfflineDriveRecoveryPlan,
 } from '@/types/share';
 import { formatLocaleTime, tx } from '@/i18n/localeState';
 import {
   decodeConnectionCode,
   encodeConnectionCode,
+  isValidIpv4Address,
   resolveClientAccountCredentials,
   validateFolderPath,
   validateShareName,
@@ -6459,6 +6462,202 @@ Write-Output 'SMB_SESSION_CLEANED'
     });
     inFlightSmartProbeMap.set(cacheKey, probePromise);
     return probePromise;
+  },
+
+  findMatchingLocationProfilesForSubnet(
+    profiles: LocationProfileSummary[],
+    subnetPrefix: string
+  ): LocationProfileSummary[] {
+    const clean = String(subnetPrefix || '').trim();
+    if (!clean || clean === '127.0.0' || clean === '0.0.0') return [];
+    return (profiles || [])
+      .filter((p) => String(p.networkHint?.subnetPrefix || '').trim() === clean)
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  },
+
+  buildOfflineDriveRecoveryPlans(
+    mounts: MountedDrive[],
+    input: {
+      netInfo: LocalNetworkInfo;
+      activeLocationProfile?: LocationProfileFile | null;
+      portableShares?: PortableHostShareEntry[];
+      activeShares?: ActiveShare[];
+      peers?: DiscoveredPeer[];
+    }
+  ): OfflineDriveRecoveryPlan[] {
+    const offlineMounts = (mounts || []).filter((m) => m.status === 'disconnected');
+    if (offlineMounts.length === 0) return [];
+
+    const liveSubnet = String(input.netInfo?.subnetPrefix || '').trim();
+    const hasValidLiveSubnet = Boolean(liveSubnet && liveSubnet !== '127.0.0' && liveSubnet !== '0.0.0');
+
+    return offlineMounts.map((m) => {
+      const cleanUnc = String(m.uncPath || '').replace(/^\\\\+/, '');
+      const uncParts = cleanUnc.split('\\').filter(Boolean);
+      const targetHost = String(m.targetHost || uncParts[0] || '').trim();
+      const shareName = String(m.shareName || uncParts[1] || '').trim();
+      const driveLetter = String(m.driveLetter || '').trim().replace(/:?$/, ':').toUpperCase();
+
+      const hostCandidates = collectHostCandidatesForSmartAuth(targetHost, input.peers);
+      const hostPrefix = isValidIpv4Address(targetHost) ? targetHost.split('.').slice(0, 3).join('.') : '';
+      const isSubnetMismatch = Boolean(hasValidLiveSubnet && hostPrefix && hostPrefix !== liveSubnet);
+
+      const resolvedCreds = resolveClientAccountCredentials({
+        targetHost,
+        hostCandidates,
+        shareName,
+        requireAccountOnly: false,
+        savedLocationTargets: input.activeLocationProfile?.clientTargets,
+        locationSavedShares: input.activeLocationProfile?.savedShares,
+        locationHostPreset: input.activeLocationProfile?.hostPreset,
+        portableShares: input.portableShares || latestPortableDoc.shares,
+        activeShares: input.activeShares,
+      });
+
+      let cachedPass = '';
+      for (const candidate of hostCandidates) {
+        const p = getCachedPassword(candidate, shareName);
+        if (p) {
+          cachedPass = p;
+          break;
+        }
+      }
+
+      const effectiveAuth: AuthMode =
+        m.authMode === 'account' || resolvedCreds?.password || cachedPass ? 'account' : 'guest';
+      const effectiveUser =
+        (m.username || resolvedCreds?.username || (effectiveAuth === 'account' ? 'AhBiShare' : '')).trim();
+      const effectivePass = resolvedCreds?.password || cachedPass || '';
+      const hasStoredPassword = effectiveAuth === 'guest' ? true : Boolean(effectivePass);
+      const credentialSource = resolvedCreds?.source || (cachedPass ? 'runtime_cache' : undefined);
+
+      let readiness: DriveRecoveryReadiness;
+      let reasonLabel: string;
+      if (isSubnetMismatch) {
+        readiness = 'subnet_mismatch';
+        reasonLabel = tx(
+          `이전 네트워크(${hostPrefix}.x) 대상 · 현재 대역(${liveSubnet}.x)과 다름`,
+          `Belongs to another subnet (${hostPrefix}.x) · Current is ${liveSubnet}.x`
+        );
+      } else if (effectiveAuth === 'account' && !hasStoredPassword) {
+        readiness = 'needs_password';
+        reasonLabel = tx(
+          '보안 계정 암호가 USB/캐시에 없어 재입력이 필요합니다',
+          'Account password not cached on USB; re-entry required'
+        );
+      } else {
+        readiness = 'ready';
+        reasonLabel =
+          effectiveAuth === 'guest'
+            ? tx('즉시 재연결 가능 (무비밀번호)', 'Ready to reconnect (passwordless)')
+            : tx('즉시 재연결 가능 (저장된 자격증명)', 'Ready to reconnect (stored credentials)');
+      }
+
+      return {
+        driveLetter,
+        uncPath: m.uncPath || `\\\\${targetHost}\\${shareName}`,
+        targetHost,
+        shareName,
+        readiness,
+        authMode: effectiveAuth,
+        username: effectiveUser,
+        hasStoredPassword,
+        ...(credentialSource ? { credentialSource } : {}),
+        ...(input.activeLocationProfile?.locationName
+          ? { matchedLocationName: input.activeLocationProfile.locationName }
+          : {}),
+        reasonLabel,
+      };
+    });
+  },
+
+  async recoverDisconnectedDrive(
+    drive: MountedDrive,
+    input: {
+      netInfo: LocalNetworkInfo;
+      activeLocationProfile?: LocationProfileFile | null;
+      portableShares?: PortableHostShareEntry[];
+      activeShares?: ActiveShare[];
+      peers?: DiscoveredPeer[];
+    },
+    onProgress: (steps: PipelineStep[]) => void,
+    osEra?: WindowsNetworkEra
+  ): Promise<{ success: boolean; mount?: MountedDrive; steps: PipelineStep[]; error?: string }> {
+    const cleanUnc = String(drive.uncPath || '').replace(/^\\\\+/, '');
+    const uncParts = cleanUnc.split('\\').filter(Boolean);
+    const targetHost = String(drive.targetHost || uncParts[0] || '').trim();
+    const shareName = String(drive.shareName || uncParts[1] || '').trim();
+    const driveLetter = String(drive.driveLetter || '').trim().replace(/:?$/, ':').toUpperCase();
+
+    if (!targetHost || !shareName || !driveLetter) {
+      return {
+        success: false,
+        steps: [],
+        error: tx('드라이브 복구 대상 UNC 경로가 올바르지 않습니다.', 'Invalid target UNC path for drive recovery.'),
+      };
+    }
+
+    const hostCandidates = collectHostCandidatesForSmartAuth(targetHost, input.peers);
+    const resolvedCreds = resolveClientAccountCredentials({
+      targetHost,
+      hostCandidates,
+      shareName,
+      requireAccountOnly: false,
+      savedLocationTargets: input.activeLocationProfile?.clientTargets,
+      locationSavedShares: input.activeLocationProfile?.savedShares,
+      locationHostPreset: input.activeLocationProfile?.hostPreset,
+      portableShares: input.portableShares || latestPortableDoc.shares,
+      activeShares: input.activeShares,
+    });
+
+    let recoveredPass = resolvedCreds?.password || '';
+    if (!recoveredPass) {
+      for (const candidate of hostCandidates) {
+        const c = getCachedPassword(candidate, shareName);
+        if (c) {
+          recoveredPass = c;
+          break;
+        }
+      }
+    }
+
+    const authMode: AuthMode =
+      drive.authMode === 'account' || recoveredPass ? 'account' : 'guest';
+    const username =
+      authMode === 'account'
+        ? (drive.username || resolvedCreds?.username || 'AhBiShare').trim()
+        : '';
+
+    if (authMode === 'account' && !recoveredPass) {
+      return {
+        success: false,
+        steps: [],
+        error: tx(
+          `${driveLetter} (${targetHost}\\${shareName}) 드라이브의 저장된 비밀번호를 찾을 수 없습니다.`,
+          `No stored password found for ${driveLetter} (${targetHost}\\${shareName}).`
+        ),
+      };
+    }
+
+    const res = await this.runClientOneClick(
+      {
+        targetHost,
+        shareName,
+        driveLetter,
+        authMode,
+        username,
+        password: recoveredPass,
+        persistent: true,
+      },
+      onProgress,
+      osEra
+    );
+
+    const failedStep = res.steps.find((s) => s.status === 'error');
+    return {
+      ...res,
+      ...(failedStep?.error ? { error: failedStep.error } : {}),
+    };
   },
 };
 

@@ -20,6 +20,7 @@ import {
   Zap,
   Copy,
   ChevronDown,
+  ChevronUp,
   Trash2,
   Calendar,
   Clock,
@@ -203,10 +204,54 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   const [pendingIncludeGuestUnlock, setPendingIncludeGuestUnlock] = useState(true);
   const [isSavingPendingTask, setIsSavingPendingTask] = useState(false);
   const [confirmingDeletePendingKey, setConfirmingDeletePendingKey] = useState<string | null>(null);
-  const [isExpertExpanded, setIsExpertExpanded] = useState(true);
+  const [expandedMenus, setExpandedMenus] = useState<{
+    patchModes: boolean;
+    securityAudit: boolean;
+    osPatchFeature: boolean;
+    crossPcDiff: boolean;
+    expertComparison: boolean;
+    eraTimeline: boolean;
+    evolutionMatrix: boolean;
+  }>({
+    patchModes: true,
+    securityAudit: false,
+    osPatchFeature: false,
+    crossPcDiff: false,
+    expertComparison: false,
+    eraTimeline: false,
+    evolutionMatrix: false,
+  });
   const [isFetchingRawRegistry, setIsFetchingRawRegistry] = useState(false);
   const [expertFetchResult, setExpertFetchResult] = useState<ExpertRegistryFetchResult | null>(null);
   const initializedPendingSourceRef = useRef<string | null>(null);
+
+  const toggleMatrixMenu = (key: keyof typeof expandedMenus) => {
+    setExpandedMenus((prev) => {
+      const nextVal = !prev[key];
+      if (key === 'expertComparison' && nextVal && !expertFetchResult) {
+        void handleFetchRawRegistry();
+      }
+      return { ...prev, [key]: nextVal };
+    });
+  };
+
+  const setAllMatrixMenus = (open: boolean) => {
+    setExpandedMenus({
+      patchModes: open,
+      securityAudit: open,
+      osPatchFeature: open,
+      crossPcDiff: open,
+      expertComparison: open,
+      eraTimeline: open,
+      evolutionMatrix: open,
+    });
+    if (open && !expertFetchResult) {
+      void handleFetchRawRegistry();
+    }
+  };
+
+  const expandedMenuCount = Object.values(expandedMenus).filter(Boolean).length;
+  const totalMenuCount = 7;
 
   const isBusy = isInspecting || isRefreshing || isApplyingMode !== null || isAutoAligning || isApplyingPendingHostTask;
   const currentEra: WindowsNetworkEra = policyStatus?.osEra || netInfo.osEra || 'win11_24h2';
@@ -448,10 +493,13 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
   };
 
   const handleScrollToDiff = () => {
-    const el = document.getElementById('cross-pc-policy-diff');
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    setExpandedMenus((prev) => (prev.crossPcDiff ? prev : { ...prev, crossPcDiff: true }));
+    window.setTimeout(() => {
+      const el = document.getElementById('cross-pc-policy-diff');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 40);
   };
 
   const handleRunHostProbe = async () => {
@@ -1017,11 +1065,72 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
           </div>
         )}
 
-        {/* 1-Click Patch Presets */}
-        <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-3">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            {tx('원클릭 정책 적용 모드 & 재부팅 판정 실행', '1-Click Policy Modes & Reboot Judgment')}
-          </h3>
+        {/* Menu Collapse / Expand Toolbar */}
+        <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+          <div className="tabular-data text-xs text-slate-600 dark:text-slate-400">
+            {tx(
+              `매트릭스 하위 메뉴 · ${expandedMenuCount} / ${totalMenuCount} 펼침`,
+              `Matrix Sub-menus · ${expandedMenuCount} / ${totalMenuCount} expanded`
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              id="btn-matrix-expand-all"
+              type="button"
+              disabled={expandedMenuCount === totalMenuCount}
+              onClick={() => setAllMatrixMenus(true)}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45"
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+              {tx('전체 펼치기', 'Expand All')}
+            </button>
+            <button
+              id="btn-matrix-collapse-all"
+              type="button"
+              disabled={expandedMenuCount === 0}
+              onClick={() => setAllMatrixMenus(false)}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45"
+            >
+              <ChevronUp className="w-3.5 h-3.5" />
+              {tx('전체 접기', 'Collapse All')}
+            </button>
+          </div>
+        </div>
+
+        {/* 1-Click Patch Presets (Collapsible) */}
+        <div id="matrix-patch-modes-section" className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-3">
+          <button
+            id="btn-toggle-matrix-patch-modes"
+            type="button"
+            aria-expanded={expandedMenus.patchModes}
+            onClick={() => toggleMatrixMenu('patchModes')}
+            className="w-full flex items-center justify-between gap-3 text-left cursor-pointer group"
+          >
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 min-w-0">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                {tx('원클릭 정책 적용 모드 & 재부팅 판정 실행', '1-Click Policy Modes & Reboot Judgment')}
+              </h3>
+              <span className="tabular-data text-xs text-slate-500 dark:text-slate-400">
+                · {tx('안전 호환 · TCP/IP 초기화 · 26H2 복원 · 프린터 RPC (5종)', 'Safe Compat · Stack Reset · 26H2 Restore · Printer RPC (5)')}
+              </span>
+            </div>
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300 shrink-0">
+              {expandedMenus.patchModes ? (
+                <>
+                  <ChevronUp className="w-4 h-4" />
+                  {tx('접기', 'Collapse')}
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-4 h-4" />
+                  {tx('펼치기', 'Expand')}
+                </>
+              )}
+            </span>
+          </button>
+
+          {expandedMenus.patchModes && (
+            <>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="p-4 rounded-xl border-2 border-indigo-500/40 bg-indigo-500/5 dark:bg-indigo-500/10 flex flex-col justify-between gap-4">
               <div className="space-y-1.5">
@@ -1191,6 +1300,8 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
               </button>
             </div>
           </div>
+            </>
+          )}
         </div>
 
         {/* Smart Reboot Judgment Result Card */}
@@ -1318,12 +1429,15 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
         onRestoreDefaults={onSyncMatchedPolicies}
         onFullSecurityRollback={onFullSecurityRollback}
         onNotify={onNotify}
+        collapsible
+        isExpanded={expandedMenus.securityAudit}
+        onToggleExpanded={() => toggleMatrixMenu('securityAudit')}
       />
 
       {/* Separate Windows OS Patch & Optional Feature Diagnostic Panel */}
       <section
         id="os-patch-feature-diagnosis"
-        className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 p-6 space-y-5"
+        className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden"
       >
         {(() => {
           const isHome = /core|home/i.test(policyStatus?.osEditionId || policyStatus?.osProductName || '');
@@ -1348,8 +1462,16 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
 
           return (
             <>
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
-                <div className="space-y-1">
+              <button
+                id="btn-toggle-os-patch-feature"
+                type="button"
+                aria-expanded={expandedMenus.osPatchFeature}
+                onClick={() => toggleMatrixMenu('osPatchFeature')}
+                className={`w-full px-6 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-left cursor-pointer hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors ${
+                  expandedMenus.osPatchFeature ? 'border-b border-slate-200 dark:border-slate-800' : ''
+                }`}
+              >
+                <div className="space-y-1 min-w-0">
                   <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                     {hasSpecialRisk ? (
                       <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
@@ -1361,28 +1483,44 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                   <p className="text-xs text-slate-600 dark:text-slate-400">
                     {dupSidRisk
                       ? tx(
-                          '복제 OS 동일 Machine SID 차단(KB5065426 · Event 6167)이 감지되었습니다. 아래 KIR(1517186191=0) 적용 후 재부팅하세요.',
-                          'Duplicate Machine SID block on cloned OS (KB5065426 · Event 6167) detected. Apply KIR (1517186191=0) below and reboot.'
+                          '복제 OS 동일 Machine SID 차단(KB5065426 · Event 6167)이 감지되었습니다. 펼쳐서 KIR(1517186191=0) 적용 후 재부팅하세요.',
+                          'Duplicate Machine SID block on cloned OS (KB5065426 · Event 6167) detected. Expand to apply KIR (1517186191=0) and reboot.'
                         )
                       : hasSpecialRisk
                         ? tx(
-                            '초기 24H2 빌드 리비전 또는 MS 계정·PIN 환경이 감지되었습니다. 아래 해당 항목의 조치를 확인하세요.',
-                            'Early 24H2 build revision or Microsoft Account/PIN environment detected. Check the corresponding action below.'
+                            '초기 24H2 빌드 리비전 또는 MS 계정·PIN 환경이 감지되었습니다. 펼쳐서 해당 항목의 조치를 확인하세요.',
+                            'Early 24H2 build revision or Microsoft Account/PIN environment detected. Expand to check the corresponding action.'
                           )
                         : tx(
-                            '일반 Windows 10~11 PC 간 공유에는 별도 OS 업데이트·추가 기능 설치가 필요 없으며, 아래 특수 환경(구형 NAS·워크그룹 관리자 접속·PIN·OS 복제 SID)에 해당하는 경우에만 적용합니다.',
-                            'Standard Win 10–11 PC sharing requires no extra OS updates or features. Use the items below only for legacy NAS, workgroup admin shares, PIN logins, or cloned OS SIDs.'
+                            '일반 Windows 10~11 PC 간 공유에는 별도 업데이트가 불필요하며, 구형 NAS·관리자 접속·PIN·OS 복제 SID 등 특수 환경 진단(4종)을 제공합니다.',
+                            'Standard Win 10–11 PC sharing requires no extra updates; provides 4 diagnostics for legacy NAS, admin shares, PIN logins, or cloned OS SIDs.'
                           )}
                   </p>
                 </div>
-                <div className="tabular-data text-xs text-slate-600 dark:text-slate-300 shrink-0">
-                  {tx('에디션', 'Edition')}: {policyStatus?.osEditionId || 'Pro'}
-                  {isHome ? tx(' (gpedit 미지원 · 레지스트리 자동 우회)', ' (No gpedit · Registry auto-bypass)') : ''} · {tx('빌드', 'Build')} {currentBuild}
-                  {typeof policyStatus?.osUbr === 'number' ? `.${policyStatus.osUbr}` : ''}
+                <div className="flex flex-wrap items-center gap-3 shrink-0">
+                  <span className="tabular-data text-xs text-slate-600 dark:text-slate-300">
+                    {tx('에디션', 'Edition')}: {policyStatus?.osEditionId || 'Pro'}
+                    {isHome ? tx(' (No gpedit)', ' (No gpedit)') : ''} · {tx('빌드', 'Build')} {currentBuild}
+                    {typeof policyStatus?.osUbr === 'number' ? `.${policyStatus.osUbr}` : ''}
+                  </span>
+                  <span className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
+                    {expandedMenus.osPatchFeature ? (
+                      <>
+                        <ChevronUp className="w-3.5 h-3.5" />
+                        {tx('접기', 'Collapse')}
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="w-3.5 h-3.5" />
+                        {tx('펼치기', 'Expand')}
+                      </>
+                    )}
+                  </span>
                 </div>
-              </div>
+              </button>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              {expandedMenus.osPatchFeature && (
+              <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 {/* 1. UAC LocalAccountTokenFilterPolicy */}
                 <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 flex flex-col justify-between gap-4">
                   <div className="space-y-1.5">
@@ -1616,6 +1754,7 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
                   )}
                 </div>
               </div>
+              )}
             </>
           );
         })()}
@@ -1627,7 +1766,11 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
         className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden"
       >
         {/* Top Wizard Header */}
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div
+          className={`px-6 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+            expandedMenus.crossPcDiff ? 'border-b border-slate-200 dark:border-slate-800' : ''
+          }`}
+        >
           <div className="space-y-1">
             <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <ArrowLeftRight className="w-4 h-4 text-indigo-500 shrink-0" />
@@ -1654,23 +1797,48 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             </p>
           </div>
 
-          <div className="tabular-data text-[11px] font-medium text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-2 shrink-0">
-            <span className={selectedHostSnap ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}>
-              {tx('01 대상·IP 프로브', '01 Target · IP Probe')}
-            </span>
-            <span>→</span>
-            <span className={diffConflictModes.length === 0 ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'font-semibold text-slate-800 dark:text-slate-200'}>
-              {tx(
-                `02 내 PC 정렬 (${diffConflictModes.length === 0 ? '완료' : `${diffConflictModes.length}종 대기`})`,
-                `02 Align Local PC (${diffConflictModes.length === 0 ? 'Done' : `${diffConflictModes.length} pending`})`
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <div className="tabular-data text-[11px] font-medium text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-2">
+              <span className={selectedHostSnap ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}>
+                {tx('01 대상·IP 프로브', '01 Target · IP Probe')}
+              </span>
+              <span>→</span>
+              <span className={diffConflictModes.length === 0 ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'font-semibold text-slate-800 dark:text-slate-200'}>
+                {tx(
+                  `02 내 PC 정렬 (${diffConflictModes.length === 0 ? '완료' : `${diffConflictModes.length}종 대기`})`,
+                  `02 Align Local PC (${diffConflictModes.length === 0 ? 'Done' : `${diffConflictModes.length} pending`})`
+                )}
+              </span>
+              <span>→</span>
+              <span className={pendingTaskList.length > 0 ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}>
+                {tx(`03 호스트 USB 예약 (${pendingTaskList.length}건)`, `03 Queue USB Task (${pendingTaskList.length})`)}
+              </span>
+            </div>
+
+            <button
+              id="btn-toggle-cross-pc-diff"
+              type="button"
+              aria-expanded={expandedMenus.crossPcDiff}
+              onClick={() => toggleMatrixMenu('crossPcDiff')}
+              className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {expandedMenus.crossPcDiff ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                  {tx('접기', 'Collapse')}
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  {tx(`진단·비교표 펼치기 (${diffCounts.issues})`, `Expand Diagnostics (${diffCounts.issues})`)}
+                </>
               )}
-            </span>
-            <span>→</span>
-            <span className={pendingTaskList.length > 0 ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}>
-              {tx(`03 호스트 USB 예약 (${pendingTaskList.length}건)`, `03 Queue USB Task (${pendingTaskList.length})`)}
-            </span>
+            </button>
           </div>
         </div>
+
+        {expandedMenus.crossPcDiff && (
+        <>
 
         {/* 3-Step Resolution Wizard Cards (Single-elevation divided grid) */}
         <div className="grid grid-cols-1 xl:grid-cols-3 divide-y xl:divide-y-0 xl:divide-x divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800">
@@ -2454,6 +2622,8 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             </div>
           </div>
         )}
+        </>
+        )}
       </section>
 
       {/* Expert Comparison View: 10-Policy Raw Registry Side-by-Side Comparison */}
@@ -2465,88 +2635,134 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
         connectedHostLabel={connectedHostLabel}
         fetchResult={expertFetchResult}
         isFetching={isFetchingRawRegistry}
-        isExpanded={isExpertExpanded}
-        onToggleExpanded={() => {
-          const next = !isExpertExpanded;
-          setIsExpertExpanded(next);
-          if (next && !expertFetchResult) {
-            void handleFetchRawRegistry();
-          }
-        }}
+        isExpanded={expandedMenus.expertComparison}
+        onToggleExpanded={() => toggleMatrixMenu('expertComparison')}
         onFetchRawRegistry={handleFetchRawRegistry}
         onNotify={onNotify}
       />
 
-      {/* Era Summary Timeline */}
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-indigo-500" />
-            {tx(
-              'Windows 10 → Windows 11 26H2 네트워크 아키텍처 변천 타임라인',
-              'Windows 10 → Windows 11 26H2 Network Architecture Timeline'
-            )}
-          </h3>
-          {selectedEra !== 'all' && (
-            <button
-              type="button"
-              onClick={() => setSelectedEra('all')}
-              className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
-            >
-              {tx('전체 세대 보기', 'Show All Eras')}
-            </button>
-          )}
-        </div>
+      {/* Era Summary Timeline (Collapsible) */}
+      <section
+        id="era-timeline-section"
+        className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden"
+      >
+        <div
+          className={`px-6 py-4 flex flex-wrap items-center justify-between gap-3 ${
+            expandedMenus.eraTimeline ? 'border-b border-slate-200 dark:border-slate-800' : ''
+          }`}
+        >
+          <div className="space-y-0.5 min-w-0">
+            <h3 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-indigo-500 shrink-0" />
+              <span>
+                {tx(
+                  'Windows 10 → Windows 11 26H2 네트워크 아키텍처 변천 타임라인',
+                  'Windows 10 → Windows 11 26H2 Network Architecture Timeline'
+                )}
+              </span>
+            </h3>
+            <p className="tabular-data text-xs text-slate-500 dark:text-slate-400">
+              {tx(
+                `${windowsEraSummaries.length}개 세대 타임라인 · 현재 OS: ${formatEraShortLabel(currentEra, currentBuild, currentDisp)}`,
+                `${windowsEraSummaries.length} OS generations · Current OS: ${formatEraShortLabel(currentEra, currentBuild, currentDisp)}`
+              )}
+              {selectedEra !== 'all' ? ` · ${tx('세대 필터 적용 중', 'Filtered')}` : ''}
+            </p>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          {windowsEraSummaries.map((card) => {
-            const isCurrent = card.era === currentEra;
-            const isSelected = selectedEra === card.era;
-            return (
+          <div className="flex items-center gap-2 shrink-0">
+            {selectedEra !== 'all' && (
               <button
-                key={card.era}
                 type="button"
-                onClick={() => setSelectedEra((prev) => (prev === card.era ? 'all' : card.era))}
-                className={`text-left p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
-                  isSelected
-                    ? 'border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500/40'
-                    : isCurrent
-                      ? 'border-emerald-500/50 bg-emerald-500/5 dark:bg-emerald-500/10'
-                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 hover:border-slate-300 dark:hover:border-slate-700'
-                }`}
+                onClick={() => setSelectedEra('all')}
+                className="px-2.5 py-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
               >
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="tabular-data text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                      {card.buildRange}
-                    </span>
-                    {isCurrent && (
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-600 text-white">
-                        {tx('현재 내 PC', 'This PC')}
-                      </span>
-                    )}
-                  </div>
-                  <div className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                    {card.title}
-                  </div>
-                  <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                    {card.summary}
-                  </p>
-                </div>
-
-                <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-300">
-                  <span className="font-semibold text-indigo-600 dark:text-indigo-400">{tx('재부팅 특성', 'Reboot Trait')}:</span>{' '}
-                  {card.rebootTrait}
-                </div>
+                {tx('전체 세대 보기', 'Show All Eras')}
               </button>
-            );
-          })}
+            )}
+            <button
+              id="btn-toggle-era-timeline"
+              type="button"
+              aria-expanded={expandedMenus.eraTimeline}
+              onClick={() => toggleMatrixMenu('eraTimeline')}
+              className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {expandedMenus.eraTimeline ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                  {tx('접기', 'Collapse')}
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  {tx('타임라인 펼치기', 'Expand Timeline')}
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        {expandedMenus.eraTimeline && (
+          <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {windowsEraSummaries.map((card) => {
+              const isCurrent = card.era === currentEra;
+              const isSelected = selectedEra === card.era;
+              return (
+                <button
+                  key={card.era}
+                  type="button"
+                  onClick={() => {
+                    setSelectedEra((prev) => (prev === card.era ? 'all' : card.era));
+                    setExpandedMenus((prev) => ({ ...prev, evolutionMatrix: true }));
+                  }}
+                  className={`text-left p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
+                    isSelected
+                      ? 'border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500/40'
+                      : isCurrent
+                        ? 'border-emerald-500/50 bg-emerald-500/5 dark:bg-emerald-500/10'
+                        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="tabular-data text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                        {card.buildRange}
+                      </span>
+                      {isCurrent && (
+                        <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-600 text-white">
+                          {tx('현재 내 PC', 'This PC')}
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                      {card.title}
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                      {card.summary}
+                    </p>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-300">
+                    <span className="font-semibold text-indigo-600 dark:text-indigo-400">{tx('재부팅 특성', 'Reboot Trait')}:</span>{' '}
+                    {card.rebootTrait}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
 
-      {/* Searchable Network Evolution Matrix */}
-      <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      {/* Searchable Network Evolution Matrix (Collapsible) */}
+      <section
+        id="evolution-matrix-section"
+        className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden"
+      >
+        <div
+          className={`px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+            expandedMenus.evolutionMatrix ? 'border-b border-slate-200 dark:border-slate-800' : ''
+          }`}
+        >
           <div>
             <h3 className="font-display text-base font-bold text-slate-900 dark:text-white">
               {tx(
@@ -2562,42 +2778,68 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
             </p>
           </div>
 
-          <div className="relative w-full md:w-72">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              aria-label={tx('네트워크 변경 이력 및 적용 매트릭스 검색', 'Search network change history and matrix')}
-              placeholder={tx('SMB 서명, 게스트, NTLM, 26H2 검색...', 'Search SMB signing, guest, NTLM, 26H2...')}
-              className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {expandedMenus.evolutionMatrix && (
+              <div className="relative w-full md:w-72">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  aria-label={tx('네트워크 변경 이력 및 적용 매트릭스 검색', 'Search network change history and matrix')}
+                  placeholder={tx('SMB 서명, 게스트, NTLM, 26H2 검색...', 'Search SMB signing, guest, NTLM, 26H2...')}
+                  className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            )}
+
+            <button
+              id="btn-toggle-evolution-matrix"
+              type="button"
+              aria-expanded={expandedMenus.evolutionMatrix}
+              onClick={() => toggleMatrixMenu('evolutionMatrix')}
+              className="px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {expandedMenus.evolutionMatrix ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                  {tx('접기', 'Collapse')}
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  {tx(`변경 이력 펼치기 (${filteredItems.length})`, `Expand Matrix (${filteredItems.length})`)}
+                </>
+              )}
+            </button>
           </div>
         </div>
 
-        <div className="px-6 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/30 flex flex-wrap items-center gap-1.5">
-          {CATEGORY_OPTIONS.map((cat) => (
-            <button
-              key={cat.id}
-              type="button"
-              onClick={() => setSelectedCategory(cat.id)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                selectedCategory === cat.id
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-indigo-400'
-              }`}
-            >
-              {locale === 'en' ? cat.enLabel : cat.koLabel}
-            </button>
-          ))}
-        </div>
-
-        <div className="divide-y divide-slate-200 dark:divide-slate-800">
-          {filteredItems.length === 0 ? (
-            <div className="px-6 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
-              {tx('검색 조건에 맞는 네트워크 변경 이력이 없습니다.', 'No network policy changes match your search criteria.')}
+        {expandedMenus.evolutionMatrix && (
+          <>
+            <div className="px-6 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/30 flex flex-wrap items-center gap-1.5">
+              {CATEGORY_OPTIONS.map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat.id)}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                    selectedCategory === cat.id
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-indigo-400'
+                  }`}
+                >
+                  {locale === 'en' ? cat.enLabel : cat.koLabel}
+                </button>
+              ))}
             </div>
-          ) : (
+
+            <div className="divide-y divide-slate-200 dark:divide-slate-800">
+              {filteredItems.length === 0 ? (
+                <div className="px-6 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+                  {tx('검색 조건에 맞는 네트워크 변경 이력이 없습니다.', 'No network policy changes match your search criteria.')}
+                </div>
+              ) : (
             filteredItems.map((item) => {
               const rb = rebootLevelBadge(item.rebootLevel, tx);
               return (
@@ -2642,7 +2884,9 @@ export const NetworkMatrixPanel: React.FC<NetworkMatrixPanelProps> = ({
               );
             })
           )}
-        </div>
+            </div>
+          </>
+        )}
       </section>
     </div>
   );

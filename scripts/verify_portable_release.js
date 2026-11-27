@@ -2408,8 +2408,101 @@ try {
   pass('MIT License declaration, NOTICE, THIRD-PARTY-NOTICES.md, build/installer bundling & offline LicenseNoticesModal verified');
 }
 
+// 18. Verify Network Change Auto-Detection & Disconnected Network Drive Recovery
+{
+  assert(
+    typesShareSrc.includes("export type DriveRecoveryReadiness = 'ready' | 'needs_password' | 'subnet_mismatch';") &&
+      typesShareSrc.includes('export interface OfflineDriveRecoveryPlan') &&
+      typesShareSrc.includes('export interface NetworkChangeEvent'),
+    'src/types/share.ts missing DriveRecoveryReadiness, OfflineDriveRecoveryPlan, or NetworkChangeEvent'
+  );
+
+  assert(
+    bridgeSrc.includes('findMatchingLocationProfilesForSubnet(') &&
+      bridgeSrc.includes('buildOfflineDriveRecoveryPlans(') &&
+      bridgeSrc.includes('async recoverDisconnectedDrive(') &&
+      bridgeSrc.includes("liveSubnet !== '127.0.0'") &&
+      bridgeSrc.includes("readiness = 'subnet_mismatch'") &&
+      bridgeSrc.includes("readiness = 'needs_password'") &&
+      bridgeSrc.includes("readiness = 'ready'"),
+    'src/services/shareBridge.ts missing subnet profile matcher or offline drive recovery readiness/execution helpers'
+  );
+
+  for (const locWatchId of [
+    'btn-toggle-network-watch',
+    'network-change-banner',
+    'select-network-matched-profile',
+    'btn-network-match-switch',
+    'btn-network-save-site',
+    'btn-dismiss-network-change',
+  ]) {
+    assert(locBarSrc.includes(locWatchId), `LocationProfileBar.tsx missing network watch UI id: ${locWatchId}`);
+  }
+
+  for (const driveRecoveryId of [
+    'btn-recover-all-offline',
+    'btn-clean-offline-drives',
+    'btn-reconnect-drive-',
+    'btn-fill-drive-pass-',
+  ]) {
+    assert(clientPanelSrc.includes(driveRecoveryId), `ClientPanel.tsx missing drive recovery UI id: ${driveRecoveryId}`);
+  }
+
+  for (const appRecoveryMarker of [
+    'NETWORK_WATCH_STORAGE_KEY',
+    'evaluateNetworkChangeAndSuggestions',
+    'handleToggleNetworkWatch',
+    'handleSwitchAndPreflightMatchedProfile',
+    'handleDismissNetworkChange',
+    'offlineRecoveryPlans',
+    'handleRecoverSingleDrive',
+    'handleRecoverAllOfflineDrives',
+    'handleCleanAllOfflineDrives',
+    'handleFillDriveForPassword',
+  ]) {
+    assert(appSrc.includes(appRecoveryMarker), `App.tsx missing network watchdog or drive recovery handler: ${appRecoveryMarker}`);
+  }
+
+  pass('Automatic network change detection & disconnected drive recovery UI/logic verified');
+}
+
+// 19. Verify OS Compatibility Matrix collapsible sub-menus & expand/collapse controls
+{
+  assert(
+    rollbackReportSrc.includes('collapsible?: boolean') &&
+      rollbackReportSrc.includes('btn-toggle-security-rollback-report') &&
+      rollbackReportSrc.includes('aria-expanded={effectiveExpanded}'),
+    'SecurityRollbackReport.tsx missing collapsible prop or accessible toggle button'
+  );
+
+  assert(
+    expertViewSrc.includes('btn-toggle-expert-comparison') &&
+      expertViewSrc.includes('aria-expanded={isExpanded}') &&
+      expertViewSrc.includes("isExpanded ? 'border-b border-slate-200 dark:border-slate-800' : ''"),
+    'ExpertComparisonView.tsx missing accessible toggle or conditional collapsed border'
+  );
+
+  for (const accordionMarker of [
+    'expandedMenus',
+    'setAllMatrixMenus',
+    'btn-matrix-expand-all',
+    'btn-matrix-collapse-all',
+    'btn-toggle-matrix-patch-modes',
+    'btn-toggle-os-patch-feature',
+    'btn-toggle-cross-pc-diff',
+    'btn-toggle-era-timeline',
+    'btn-toggle-evolution-matrix',
+    "setExpandedMenus((prev) => (prev.crossPcDiff ? prev : { ...prev, crossPcDiff: true }))",
+  ]) {
+    assert(
+      matrixPanelSrc.includes(accordionMarker),
+      `NetworkMatrixPanel.tsx missing collapsible accordion marker: ${accordionMarker}`
+    );
+  }
+
+  pass('OS Compatibility Matrix collapsible sub-menus & Expand/Collapse All controls verified');
+}
+
 console.log('=======================================================');
 console.log(`[SUCCESS] All ${checksPassed} standalone verification checks passed!`);
 console.log('=======================================================');
-
-

@@ -197,7 +197,11 @@ export const ExpertComparisonView: React.FC<ExpertComparisonViewProps> = ({
       className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden"
     >
       {/* Top Bar */}
-      <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div
+        className={`px-6 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+          isExpanded ? 'border-b border-slate-200 dark:border-slate-800' : ''
+        }`}
+      >
         <div className="space-y-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="font-mono font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">

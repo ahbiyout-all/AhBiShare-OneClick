@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff, RefreshCw, Wrench } from 'lucide-react';
+import { Radar, Link2, ExternalLink, Unplug, Check, AlertCircle, Usb, X, ArrowLeftRight, MapPin, KeyRound, Copy, Shield, Trash2, Eye, EyeOff, RefreshCw, Wrench, Loader2 } from 'lucide-react';
 import {
   ActiveShare,
   ClientTargetConfig,
@@ -7,6 +7,7 @@ import {
   HostPolicySnapshot,
   LocationClientTargetEntry,
   MountedDrive,
+  OfflineDriveRecoveryPlan,
   OsNetworkPolicyStatus,
   PipelineStep,
   PortableHostShareEntry,
@@ -73,6 +74,13 @@ interface ClientPanelProps {
   onOpenTroubleshootWizard?: () => void;
   onDeleteHostPolicySnapshot?: (hostName: string) => Promise<void>;
   onDeletePortableShare?: (sourceHostName: string, shareName: string) => Promise<void>;
+  offlineRecoveryPlans?: OfflineDriveRecoveryPlan[];
+  isRecoveringDrives?: boolean;
+  recoveringDriveLetter?: string | null;
+  onRecoverSingleDrive?: (driveLetter: string) => Promise<void>;
+  onRecoverAllOfflineDrives?: () => Promise<void>;
+  onCleanAllOfflineDrives?: () => Promise<void>;
+  onFillDriveForPassword?: (plan: OfflineDriveRecoveryPlan) => void;
 }
 
 const DRIVE_LETTERS = ['Z:', 'Y:', 'X:', 'W:', 'V:', 'S:', 'M:'];
@@ -120,6 +128,13 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
   onOpenTroubleshootWizard,
   onDeleteHostPolicySnapshot,
   onDeletePortableShare,
+  offlineRecoveryPlans = [],
+  isRecoveringDrives = false,
+  recoveringDriveLetter = null,
+  onRecoverSingleDrive,
+  onRecoverAllOfflineDrives,
+  onCleanAllOfflineDrives,
+  onFillDriveForPassword,
 }) => {
   const { tx } = useI18n();
   const [rawCodeInput, setRawCodeInput] = useState('');
@@ -1572,84 +1587,191 @@ export const ClientPanel: React.FC<ClientPanelProps> = ({
       </div>
 
       <section className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
-            {tx('연결된 네트워크 드라이브', 'Connected Network Drives')} ({mounts.length})
-          </h3>
-          <span className="text-xs text-slate-500 dark:text-slate-400">
-            {tx('연결 완료 즉시 Windows 탐색기에서 바로 사용할 수 있습니다', 'Available immediately in Windows Explorer once mounted')}
-          </span>
-        </div>
+        {(() => {
+          const disconnectedMounts = mounts.filter((m) => m.status === 'disconnected');
+          const planByDrive = new Map(
+            offlineRecoveryPlans.map((p) => [p.driveLetter.toUpperCase(), p])
+          );
+          const readyRecoveryCount = disconnectedMounts.filter(
+            (m) => planByDrive.get(m.driveLetter.toUpperCase())?.readiness === 'ready'
+          ).length;
 
-        {mounts.length === 0 ? (
-          <div className="px-6 py-10 text-center">
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              {tx(
-                '연결된 네트워크 드라이브가 없습니다. 상단에서 메인 PC를 선택하거나 연결 코드를 입력해 연결하세요.',
-                'No network drives connected. Select a host PC or enter a connection code above.'
+          return (
+            <>
+              <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 min-w-0">
+                  <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
+                    {tx('연결된 네트워크 드라이브', 'Connected Network Drives')} ({mounts.length})
+                  </h3>
+                  {disconnectedMounts.length > 0 ? (
+                    <span className="tabular-data text-xs font-medium text-amber-700 dark:text-amber-300">
+                      · {tx(`오프라인 ${disconnectedMounts.length}건`, `${disconnectedMounts.length} offline`)}
+                      {readyRecoveryCount > 0
+                        ? tx(` · 즉시 복구 가능 ${readyRecoveryCount}건`, ` · ${readyRecoveryCount} ready to reconnect`)
+                        : ''}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      {tx('연결 완료 즉시 Windows 탐색기에서 바로 사용할 수 있습니다', 'Available immediately in Windows Explorer once mounted')}
+                    </span>
+                  )}
+                </div>
+
+                {disconnectedMounts.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {onRecoverAllOfflineDrives && readyRecoveryCount > 0 && (
+                      <button
+                        id="btn-recover-all-offline"
+                        type="button"
+                        onClick={() => void onRecoverAllOfflineDrives()}
+                        disabled={isRecoveringDrives || isConnecting}
+                        className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                      >
+                        {isRecoveringDrives && !recoveringDriveLetter ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        )}
+                        {tx(
+                          `끊긴 드라이브 일괄 복구 (${readyRecoveryCount})`,
+                          `Reconnect All Offline (${readyRecoveryCount})`
+                        )}
+                      </button>
+                    )}
+                    {onCleanAllOfflineDrives && (
+                      <button
+                        id="btn-clean-offline-drives"
+                        type="button"
+                        onClick={() => void onCleanAllOfflineDrives()}
+                        disabled={isRecoveringDrives || isConnecting}
+                        className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />
+                        {tx(
+                          `오프라인 정리 (${disconnectedMounts.length})`,
+                          `Clean Offline (${disconnectedMounts.length})`
+                        )}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {mounts.length === 0 ? (
+                <div className="px-6 py-10 text-center">
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
+                    {tx(
+                      '연결된 네트워크 드라이브가 없습니다. 상단에서 메인 PC를 선택하거나 연결 코드를 입력해 연결하세요.',
+                      'No network drives connected. Select a host PC or enter a connection code above.'
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        <th className="py-3 px-6">{tx('드라이브', 'Drive')}</th>
+                        <th className="py-3 px-4">{tx('네트워크 UNC 경로', 'Network UNC Path')}</th>
+                        <th className="py-3 px-4">{tx('인증 모드', 'Auth Mode')}</th>
+                        <th className="py-3 px-4">{tx('연결 시각', 'Connected At')}</th>
+                        <th className="py-3 px-6 text-right">{tx('작업', 'Actions')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
+                      {mounts.map((m) => {
+                        const driveKey = m.driveLetter.toUpperCase();
+                        const driveIdToken = m.driveLetter.replace(':', '').toUpperCase();
+                        const plan = m.status === 'disconnected' ? planByDrive.get(driveKey) : undefined;
+                        const isThisRecovering =
+                          isRecoveringDrives &&
+                          (!recoveringDriveLetter || recoveringDriveLetter.toUpperCase() === driveKey);
+
+                        return (
+                          <tr key={m.driveLetter} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td className="py-3 px-6 tabular-data font-bold whitespace-nowrap align-top">
+                              <span className={m.status === 'connected' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                                {m.driveLetter}
+                              </span>
+                              {m.status === 'disconnected' && (
+                                <span className="ml-2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                  {tx('(오프라인)', '(Offline)')}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 tabular-data text-xs text-slate-700 dark:text-slate-300 align-top">
+                              <div>{m.uncPath}</div>
+                              {plan?.reasonLabel && (
+                                <div className="mt-1 font-sans text-[11px] text-amber-700 dark:text-amber-300">
+                                  {plan.reasonLabel}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap align-top">
+                              {m.authMode === 'guest' ? tx('간편 무비밀번호', 'Passwordless') : tx('보안 계정 (cmdkey)', 'Secure Account (cmdkey)')}
+                            </td>
+                            <td className="py-3 px-4 tabular-data text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap align-top">
+                              {m.mountedAt}
+                            </td>
+                            <td className="py-3 px-6 text-right whitespace-nowrap align-top">
+                              <div className="inline-flex items-center gap-2">
+                                {m.status === 'disconnected' && plan?.readiness === 'ready' && onRecoverSingleDrive && (
+                                  <button
+                                    id={`btn-reconnect-drive-${driveIdToken}`}
+                                    type="button"
+                                    onClick={() => void onRecoverSingleDrive(m.driveLetter)}
+                                    disabled={isRecoveringDrives || isConnecting}
+                                    className="px-2.5 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                  >
+                                    {isThisRecovering ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <RefreshCw className="w-3.5 h-3.5" />
+                                    )}
+                                    {tx('재연결', 'Reconnect')}
+                                  </button>
+                                )}
+                                {m.status === 'disconnected' && plan?.readiness === 'needs_password' && onFillDriveForPassword && (
+                                  <button
+                                    id={`btn-fill-drive-pass-${driveIdToken}`}
+                                    type="button"
+                                    onClick={() => onFillDriveForPassword(plan)}
+                                    disabled={isRecoveringDrives || isConnecting}
+                                    className="px-2.5 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-md inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                  >
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                    {tx('암호 입력', 'Enter Password')}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => void onOpenDrive(`${m.driveLetter}\\`)}
+                                  className="px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                  {tx('탐색기 열기', 'Open Explorer')}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void onUnmount(m.driveLetter)}
+                                  disabled={isRecoveringDrives}
+                                  className="px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 rounded-md inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                >
+                                  <Unplug className="w-3.5 h-3.5" />
+                                  {tx('연결 해제', 'Disconnect')}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 dark:text-slate-400">
-                  <th className="py-3 px-6">{tx('드라이브', 'Drive')}</th>
-                  <th className="py-3 px-4">{tx('네트워크 UNC 경로', 'Network UNC Path')}</th>
-                  <th className="py-3 px-4">{tx('인증 모드', 'Auth Mode')}</th>
-                  <th className="py-3 px-4">{tx('연결 시각', 'Connected At')}</th>
-                  <th className="py-3 px-6 text-right">{tx('작업', 'Actions')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
-                {mounts.map((m) => (
-                  <tr key={m.driveLetter} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                    <td className="py-3 px-6 tabular-data font-bold whitespace-nowrap">
-                      <span className={m.status === 'connected' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
-                        {m.driveLetter}
-                      </span>
-                      {m.status === 'disconnected' && (
-                        <span className="ml-2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                          {tx('(오프라인)', '(Offline)')}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 tabular-data text-xs text-slate-700 dark:text-slate-300">
-                      {m.uncPath}
-                    </td>
-                    <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                      {m.authMode === 'guest' ? tx('간편 무비밀번호', 'Passwordless') : tx('보안 계정 (cmdkey)', 'Secure Account (cmdkey)')}
-                    </td>
-                    <td className="py-3 px-4 tabular-data text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                      {m.mountedAt}
-                    </td>
-                    <td className="py-3 px-6 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void onOpenDrive(`${m.driveLetter}\\`)}
-                          className="px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          {tx('탐색기 열기', 'Open Explorer')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void onUnmount(m.driveLetter)}
-                          className="px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 rounded-md inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <Unplug className="w-3.5 h-3.5" />
-                          {tx('연결 해제', 'Disconnect')}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+            </>
+          );
+        })()}
       </section>
     </div>
   );

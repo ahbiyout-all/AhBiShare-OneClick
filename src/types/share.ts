@@ -862,3 +862,28 @@ export interface RestoreBackupResult {
   error?: string;
 }
 
+export type DriveRecoveryReadiness = 'ready' | 'needs_password' | 'subnet_mismatch';
+
+export interface OfflineDriveRecoveryPlan {
+  driveLetter: string;
+  uncPath: string;
+  targetHost: string;
+  shareName: string;
+  readiness: DriveRecoveryReadiness;
+  authMode: AuthMode;
+  username: string;
+  hasStoredPassword: boolean;
+  credentialSource?: string;
+  matchedLocationName?: string;
+  reasonLabel: string;
+}
+
+export interface NetworkChangeEvent {
+  kind: 'initial_match' | 'subnet_changed';
+  fromSubnet: string | null;
+  toSubnet: string;
+  toIp: string;
+  adapterName: string;
+  detectedAt: string;
+  matchedProfiles: LocationProfileSummary[];
+}

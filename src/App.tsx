@@ -35,6 +35,8 @@ import {
   BackupStoreStatus,
   CreateBackupResult,
   RestoreBackupResult,
+  NetworkChangeEvent,
+  OfflineDriveRecoveryPlan,
 } from '@/types/share';
 import { isElectronRuntime, shareBridge, sortPortableEntriesForClient } from '@/services/shareBridge';
 import { APP_VERSION } from '@/version';
@@ -82,6 +84,8 @@ interface ActivityEntry {
   summary: string;
   status: 'success' | 'error';
 }
+
+const NETWORK_WATCH_STORAGE_KEY = 'ahbishare_network_watch_enabled';
 
 const INITIAL_PROGRESS_JOB: ProgressJobState = {
   isOpen: false,
@@ -195,6 +199,23 @@ export const App: React.FC = () => {
   const preflightSeqRef = useRef(0);
   const locationFileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [networkWatchEnabled, setNetworkWatchEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(NETWORK_WATCH_STORAGE_KEY) !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [detectedNetworkChange, setDetectedNetworkChange] = useState<NetworkChangeEvent | null>(null);
+  const [isRecoveringDrives, setIsRecoveringDrives] = useState(false);
+  const [recoveringDriveLetter, setRecoveringDriveLetter] = useState<string | null>(null);
+  const lastObservedSubnetRef = useRef('');
+  const lastObservedIpRef = useRef('');
+  const dismissedSubnetPromptRef = useRef('');
+  const networkWatchPollInFlightRef = useRef(false);
+  const lastWatchEventMsRef = useRef(0);
+  const busyOpsRef = useRef(false);
+
   const [hostDraft, setHostDraft] = useState<HostConfig>(() => ({
     folderPath: 'C:\\AhBiShared',
     shareName: 'AhBiShared',
@@ -258,6 +279,16 @@ export const App: React.FC = () => {
   const [progressJob, setProgressJob] = useState<ProgressJobState>(INITIAL_PROGRESS_JOB);
   const progressLockRef = useRef(false);
   const activeJobKeyRef = useRef('');
+
+  busyOpsRef.current =
+    isHostExecuting ||
+    isClientConnecting ||
+    isLocationBatchApplying ||
+    isRecoveringDrives ||
+    isAutoAligning ||
+    Boolean(applyingPatchMode) ||
+    isScanning ||
+    refreshTabInFlightRef.current;
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -590,12 +621,15 @@ export const App: React.FC = () => {
     setTroubleshootTickets(snap.document.troubleshootTickets ? [...snap.document.troubleshootTickets] : []);
   }, []);
 
-  const refreshLocationProfiles = useCallback(async () => {
+  const refreshLocationProfiles = useCallback(async (): Promise<LocationProfileSummary[]> => {
     try {
       const listRes = await shareBridge.listLocationProfiles();
       setLocationProfiles(listRes.profiles);
       if (listRes.directory) setLocationStorageDir(listRes.directory);
-    } catch {}
+      return listRes.profiles;
+    } catch {
+      return [];
+    }
   }, []);
 
   const refreshBackupStatus = useCallback(async () => {
@@ -677,6 +711,90 @@ export const App: React.FC = () => {
     [appendLog, refreshPortableSnapshot, tx]
   );
 
+  const evaluateNetworkChangeAndSuggestions = useCallback(
+    (
+      info: LocalNetworkInfo,
+      profiles: LocationProfileSummary[],
+      activeProfile: LocationProfileFile | null,
+      isInitialBootstrap = false
+    ) => {
+      const subnet = String(info.subnetPrefix || '').trim();
+      const ip = String(info.primaryIp || '').trim();
+      if (!subnet || subnet === '127.0.0' || subnet === '0.0.0' || !isValidIpv4Address(ip)) {
+        return;
+      }
+
+      const matchedProfiles = shareBridge.findMatchingLocationProfilesForSubnet(profiles, subnet);
+      const prevSubnet = lastObservedSubnetRef.current;
+
+      if (isInitialBootstrap || !prevSubnet) {
+        lastObservedSubnetRef.current = subnet;
+        lastObservedIpRef.current = ip;
+        if (!activeProfile && matchedProfiles.length > 0 && dismissedSubnetPromptRef.current !== subnet) {
+          setDetectedNetworkChange({
+            kind: 'initial_match',
+            fromSubnet: null,
+            toSubnet: subnet,
+            toIp: ip,
+            adapterName: info.adapterName,
+            detectedAt: new Date().toISOString(),
+            matchedProfiles,
+          });
+          appendLog(
+            tx('네트워크 감지', 'Network Watch'),
+            tx(
+              `현재 현장 대역(${subnet}.x)과 일치하는 USB 프로필 '${matchedProfiles[0].locationName}' 감지`,
+              `Detected matching USB profile '${matchedProfiles[0].locationName}' for subnet ${subnet}.x`
+            ),
+            'success'
+          );
+        }
+        return;
+      }
+
+      if (prevSubnet !== subnet) {
+        lastObservedSubnetRef.current = subnet;
+        lastObservedIpRef.current = ip;
+        dismissedSubnetPromptRef.current = '';
+        setDetectedNetworkChange({
+          kind: 'subnet_changed',
+          fromSubnet: prevSubnet,
+          toSubnet: subnet,
+          toIp: ip,
+          adapterName: info.adapterName,
+          detectedAt: new Date().toISOString(),
+          matchedProfiles,
+        });
+        const msg =
+          matchedProfiles.length > 0
+            ? tx(
+                `네트워크 대역 변경(${prevSubnet}.x → ${subnet}.x) 감지 · 일치 프로필 '${matchedProfiles[0].locationName}' 발견`,
+                `Subnet changed (${prevSubnet}.x -> ${subnet}.x) · Matched profile '${matchedProfiles[0].locationName}'`
+              )
+            : tx(
+                `네트워크 대역 변경(${prevSubnet}.x → ${subnet}.x) 감지 · 등록된 USB 프로필 없음`,
+                `Subnet changed (${prevSubnet}.x -> ${subnet}.x) · No matching USB profile`
+              );
+        appendLog(tx('네트워크 감지', 'Network Watch'), msg, 'success');
+        showToast(
+          matchedProfiles.length > 0
+            ? tx(
+                `네트워크가 ${subnet}.x로 변경되었습니다. '${matchedProfiles[0].locationName}' 전환 후 사전 검증을 실행하세요.`,
+                `Network changed to ${subnet}.x. Review switching to '${matchedProfiles[0].locationName}'.`
+              )
+            : tx(`네트워크가 ${subnet}.x로 변경되었습니다.`, `Network changed to ${subnet}.x.`)
+        );
+        return;
+      }
+
+      lastObservedIpRef.current = ip;
+      if (activeProfile?.networkHint?.subnetPrefix === subnet) {
+        setDetectedNetworkChange((prev) => (prev && prev.toSubnet === subnet ? null : prev));
+      }
+    },
+    [appendLog, showToast, tx]
+  );
+
   const handleRefreshTab = useCallback(
     async (options?: { scanLan?: boolean; inspectPolicy?: boolean; tabLabel?: string }) => {
       if (refreshTabInFlightRef.current) return;
@@ -718,19 +836,22 @@ export const App: React.FC = () => {
         const listRes = await shareBridge.listLocationProfiles();
         setLocationProfiles(listRes.profiles);
         if (listRes.directory) setLocationStorageDir(listRes.directory);
-        const currentActiveProfile = activeLocationProfileRef.current;
-        if (currentActiveProfile) {
-          const stillExists = listRes.profiles.some((p) => p.profileId === currentActiveProfile.profileId);
+        let latestActiveProfile = activeLocationProfileRef.current;
+        if (latestActiveProfile) {
+          const stillExists = listRes.profiles.some((p) => p.profileId === latestActiveProfile?.profileId);
           if (!stillExists) {
+            latestActiveProfile = null;
             setActiveLocationProfile(null);
             setLastLocationBatchResult(null);
           } else {
-            const reloaded = await shareBridge.loadLocationProfile(currentActiveProfile.profileId);
+            const reloaded = await shareBridge.loadLocationProfile(latestActiveProfile.profileId);
             if (reloaded.success && reloaded.profile) {
+              latestActiveProfile = reloaded.profile;
               setActiveLocationProfile(reloaded.profile);
             }
           }
         }
+        evaluateNetworkChangeAndSuggestions(freshNet, listRes.profiles, latestActiveProfile, false);
         await refreshAppLogInfo();
         await refreshBackupStatus();
         appendLog(
@@ -751,13 +872,68 @@ export const App: React.FC = () => {
         setIsRefreshingTab(false);
       }
     },
-    [appendLog, refreshAppLogInfo, refreshBackupStatus, showToast, syncAllMatrixAndWizardState, tx]
+    [appendLog, evaluateNetworkChangeAndSuggestions, refreshAppLogInfo, refreshBackupStatus, showToast, syncAllMatrixAndWizardState, tx]
   );
 
   useEffect(() => {
+    if (!networkWatchEnabled) return;
+    let disposed = false;
+
+    const runNetworkWatchPoll = async (forceThrottle = false) => {
+      if (disposed || busyOpsRef.current || networkWatchPollInFlightRef.current) return;
+      const now = Date.now();
+      if (forceThrottle && now - lastWatchEventMsRef.current < 5_000) return;
+      lastWatchEventMsRef.current = now;
+      networkWatchPollInFlightRef.current = true;
+      try {
+        const freshNet = await shareBridge.getLocalNetworkInfo();
+        if (disposed) return;
+        const freshIp = String(freshNet.primaryIp || '').trim();
+        const freshSubnet = String(freshNet.subnetPrefix || '').trim();
+        const changed =
+          (freshSubnet && lastObservedSubnetRef.current && freshSubnet !== lastObservedSubnetRef.current) ||
+          (freshIp && lastObservedIpRef.current && freshIp !== lastObservedIpRef.current);
+
+        setNetInfo(freshNet);
+        if (changed) {
+          const synced = await shareBridge.syncLiveState(freshNet);
+          if (disposed) return;
+          setShares(synced.shares);
+          setMounts(synced.mounts);
+          const listRes = await shareBridge.listLocationProfiles();
+          if (disposed) return;
+          setLocationProfiles(listRes.profiles);
+          evaluateNetworkChangeAndSuggestions(freshNet, listRes.profiles, activeLocationProfileRef.current, false);
+        }
+      } catch {
+      } finally {
+        networkWatchPollInFlightRef.current = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void runNetworkWatchPoll(false);
+    }, 15_000);
+    const onFocusOrOnline = () => {
+      void runNetworkWatchPoll(true);
+    };
+    window.addEventListener('focus', onFocusOrOnline);
+    window.addEventListener('online', onFocusOrOnline);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', onFocusOrOnline);
+      window.removeEventListener('online', onFocusOrOnline);
+    };
+  }, [networkWatchEnabled, evaluateNetworkChangeAndSuggestions]);
+
+  useEffect(() => {
     const bootstrap = async () => {
+      let bootNetInfo: LocalNetworkInfo | null = null;
       try {
         const info = await shareBridge.getLocalNetworkInfo();
+        bootNetInfo = info;
         setNetInfo(info);
         const synced = await shareBridge.syncLiveState(info);
         setShares(synced.shares);
@@ -794,12 +970,15 @@ export const App: React.FC = () => {
         setShares(shareBridge.getSavedShares());
         setMounts(shareBridge.getSavedMounts());
       }
-      await refreshLocationProfiles();
+      const loadedProfiles = await refreshLocationProfiles();
+      if (bootNetInfo) {
+        evaluateNetworkChangeAndSuggestions(bootNetInfo, loadedProfiles, activeLocationProfileRef.current, true);
+      }
       await refreshAppLogInfo();
       await refreshBackupStatus();
     };
     void bootstrap();
-  }, [appendLog, refreshLocationProfiles, refreshAppLogInfo, refreshBackupStatus, syncAllMatrixAndWizardState, tx]);
+  }, [appendLog, evaluateNetworkChangeAndSuggestions, refreshLocationProfiles, refreshAppLogInfo, refreshBackupStatus, syncAllMatrixAndWizardState, tx]);
 
   // 1-second timer tick for active timed shares
   useEffect(() => {
@@ -2782,6 +2961,359 @@ export const App: React.FC = () => {
     }
   };
 
+  const offlineRecoveryPlans = React.useMemo(
+    () =>
+      shareBridge.buildOfflineDriveRecoveryPlans(mounts, {
+        netInfo,
+        activeLocationProfile,
+        portableShares,
+        activeShares: shares,
+        peers,
+      }),
+    [mounts, netInfo, activeLocationProfile, portableShares, shares, peers]
+  );
+
+  const handleRecoverSingleDrive = useCallback(
+    async (driveLetter: string) => {
+      const targetMount = mounts.find(
+        (m) => m.driveLetter.toUpperCase() === driveLetter.toUpperCase() && m.status === 'disconnected'
+      );
+      if (!targetMount) return;
+
+      const jobKey = startProgressJob(
+        tx(`끊긴 드라이브 복구 (${targetMount.driveLetter})`, `Recover Disconnected Drive (${targetMount.driveLetter})`),
+        targetMount.uncPath,
+        [
+          {
+            id: 'recover-prep',
+            title: tx('저장된 자격 증명 확인 및 재연결 준비', 'Verify cached credentials & prepare reconnect'),
+            detail: tx(`${targetMount.driveLetter} (${targetMount.uncPath}) 상태를 점검합니다.`, `Inspecting ${targetMount.driveLetter} (${targetMount.uncPath}).`),
+            status: 'running',
+          },
+        ]
+      );
+      if (!jobKey) return;
+
+      setIsRecoveringDrives(true);
+      setRecoveringDriveLetter(targetMount.driveLetter);
+      let latestSteps: PipelineStep[] = [];
+      try {
+        const res = await shareBridge.recoverDisconnectedDrive(
+          targetMount,
+          {
+            netInfo,
+            activeLocationProfile,
+            portableShares,
+            activeShares: shares,
+            peers,
+          },
+          (steps) => {
+            latestSteps = steps;
+            setClientSteps(steps);
+            updateProgressSteps(jobKey, steps);
+          },
+          netInfo.osEra
+        );
+
+        const savedMountsNow = shareBridge.getSavedMounts();
+        setMounts(savedMountsNow);
+
+        if (res.success && res.mount) {
+          await syncAllMatrixAndWizardState({
+            netInfoSnap: netInfo,
+            policy: policyStatus,
+            localMounts: savedMountsNow,
+            source: 'mount_retry',
+            justMountedTargets: [{ targetHost: res.mount.targetHost, shareName: res.mount.shareName }],
+          });
+          appendLog(
+            tx('드라이브 복구', 'Drive Recovery'),
+            tx(`${res.mount.driveLetter} (${res.mount.uncPath}) 재연결 완료`, `Reconnected ${res.mount.driveLetter} (${res.mount.uncPath})`),
+            'success'
+          );
+          showToast(tx(`${res.mount.driveLetter} 드라이브를 다시 연결했습니다.`, `Reconnected drive ${res.mount.driveLetter}.`));
+          completeProgressJob(
+            jobKey,
+            tx(`${res.mount.driveLetter} 드라이브 복구 완료`, `Drive ${res.mount.driveLetter} recovered`),
+            res.steps
+          );
+        } else {
+          const errMsg =
+            res.error ||
+            tx(`${targetMount.driveLetter} 드라이브 재연결에 실패했습니다.`, `Failed to reconnect ${targetMount.driveLetter}.`);
+          appendLog(tx('드라이브 복구', 'Drive Recovery'), errMsg, 'error');
+          showToast(errMsg);
+          void captureTroubleshootFailure({
+            originRole: 'client',
+            netInfoSnap: netInfo,
+            errorMessage: errMsg,
+            targetHost: targetMount.targetHost,
+            shareName: targetMount.shareName,
+            driveLetter: targetMount.driveLetter,
+            authMode: targetMount.authMode,
+          });
+          failProgressJob(jobKey, errMsg, res.steps.length > 0 ? res.steps : latestSteps);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : tx('알 수 없는 오류', 'Unknown error');
+        appendLog(tx('드라이브 복구', 'Drive Recovery'), msg, 'error');
+        showToast(msg);
+        failProgressJob(jobKey, msg, latestSteps);
+      } finally {
+        setIsRecoveringDrives(false);
+        setRecoveringDriveLetter(null);
+      }
+    },
+    [
+      mounts,
+      netInfo,
+      activeLocationProfile,
+      portableShares,
+      shares,
+      peers,
+      policyStatus,
+      startProgressJob,
+      updateProgressSteps,
+      completeProgressJob,
+      failProgressJob,
+      syncAllMatrixAndWizardState,
+      appendLog,
+      showToast,
+      captureTroubleshootFailure,
+      tx,
+    ]
+  );
+
+  const handleRecoverAllOfflineDrives = useCallback(async () => {
+    const readyPlans = offlineRecoveryPlans.filter((p) => p.readiness === 'ready');
+    if (readyPlans.length === 0) {
+      showToast(
+        tx(
+          '자동 재연결 가능한 오프라인 드라이브가 없습니다. (암호 입력 또는 대역 변경 확인 필요)',
+          'No offline drives are ready for automatic reconnection (password entry or subnet check required).'
+        )
+      );
+      return;
+    }
+
+    const batchSteps: PipelineStep[] = readyPlans.map((p) => ({
+      id: `recover-all-${p.driveLetter.replace(':', '')}`,
+      title: tx(`[재연결] ${p.driveLetter} → ${p.uncPath}`, `[Reconnect] ${p.driveLetter} -> ${p.uncPath}`),
+      detail: tx('대기 중', 'Waiting'),
+      status: 'idle' as const,
+    }));
+
+    const jobKey = startProgressJob(
+      tx(`끊긴 드라이브 일괄 복구 (${readyPlans.length}건)`, `Batch Recover Offline Drives (${readyPlans.length})`),
+      readyPlans.map((p) => p.driveLetter).join(', '),
+      batchSteps
+    );
+    if (!jobKey) return;
+
+    setIsRecoveringDrives(true);
+    setRecoveringDriveLetter(null);
+    let okCount = 0;
+    let failCount = 0;
+    const mountedTargets: Array<{ targetHost: string; shareName: string }> = [];
+
+    try {
+      for (let i = 0; i < readyPlans.length; i++) {
+        const plan = readyPlans[i];
+        const driveMount = mounts.find(
+          (m) => m.driveLetter.toUpperCase() === plan.driveLetter.toUpperCase() && m.status === 'disconnected'
+        );
+        if (!driveMount) continue;
+
+        const t0 = performance.now();
+        batchSteps[i] = {
+          ...batchSteps[i],
+          status: 'running',
+          detail: tx('SMB 연결 및 드라이브 매핑 재시도 중...', 'Retrying SMB connection & drive mapping...'),
+        };
+        updateProgressSteps(jobKey, batchSteps.map((s) => ({ ...s })));
+
+        const res = await shareBridge.recoverDisconnectedDrive(
+          driveMount,
+          {
+            netInfo,
+            activeLocationProfile,
+            portableShares,
+            activeShares: shares,
+            peers,
+          },
+          (subSteps) => {
+            setClientSteps(subSteps);
+            const activeSub = subSteps.find((s) => s.status === 'running') || subSteps[subSteps.length - 1];
+            if (activeSub) {
+              batchSteps[i] = { ...batchSteps[i], detail: activeSub.title };
+              updateProgressSteps(jobKey, batchSteps.map((s) => ({ ...s })));
+            }
+          },
+          netInfo.osEra
+        );
+
+        const elapsed = Math.round(performance.now() - t0);
+        if (res.success && res.mount) {
+          okCount += 1;
+          mountedTargets.push({ targetHost: res.mount.targetHost, shareName: res.mount.shareName });
+          batchSteps[i] = {
+            ...batchSteps[i],
+            status: 'success',
+            durationMs: elapsed,
+            detail: tx(`${res.mount.driveLetter} 재연결 완료`, `Reconnected ${res.mount.driveLetter}`),
+          };
+        } else {
+          failCount += 1;
+          const errText = res.error || tx('재연결 실패', 'Reconnection failed');
+          batchSteps[i] = {
+            ...batchSteps[i],
+            status: 'error',
+            durationMs: elapsed,
+            error: errText,
+          };
+        }
+        updateProgressSteps(jobKey, batchSteps.map((s) => ({ ...s })));
+      }
+
+      const savedMountsNow = shareBridge.getSavedMounts();
+      setMounts(savedMountsNow);
+      if (mountedTargets.length > 0) {
+        await syncAllMatrixAndWizardState({
+          netInfoSnap: netInfo,
+          policy: policyStatus,
+          localMounts: savedMountsNow,
+          source: 'mount_retry',
+          justMountedTargets: mountedTargets,
+        });
+      }
+
+      const summary = tx(
+        `오프라인 드라이브 복구 완료: 성공 ${okCount}건 · 실패 ${failCount}건`,
+        `Offline drive recovery finished: ${okCount} succeeded · ${failCount} failed`
+      );
+      appendLog(tx('드라이브 일괄 복구', 'Batch Drive Recovery'), summary, failCount === 0 ? 'success' : 'error');
+      showToast(summary);
+      if (failCount === 0) {
+        completeProgressJob(jobKey, summary, batchSteps);
+      } else {
+        failProgressJob(jobKey, summary, batchSteps);
+      }
+    } finally {
+      setIsRecoveringDrives(false);
+      setRecoveringDriveLetter(null);
+    }
+  }, [
+    offlineRecoveryPlans,
+    mounts,
+    netInfo,
+    activeLocationProfile,
+    portableShares,
+    shares,
+    peers,
+    policyStatus,
+    startProgressJob,
+    updateProgressSteps,
+    completeProgressJob,
+    failProgressJob,
+    syncAllMatrixAndWizardState,
+    appendLog,
+    showToast,
+    tx,
+  ]);
+
+  const handleCleanAllOfflineDrives = useCallback(async () => {
+    const offlineMounts = mounts.filter((m) => m.status === 'disconnected');
+    if (offlineMounts.length === 0) return;
+
+    const cleanSteps: PipelineStep[] = offlineMounts.map((m) => ({
+      id: `clean-offline-${m.driveLetter.replace(':', '')}`,
+      title: tx(`[정리] ${m.driveLetter} (${m.uncPath})`, `[Clean] ${m.driveLetter} (${m.uncPath})`),
+      detail: tx('대기 중', 'Waiting'),
+      status: 'idle' as const,
+    }));
+    const jobKey = startProgressJob(
+      tx(`오프라인 드라이브 일괄 정리 (${offlineMounts.length}건)`, `Clean Offline Drives (${offlineMounts.length})`),
+      offlineMounts.map((m) => m.driveLetter).join(', '),
+      cleanSteps
+    );
+    if (!jobKey) return;
+
+    setIsRecoveringDrives(true);
+    let cleaned = 0;
+    let failed = 0;
+    try {
+      for (let i = 0; i < offlineMounts.length; i++) {
+        const m = offlineMounts[i];
+        const t0 = performance.now();
+        cleanSteps[i] = { ...cleanSteps[i], status: 'running', detail: tx('연결 해제 중...', 'Disconnecting...') };
+        updateProgressSteps(jobKey, cleanSteps.map((s) => ({ ...s })));
+        try {
+          const updated = await shareBridge.unmountDrive(m.driveLetter);
+          setMounts(updated);
+          cleaned += 1;
+          cleanSteps[i] = {
+            ...cleanSteps[i],
+            status: 'success',
+            durationMs: Math.round(performance.now() - t0),
+            detail: tx(`${m.driveLetter} 정리 완료`, `Cleaned ${m.driveLetter}`),
+          };
+        } catch (err) {
+          failed += 1;
+          cleanSteps[i] = {
+            ...cleanSteps[i],
+            status: 'error',
+            durationMs: Math.round(performance.now() - t0),
+            error: err instanceof Error ? err.message : tx('정리 실패', 'Cleanup failed'),
+          };
+        }
+        updateProgressSteps(jobKey, cleanSteps.map((s) => ({ ...s })));
+      }
+      const summary = tx(
+        `오프라인 드라이브 정리 완료: ${cleaned}건 해제${failed > 0 ? ` · ${failed}건 실패` : ''}`,
+        `Cleaned offline drives: ${cleaned} disconnected${failed > 0 ? ` · ${failed} failed` : ''}`
+      );
+      appendLog(tx('드라이브 정리', 'Drive Cleanup'), summary, failed === 0 ? 'success' : 'error');
+      showToast(summary);
+      if (failed === 0) completeProgressJob(jobKey, summary, cleanSteps);
+      else failProgressJob(jobKey, summary, cleanSteps);
+    } finally {
+      setIsRecoveringDrives(false);
+    }
+  }, [mounts, startProgressJob, updateProgressSteps, completeProgressJob, failProgressJob, appendLog, showToast, tx]);
+
+  const handleFillDriveForPassword = useCallback(
+    (plan: OfflineDriveRecoveryPlan) => {
+      setRoleMode('client');
+      setActiveSection('workspace');
+      setPendingLocationTarget({
+        key: `recover-pass-${plan.driveLetter}-${Date.now()}`,
+        target: {
+          targetHost: plan.targetHost,
+          shareName: plan.shareName,
+          driveLetter: plan.driveLetter,
+          authMode: 'account',
+          username: plan.username || 'AhBiShare',
+          password: '',
+          persistent: true,
+        },
+      });
+      showToast(
+        tx(
+          `${plan.driveLetter} 드라이브의 보안 계정 비밀번호를 입력한 뒤 '원클릭 연결'을 실행하세요.`,
+          `Enter the account password for ${plan.driveLetter} and click 1-Click Connect.`
+        )
+      );
+      window.setTimeout(() => {
+        const passEl = document.getElementById('client-acc-pass') as HTMLInputElement | null;
+        if (passEl) {
+          passEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          passEl.focus();
+        }
+      }, 120);
+    },
+    [showToast, tx]
+  );
+
   const handleOpenPath = async (targetPath: string) => {
     const res = await shareBridge.openLocalOrUncPath(targetPath);
     if (res.message) showToast(res.message);
@@ -3342,9 +3874,38 @@ export const App: React.FC = () => {
         return;
       }
       applyLocationProfileToWorkspace(res.profile, true);
+      if (
+        detectedNetworkChange &&
+        res.profile.networkHint?.subnetPrefix &&
+        res.profile.networkHint.subnetPrefix === detectedNetworkChange.toSubnet
+      ) {
+        setDetectedNetworkChange(null);
+      }
     },
-    [applyLocationProfileToWorkspace, showToast, tx]
+    [applyLocationProfileToWorkspace, detectedNetworkChange, showToast, tx]
   );
+
+  const handleToggleNetworkWatch = useCallback(() => {
+    setNetworkWatchEnabled((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(NETWORK_WATCH_STORAGE_KEY, String(next));
+      } catch {}
+      showToast(
+        next
+          ? tx('네트워크 대역 자동 감지를 켰습니다.', 'Enabled automatic network subnet detection.')
+          : tx('네트워크 대역 자동 감지를 일시 중지했습니다.', 'Paused automatic network subnet detection.')
+      );
+      return next;
+    });
+  }, [showToast, tx]);
+
+  const handleDismissNetworkChange = useCallback(() => {
+    if (detectedNetworkChange?.toSubnet) {
+      dismissedSubnetPromptRef.current = detectedNetworkChange.toSubnet;
+    }
+    setDetectedNetworkChange(null);
+  }, [detectedNetworkChange]);
 
   const handleSaveLocationProfile = useCallback(
     async (options: {
@@ -3788,6 +4349,20 @@ export const App: React.FC = () => {
     [activeLocationProfile, applyLocationProfileToWorkspace, runPreflightCheckForProfile, showToast, tx]
   );
 
+  const handleSwitchAndPreflightMatchedProfile = useCallback(
+    async (profileId: string) => {
+      const loaded = await shareBridge.loadLocationProfile(profileId);
+      if (!loaded.success || !loaded.profile) {
+        showToast(loaded.error || tx('일치하는 사용장소 프로필을 불러오지 못했습니다.', 'Failed to load matched location profile.'));
+        return;
+      }
+      applyLocationProfileToWorkspace(loaded.profile, true);
+      setDetectedNetworkChange(null);
+      await runPreflightCheckForProfile(loaded.profile);
+    },
+    [applyLocationProfileToWorkspace, runPreflightCheckForProfile, showToast, tx]
+  );
+
   return (
     <div className={`${isEmbedded ? 'min-h-full' : 'min-h-screen'} flex flex-col bg-slate-50 dark:bg-[#0F172A] text-slate-900 dark:text-slate-100`}>
       <TopBar
@@ -4027,6 +4602,12 @@ export const App: React.FC = () => {
             isBatchApplying={isLocationBatchApplying}
             batchProgressText={locationBatchProgress}
             lastBatchResult={lastLocationBatchResult}
+            currentNetwork={netInfo}
+            networkChange={detectedNetworkChange}
+            autoWatchEnabled={networkWatchEnabled}
+            onToggleAutoWatch={handleToggleNetworkWatch}
+            onSwitchAndPreflightMatchedProfile={(id) => void handleSwitchAndPreflightMatchedProfile(id)}
+            onDismissNetworkChange={handleDismissNetworkChange}
             onSelectProfile={(id) => void handleSelectLocationProfile(id)}
             onOpenSaveModal={() => {
               setLocationModalEditProfileId(null);
@@ -4144,6 +4725,13 @@ export const App: React.FC = () => {
             }}
             onDeleteHostPolicySnapshot={handleDeleteHostPolicySnapshot}
             onDeletePortableShare={handleDeletePortableHostShare}
+            offlineRecoveryPlans={offlineRecoveryPlans}
+            isRecoveringDrives={isRecoveringDrives}
+            recoveringDriveLetter={recoveringDriveLetter}
+            onRecoverSingleDrive={handleRecoverSingleDrive}
+            onRecoverAllOfflineDrives={handleRecoverAllOfflineDrives}
+            onCleanAllOfflineDrives={handleCleanAllOfflineDrives}
+            onFillDriveForPassword={handleFillDriveForPassword}
           />
         )}
 
